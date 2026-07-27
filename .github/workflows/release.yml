@@ -10,6 +10,12 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    # OIDC Trusted Publishing (no CARGO_REGISTRY_TOKEN secret): crates-io-auth-action
+    # exchanges a short-lived GitHub OIDC token for a one-shot crates.io publish
+    # token, used only for this job and auto-revoked after. Requires a Trusted
+    # Publisher already configured on crates.io for this repo/workflow.
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +28,11 @@ jobs:
           cargo build --release
           cargo build --release --target wasm32-unknown-unknown --no-default-features
 
+      - name: Get crates.io token via OIDC
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
       - name: Publish
-        # Set a crates.io API token as the CARGO_REGISTRY_TOKEN repo secret.
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
