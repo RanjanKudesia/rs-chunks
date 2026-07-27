@@ -1,0 +1,646 @@
+/// Shared types, constants, block parser, and helper functions used by every
+/// MD chunking strategy.
+// Re-export shared utilities so strategy files can keep importing from super::common.
+pub use crate::shared::{
+    has_keyword_overlap, split_at_sentences, tokenize_keywords,
+};
+
+/// Classify prose length into a ContentType variant.
+pub fn classify_prose(text: &str) -> ContentType {
+    if text.len() > 900 {
+        ContentType::LongSingleParagraph
+    } else if text.len() < 90 {
+        ContentType::ShortDisconnectedParagraph
+    } else {
+        ContentType::PlainParagraph
+    }
+}
+
+/// Split `text` at `\n\n` paragraph boundaries so no piece exceeds `max_chars`.
+/// Always returns at least one element even when no split point exists.
+pub fn split_at_paragraph_boundary(text: &str, max_chars: usize) -> Vec<String> {
+    if text.len() <= max_chars {
+        return vec![text.trim().to_string()];
+    }
+    let mut result: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for part in text.split("\n\n") {
+        if current.is_empty() {
+            current.push_str(part);
+        } else if current.len() + 2 + part.len() <= max_chars {
+            current.push_str("\n\n");
+            current.push_str(part);
+        } else {
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() {
+                result.push(trimmed);
+            }
+            current = part.to_string();
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        result.push(trimmed);
+    }
+    if result.is_empty() {
+        result.push(text.trim().to_string());
+    }
+    result
+}
+
+pub const MAX_CHUNK_CHARS: usize = 1200;
+pub const MIN_CHUNK_CHARS: usize = 350;
+
+// ── Content types ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentType {
+    PlainParagraph,
+    HeadingSection,
+    BulletNumberedList,
+    Table,
+    CodeBlock,
+    LongSingleParagraph,
+    ShortDisconnectedParagraph,
+    Semantic,
+    Section,
+    SlidingWindow,
+    Sentence,
+    PageAware,
+}
+
+impl ContentType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContentType::PlainParagraph => "plain_paragraph",
+            ContentType::HeadingSection => "heading",
+            ContentType::BulletNumberedList => "bullet_list",
+            ContentType::Table => "table",
+            ContentType::CodeBlock => "code_block",
+            ContentType::LongSingleParagraph => "long_single_paragraph",
+            ContentType::ShortDisconnectedParagraph => "short_disconnected_paragraph",
+            ContentType::Semantic => "semantic",
+            ContentType::Section => "section",
+            ContentType::SlidingWindow => "sliding_window",
+            ContentType::Sentence => "sentence",
+            ContentType::PageAware => "page_aware",
+        }
+    }
+}
+
+// ── Block model ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdBlockType {
+    Heading,
+    Paragraph,
+    Code,
+    Table,
+    List,
+}
+
+#[derive(Debug, Clone)]
+pub struct MdBlock {
+    pub block_type: MdBlockType,
+    pub content: String,
+}
+
+// ── Chunk output ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ChunkRecordInput {
+    pub content_type: ContentType,
+    pub content: String,
+    pub metadata: serde_json::Value,
+}
+
+// ── Heading helpers ───────────────────────────────────────────────────────────
+
+/// Returns the ATX level (1-6) or setext level of a heading block.
+pub fn heading_level(content: &str) -> u8 {
+    let first = content.lines().next().unwrap_or("").trim();
+    if first.starts_with('#') {
+        return (first.chars().take_while(|c| *c == '#').count() as u8).min(6);
+    }
+    // setext: second line is all '=' (H1) or all '-' (H2)
+    let mut lines = content.lines();
+    lines.next();
+    if let Some(ul) = lines.next() {
+        let ul = ul.trim();
+        if ul.len() >= 2 && ul.chars().all(|c| c == '=') {
+            return 1;
+        }
+        if ul.len() >= 2 && ul.chars().all(|c| c == '-') {
+            return 2;
+        }
+    }
+    1
+}
+
+/// Strips the ATX `#` prefix (or setext underline) and returns plain text.
+pub fn extract_heading_text(heading_block: &str) -> String {
+    let lines: Vec<&str> = heading_block.lines().collect();
+    if lines.is_empty() {
+        return heading_block.trim().to_string();
+    }
+    let first = lines[0].trim();
+    if first.starts_with('#') {
+        return first.trim_start_matches('#').trim().to_string();
+    }
+    first.to_string()
+}
+
+/// Maintains an ancestor heading stack: retains entries shallower than `level`
+/// then pushes the new heading.
+pub fn update_heading_stack(stack: &mut Vec<(u8, String)>, level: u8, text: String) {
+    stack.retain(|(l, _)| *l < level);
+    stack.push((level, text));
+}
+
+pub fn current_section_heading(stack: &[(u8, String)]) -> Option<String> {
+    stack.last().map(|(_, t)| t.clone())
+}
+
+pub fn current_section_level(stack: &[(u8, String)]) -> u8 {
+    stack.last().map(|(l, _)| *l).unwrap_or(0)
+}
+
+pub fn heading_path_strings(stack: &[(u8, String)]) -> Vec<String> {
+    stack.iter().map(|(_, t)| t.clone()).collect()
+}
+
+// ── Markdown block parser ─────────────────────────────────────────────────────
+
+pub fn parse_markdown_blocks(text: &str) -> Vec<MdBlock> {
+    let mut blocks: Vec<MdBlock> = Vec::new();
+    let mut lines: Vec<&str> = text.lines().collect();
+
+    if text.ends_with('\n') {
+        lines.push("");
+    }
+
+    let mut i = 0;
+    let mut paragraph: Vec<String> = Vec::new();
+    let mut list: Vec<String> = Vec::new();
+    let mut table: Vec<String> = Vec::new();
+    let mut code: Vec<String> = Vec::new();
+    let mut in_code_fence = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_end();
+        let compact = trimmed.trim();
+
+        if in_code_fence {
+            code.push(trimmed.to_string());
+            if compact.starts_with("```") {
+                blocks.push(MdBlock {
+                    block_type: MdBlockType::Code,
+                    content: code.join("\n").trim().to_string(),
+                });
+                code.clear();
+                in_code_fence = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if compact.starts_with("```") {
+            flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+            in_code_fence = true;
+            code.push(trimmed.to_string());
+            i += 1;
+            continue;
+        }
+
+        if compact.is_empty() {
+            flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+            i += 1;
+            continue;
+        }
+
+        if is_horizontal_rule(compact) {
+            flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+            i += 1;
+            continue;
+        }
+
+        if i + 1 < lines.len() && is_setext_underline(lines[i + 1].trim()) && !compact.contains('|')
+        {
+            flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+            blocks.push(MdBlock {
+                block_type: MdBlockType::Heading,
+                content: format!("{}\n{}", compact, lines[i + 1].trim()),
+            });
+            i += 2;
+            continue;
+        }
+
+        if is_atx_heading(compact) {
+            flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+            blocks.push(MdBlock {
+                block_type: MdBlockType::Heading,
+                content: compact.to_string(),
+            });
+            i += 1;
+            continue;
+        }
+
+        if is_list_item_line(compact) {
+            if !table.is_empty() {
+                flush_table(&mut blocks, &mut table);
+            }
+            if !paragraph.is_empty() {
+                flush_paragraph(&mut blocks, &mut paragraph);
+            }
+            list.push(compact.to_string());
+            i += 1;
+            continue;
+        }
+
+        if looks_like_table_row(compact) {
+            if !list.is_empty() {
+                flush_list(&mut blocks, &mut list);
+            }
+            if !paragraph.is_empty() {
+                flush_paragraph(&mut blocks, &mut paragraph);
+            }
+            table.push(compact.to_string());
+            i += 1;
+            continue;
+        }
+
+        if !list.is_empty() {
+            flush_list(&mut blocks, &mut list);
+        }
+        if !table.is_empty() {
+            flush_table(&mut blocks, &mut table);
+        }
+        paragraph.push(compact.to_string());
+        i += 1;
+    }
+
+    flush_text_blocks(&mut blocks, &mut paragraph, &mut list, &mut table);
+
+    if !code.is_empty() {
+        blocks.push(MdBlock {
+            block_type: MdBlockType::Code,
+            content: code.join("\n").trim().to_string(),
+        });
+    }
+
+    blocks
+}
+
+pub fn flush_text_blocks(
+    blocks: &mut Vec<MdBlock>,
+    paragraph: &mut Vec<String>,
+    list: &mut Vec<String>,
+    table: &mut Vec<String>,
+) {
+    if !paragraph.is_empty() {
+        flush_paragraph(blocks, paragraph);
+    }
+    if !list.is_empty() {
+        flush_list(blocks, list);
+    }
+    if !table.is_empty() {
+        flush_table(blocks, table);
+    }
+}
+
+pub fn flush_paragraph(blocks: &mut Vec<MdBlock>, paragraph: &mut Vec<String>) {
+    let content = paragraph.join("\n").trim().to_string();
+    paragraph.clear();
+    if !content.is_empty() {
+        blocks.push(MdBlock {
+            block_type: MdBlockType::Paragraph,
+            content,
+        });
+    }
+}
+
+pub fn flush_list(blocks: &mut Vec<MdBlock>, list: &mut Vec<String>) {
+    let content = list.join("\n").trim().to_string();
+    list.clear();
+    if !content.is_empty() {
+        blocks.push(MdBlock {
+            block_type: MdBlockType::List,
+            content,
+        });
+    }
+}
+
+pub fn flush_table(blocks: &mut Vec<MdBlock>, table: &mut Vec<String>) {
+    let content = table.join("\n").trim().to_string();
+    table.clear();
+    if !content.is_empty() {
+        blocks.push(MdBlock {
+            block_type: MdBlockType::Table,
+            content,
+        });
+    }
+}
+
+// ── Block detection ───────────────────────────────────────────────────────────
+
+pub fn is_atx_heading(line: &str) -> bool {
+    if line.is_empty() || !line.starts_with('#') {
+        return false;
+    }
+    let hash_count = line.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hash_count) && line.chars().nth(hash_count) == Some(' ')
+}
+
+pub fn is_setext_underline(line: &str) -> bool {
+    let t = line.trim();
+    t.len() >= 3 && (t.chars().all(|c| c == '=') || t.chars().all(|c| c == '-'))
+}
+
+pub fn looks_like_table_row(line: &str) -> bool {
+    if !line.contains('|') {
+        return false;
+    }
+    let non_empty_cells = line
+        .split('|')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .count();
+    non_empty_cells >= 2
+        && line
+            .split('|')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|cell| !cell.starts_with('[') || (cell.contains(']') && !cell.contains("](#")))
+}
+
+pub fn is_horizontal_rule(line: &str) -> bool {
+    let t = line.trim();
+    if t.len() < 3 {
+        return false;
+    }
+    t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_')
+}
+
+pub fn is_list_item_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") {
+        return true;
+    }
+    if t.starts_with("[x] ") || t.starts_with("[ ] ") || t.starts_with("[X] ") {
+        return true;
+    }
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() && digits.len() <= 4 {
+        let rest = &t[digits.len()..];
+        if matches!(rest.chars().next(), Some('.') | Some(')')) && rest.len() > 1 {
+            return true;
+        }
+    }
+    false
+}
+
+// ── Text cleaning ─────────────────────────────────────────────────────────────
+
+pub fn strip_block_content(text: &str, strip_bullets: bool) -> String {
+    text.lines()
+        .map(|line| {
+            let mut l = line.trim_start();
+            while l.starts_with('>') {
+                l = l.trim_start_matches('>').trim_start();
+            }
+            let l = if strip_bullets {
+                strip_list_prefix(l)
+            } else {
+                l
+            };
+            strip_inline(l).trim().to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn strip_list_prefix(line: &str) -> &str {
+    let t = line.trim_start();
+    for prefix in &["- ", "* ", "+ "] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return rest.trim_start();
+        }
+    }
+    for prefix in &["[x] ", "[X] ", "[ ] "] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return rest.trim_start();
+        }
+    }
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() && digits.len() <= 4 {
+        let rest = &t[digits.len()..];
+        if rest.starts_with(". ") || rest.starts_with(") ") {
+            return rest[2..].trim_start();
+        }
+    }
+    t
+}
+
+pub fn strip_inline(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0;
+
+    while i < n {
+        match chars[i] {
+            '\\' if i + 1 < n => {
+                out.push(chars[i + 1]);
+                i += 2;
+            }
+            '<' if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '/') => {
+                while i < n && chars[i] != '>' {
+                    i += 1;
+                }
+                if i < n {
+                    i += 1;
+                }
+            }
+            '!' if i + 1 < n && chars[i + 1] == '[' => {
+                i += 2;
+                let alt_start = i;
+                while i < n && chars[i] != ']' {
+                    i += 1;
+                }
+                let alt: String = chars[alt_start..i].iter().collect();
+                if i < n {
+                    i += 1;
+                }
+                if i < n && chars[i] == '(' {
+                    while i < n && chars[i] != ')' {
+                        i += 1;
+                    }
+                    if i < n {
+                        i += 1;
+                    }
+                }
+                if !alt.is_empty() {
+                    out.push_str(&alt);
+                }
+            }
+            '[' if i + 1 < n && chars[i + 1] == '^' => {
+                while i < n && chars[i] != ']' {
+                    i += 1;
+                }
+                if i < n {
+                    i += 1;
+                }
+            }
+            '[' => {
+                i += 1;
+                let text_start = i;
+                let mut depth = 1i32;
+                while i < n && depth > 0 {
+                    if chars[i] == '[' {
+                        depth += 1;
+                    } else if chars[i] == ']' {
+                        depth -= 1;
+                    }
+                    if depth > 0 {
+                        i += 1;
+                    }
+                }
+                let inner: String = chars[text_start..i].iter().collect();
+                if i < n {
+                    i += 1;
+                }
+                if i < n && chars[i] == '(' {
+                    while i < n && chars[i] != ')' {
+                        i += 1;
+                    }
+                    if i < n {
+                        i += 1;
+                    }
+                } else if i < n && chars[i] == '[' {
+                    while i < n && chars[i] != ']' {
+                        i += 1;
+                    }
+                    if i < n {
+                        i += 1;
+                    }
+                }
+                out.push_str(&strip_inline(&inner));
+            }
+            '~' if i + 1 < n && chars[i + 1] == '~' => {
+                i += 2;
+                let start = i;
+                while i + 1 < n && !(chars[i] == '~' && chars[i + 1] == '~') {
+                    i += 1;
+                }
+                let inner: String = chars[start..i].iter().collect();
+                if i + 1 < n {
+                    i += 2;
+                }
+                out.push_str(&strip_inline(&inner));
+            }
+            '*' => {
+                if i + 2 < n && chars[i + 1] == '*' && chars[i + 2] == '*' {
+                    let open = i + 3;
+                    if let Some(pos) = find_md_marker(&chars, open, &['*', '*', '*']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 3;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('*');
+                        i += 1;
+                    }
+                } else if i + 1 < n && chars[i + 1] == '*' {
+                    let open = i + 2;
+                    if let Some(pos) = find_md_marker(&chars, open, &['*', '*']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 2;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('*');
+                        i += 1;
+                    }
+                } else if i + 1 < n && chars[i + 1] != ' ' && chars[i + 1] != '\t' {
+                    let open = i + 1;
+                    if let Some(pos) = find_md_marker(&chars, open, &['*']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 1;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('*');
+                        i += 1;
+                    }
+                } else {
+                    out.push('*');
+                    i += 1;
+                }
+            }
+            '`' => {
+                i += 1;
+                let start = i;
+                while i < n && chars[i] != '`' {
+                    i += 1;
+                }
+                let inner: String = chars[start..i].iter().collect();
+                if i < n {
+                    i += 1;
+                }
+                out.push_str(inner.trim());
+            }
+            '_' => {
+                if i + 2 < n && chars[i + 1] == '_' && chars[i + 2] == '_' {
+                    let open = i + 3;
+                    if let Some(pos) = find_md_marker(&chars, open, &['_', '_', '_']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 3;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('_');
+                        i += 1;
+                    }
+                } else if i + 1 < n && chars[i + 1] == '_' {
+                    let open = i + 2;
+                    if let Some(pos) = find_md_marker(&chars, open, &['_', '_']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 2;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('_');
+                        i += 1;
+                    }
+                } else if i + 1 < n && chars[i + 1] != ' ' && chars[i + 1] != '\t' {
+                    let open = i + 1;
+                    if let Some(pos) = find_md_marker(&chars, open, &['_']) {
+                        let inner: String = chars[open..pos].iter().collect();
+                        i = pos + 1;
+                        out.push_str(&strip_inline(&inner));
+                    } else {
+                        out.push('_');
+                        i += 1;
+                    }
+                } else {
+                    out.push('_');
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+pub fn find_md_marker(chars: &[char], from: usize, marker: &[char]) -> Option<usize> {
+    let ml = marker.len();
+    if ml == 0 {
+        return None;
+    }
+    let end = chars.len().saturating_sub(ml - 1);
+    (from..end).find(|&i| &chars[i..i + ml] == marker)
+}
+
+// split_sentences, split_at_sentences, tokenize_keywords, has_keyword_overlap
+// — all re-exported from crate::shared above.

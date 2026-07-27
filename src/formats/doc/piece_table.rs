@@ -1,0 +1,255 @@
+pub struct ReconstructedText {
+    pub text: String,
+    /// CP→byte-offset map built during piece-table reconstruction; retained for
+    /// future character-position mapping (e.g. field/bookmark spans), not yet read.
+    #[allow(dead_code)]
+    pub cp_to_byte: Vec<usize>,
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Result<u16, String> {
+    data.get(offset..offset + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or_else(|| format!("Piece table truncated at offset {offset}"))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
+    data.get(offset..offset + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .ok_or_else(|| format!("Piece table truncated at offset {offset}"))
+}
+
+fn cp1252_to_char(byte: u8) -> char {
+    match byte {
+        0x00..=0x7F => byte as char,
+        0x80 => '\u{20AC}',
+        0x81 => '\u{0081}',
+        0x82 => '\u{201A}',
+        0x83 => '\u{0192}',
+        0x84 => '\u{201E}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{02C6}',
+        0x89 => '\u{2030}',
+        0x8A => '\u{0160}',
+        0x8B => '\u{2039}',
+        0x8C => '\u{0152}',
+        0x8D => '\u{008D}',
+        0x8E => '\u{017D}',
+        0x8F => '\u{008F}',
+        0x90 => '\u{0090}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x98 => '\u{02DC}',
+        0x99 => '\u{2122}',
+        0x9A => '\u{0161}',
+        0x9B => '\u{203A}',
+        0x9C => '\u{0153}',
+        0x9D => '\u{009D}',
+        0x9E => '\u{017E}',
+        0x9F => '\u{0178}',
+        0xA0..=0xFF => char::from_u32(byte as u32).unwrap_or('\u{FFFD}'),
+    }
+}
+
+fn normalize_doc_char(ch: char) -> Option<char> {
+    match ch {
+        '\r' => Some('\r'),
+        '\x07' => Some('\x07'),
+        '\x0C' => Some('\x0C'),
+        '\x0B' => Some('\n'),
+        // Drop NUL and all non-text C0/DEL control characters. NUL in particular
+        // is never document text — some `.doc` files (e.g. large ones padded to
+        // size) have piece-table runs pointing at NUL padding, which must not
+        // leak into the extracted text as an unsplittable binary blob.
+        '\x00'..='\x06' | '\x08'..='\x09' | '\x0E'..='\x1F' | '\x7F' => None,
+        other => Some(other),
+    }
+}
+
+/// One text piece from the Plcpcd: a run of `cp_end - cp_start` characters
+/// stored at byte offset `fc` in the WordDocument stream, 8-bit (cp1252)
+/// when `compressed`, UTF-16LE otherwise. `cp_end` is already clamped to
+/// `ccpText`. Semantics mirror `parse_piece_table` exactly.
+#[derive(Debug, Clone)]
+pub struct Piece {
+    pub cp_start: u32,
+    pub cp_end: u32,
+    pub fc: usize,
+    pub compressed: bool,
+}
+
+/// Parse the CLX/Plcpcd into the raw piece list without decoding text.
+/// Used by the image extractor to map file offsets (FC) to character
+/// positions (CP) and to count paragraph marks before an anchor CP.
+pub fn parse_pieces(
+    table_stream: &[u8],
+    fc_clx: u32,
+    lcb_clx: u32,
+    ccp_text: i32,
+) -> Result<Vec<Piece>, String> {
+    let clx_start = fc_clx as usize;
+    let clx_len = lcb_clx as usize;
+    let clx_end = clx_start
+        .checked_add(clx_len)
+        .ok_or_else(|| "CLX overflow".to_string())?;
+    let clx = table_stream
+        .get(clx_start..clx_end)
+        .ok_or_else(|| "CLX points outside table stream".to_string())?;
+
+    let mut cursor = 0usize;
+    let mut plcpcd: Option<&[u8]> = None;
+
+    while cursor < clx.len() {
+        let tag = clx[cursor];
+        cursor += 1;
+        match tag {
+            0x01 => {
+                let cb = read_u16(clx, cursor)? as usize;
+                cursor = cursor
+                    .checked_add(2 + cb)
+                    .ok_or_else(|| "CLX grpprl overflow".to_string())?;
+                if cursor > clx.len() {
+                    return Err("CLX grpprl exceeds bounds".to_string());
+                }
+            }
+            0x02 => {
+                let cb = read_u32(clx, cursor)? as usize;
+                cursor += 4;
+                let end = cursor
+                    .checked_add(cb)
+                    .ok_or_else(|| "CLX Plcpcd overflow".to_string())?;
+                let data = clx
+                    .get(cursor..end)
+                    .ok_or_else(|| "CLX Plcpcd exceeds bounds".to_string())?;
+                plcpcd = Some(data);
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    let plcpcd = match plcpcd {
+        Some(p) => p,
+        None => return Ok(Vec::new()),
+    };
+
+    if plcpcd.len() < 4 || (plcpcd.len() - 4) % 12 != 0 {
+        return Err("Invalid Plcpcd size".to_string());
+    }
+
+    let n = (plcpcd.len() - 4) / 12;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let cp_count = n + 1;
+    let cp_bytes = cp_count * 4;
+    if cp_bytes > plcpcd.len() {
+        return Err("Invalid Plcpcd CP array".to_string());
+    }
+
+    let mut cps = Vec::with_capacity(cp_count);
+    for i in 0..cp_count {
+        cps.push(read_u32(plcpcd, i * 4)?);
+    }
+
+    let pcd_start = cp_bytes;
+    let ccp_limit = ccp_text.max(0) as u32;
+    let mut pieces = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let start_cp = cps[i];
+        let end_cp = cps[i + 1];
+        if end_cp <= start_cp || start_cp >= ccp_limit {
+            continue;
+        }
+
+        let mut char_count = (end_cp - start_cp) as usize;
+        let allowed = (ccp_limit - start_cp) as usize;
+        if char_count > allowed {
+            char_count = allowed;
+        }
+
+        let pcd_off = pcd_start + i * 8;
+        let fc_raw = read_u32(plcpcd, pcd_off + 2)?;
+        let compressed = (fc_raw & 0x4000_0000) != 0;
+        let real_offset = (fc_raw & !0x4000_0000) as usize;
+
+        pieces.push(Piece {
+            cp_start: start_cp,
+            cp_end: start_cp + char_count as u32,
+            fc: real_offset,
+            compressed,
+        });
+    }
+
+    Ok(pieces)
+}
+
+pub fn parse_piece_table(
+    word_doc: &[u8],
+    table_stream: &[u8],
+    fc_clx: u32,
+    lcb_clx: u32,
+    ccp_text: i32,
+) -> Result<ReconstructedText, String> {
+    let pieces = parse_pieces(table_stream, fc_clx, lcb_clx, ccp_text)?;
+
+    let mut text = String::new();
+    let mut cp_to_byte = Vec::new();
+
+    for piece in &pieces {
+        let char_count = (piece.cp_end - piece.cp_start) as usize;
+        let real_offset = piece.fc;
+
+        if piece.compressed {
+            let end = real_offset
+                .checked_add(char_count)
+                .ok_or_else(|| "Compressed piece offset overflow".to_string())?;
+            let bytes = match word_doc.get(real_offset..end) {
+                Some(b) => b,
+                None => continue,
+            };
+            for b in bytes {
+                if let Some(ch) = normalize_doc_char(cp1252_to_char(*b)) {
+                    cp_to_byte.push(text.len());
+                    text.push(ch);
+                }
+            }
+        } else {
+            let byte_count = char_count
+                .checked_mul(2)
+                .ok_or_else(|| "Unicode piece size overflow".to_string())?;
+            let end = real_offset
+                .checked_add(byte_count)
+                .ok_or_else(|| "Unicode piece offset overflow".to_string())?;
+            let bytes = match word_doc.get(real_offset..end) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let mut units = Vec::with_capacity(bytes.len() / 2);
+            let mut k = 0usize;
+            while k + 1 < bytes.len() {
+                units.push(u16::from_le_bytes([bytes[k], bytes[k + 1]]));
+                k += 2;
+            }
+
+            for decoded in char::decode_utf16(units.into_iter()) {
+                let ch = decoded.unwrap_or('\u{FFFD}');
+                if let Some(ch) = normalize_doc_char(ch) {
+                    cp_to_byte.push(text.len());
+                    text.push(ch);
+                }
+            }
+        }
+    }
+
+    Ok(ReconstructedText { text, cp_to_byte })
+}

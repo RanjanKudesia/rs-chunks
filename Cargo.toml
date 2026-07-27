@@ -1,0 +1,48 @@
+[package]
+# Published to crates.io as `rs-chunks` (the name `chunks-rs` was already taken).
+# The library import name stays `chunks_rs` (see [lib]), so downstream `use
+# chunks_rs::...` is unaffected.
+name = "rs-chunks"
+version = "0.1.0"
+edition = "2021"
+description = "Fast, high-fidelity document chunking for RAG — a pure-Rust engine covering 36 file formats (Office, OpenDocument, PDF, email, ebooks, notebooks, and more)."
+authors = ["Ranjan Kudesia <ranjan.kudesia@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/RanjanKudesia/rs-chunks"
+homepage = "https://github.com/RanjanKudesia/rs-chunks"
+documentation = "https://docs.rs/rs-chunks"
+readme = "README.md"
+keywords = ["chunking", "document", "rag", "pdf", "docx"]
+categories = ["text-processing", "parsing"]
+# Keep the published crate lean: the parity harnesses in examples/ and the
+# integration tests reference fixtures outside the crate (../test_files) and are
+# development-only.
+exclude = ["/examples", "/tests", "/target", "/.github"]
+
+[lib]
+name = "chunks_rs"
+
+[features]
+# Native PDF via the liteparse crate (PDFium). ON by default. Disable for
+# wasm32 builds, where PDF markdown is produced host-side (e.g. the
+# @llamaindex/liteparse-wasm package) and fed to `pdf::chunk_pdf_markdown`.
+default = ["pdf-native"]
+pdf-native = ["dep:liteparse", "dep:tokio"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+encoding_rs = "0.8"
+quick-xml = "0.38"
+# deflate-only: Office/ODF/epub ZIPs use deflate/store; dropping bzip2/zstd/lzma
+# keeps the dependency C-free so it compiles to wasm32.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+calamine = { version = "0.26", features = ["dates"] }
+cfb = "0.10"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+liteparse = { version = "=2.9.0", default-features = false, optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+rtf-parser = "0.4"
+mail-parser = { version = "0.11", default-features = false, features = ["full_encoding"] }
