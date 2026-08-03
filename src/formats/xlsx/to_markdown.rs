@@ -58,7 +58,11 @@ pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
 
     for sheet_name in &sheet_names {
-        let range = read_worksheet_range(&mut workbook, sheet_name)?;
+        // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
+        // take the whole workbook down with it — skip it and keep going.
+        let Ok(range) = read_worksheet_range(&mut workbook, sheet_name)? else {
+            continue;
+        };
         let raw_rows: Vec<&[Data]> = range.rows().collect();
         if raw_rows.is_empty() || raw_rows.iter().all(|r| row_is_empty_public(r)) {
             continue;
@@ -108,7 +112,11 @@ pub(super) fn to_markdown_with_images(data: &[u8], ext: &str) -> Result<(String,
 
     let mut parts: Vec<String> = Vec::new();
     for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
-        let range = read_worksheet_range(&mut workbook, sheet_name)?;
+        // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
+        // take the whole workbook down with it — skip it and keep going.
+        let Ok(range) = read_worksheet_range(&mut workbook, sheet_name)? else {
+            continue;
+        };
         let sheet_images = sheet_image_map.get(&sheet_idx);
         let raw_rows: Vec<&[Data]> = range.rows().collect();
         let no_data = raw_rows.is_empty() || raw_rows.iter().all(|r| row_is_empty_public(r));

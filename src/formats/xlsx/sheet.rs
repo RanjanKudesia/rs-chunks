@@ -70,7 +70,11 @@ pub fn build_sheet_chunks(
             .position(|name| name == &sheet_name)
             .unwrap_or(0);
 
-        let range = super::common::read_worksheet_range(&mut workbook, &sheet_name)?;
+        // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
+        // take the whole workbook down with it — skip it and keep going.
+        let Ok(range) = super::common::read_worksheet_range(&mut workbook, &sheet_name)? else {
+            continue;
+        };
 
         let rows: Vec<&[Data]> = range.rows().collect();
         if rows.is_empty() {

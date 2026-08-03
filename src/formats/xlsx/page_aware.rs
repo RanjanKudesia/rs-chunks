@@ -212,7 +212,11 @@ pub fn build_page_aware_chunks(
             .position(|name| name == &sheet_name)
             .unwrap_or(0);
 
-        let range = super::common::read_worksheet_range(&mut workbook, &sheet_name)?;
+        // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
+        // take the whole workbook down with it — skip it and keep going.
+        let Ok(range) = super::common::read_worksheet_range(&mut workbook, &sheet_name)? else {
+            continue;
+        };
         let (base_row, base_col) = range
             .start()
             .map(|(r, c)| (r as usize, c as usize))
