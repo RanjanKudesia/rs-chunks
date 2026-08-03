@@ -1,5 +1,8 @@
 # rs-chunks
 
+> **Part of [chunk-engine](https://github.com/RanjanKudesia/chunk-engine)** — one Rust engine, three byte-identical SDKs ([py-chunks](https://pypi.org/project/py-chunks/) · [js-chunks](https://www.npmjs.com/package/js-chunks) · [rs-chunks](https://crates.io/crates/rs-chunks)).
+> Docs, playground and benchmarks: **[chunkengine.dev](https://www.chunkengine.dev)** — and a ⭐ on the [hub repo](https://github.com/RanjanKudesia/chunk-engine) helps a lot.
+
 Fast, high-fidelity **document chunking for RAG** — a pure-Rust engine covering
 **36 file extensions** across 17 format families (Office, OpenDocument, PDF,
 email, ebooks, notebooks, delimited text, and more).
