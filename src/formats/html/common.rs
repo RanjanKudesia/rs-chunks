@@ -251,6 +251,86 @@ pub fn find_matching_tag_end(s: &str, from: usize, tag: &str) -> Option<usize> {
     None
 }
 
+// ── Optional end tags ─────────────────────────────────────────────────────────
+
+/// Elements that never have an end tag, so they must not be pushed on the
+/// open-element stack while looking for a block's implicit end.
+fn is_void_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input"
+            | "link" | "meta" | "param" | "source" | "track" | "wbr"
+    )
+}
+
+/// True when a start tag `next` implicitly closes a still-open `open` element.
+///
+/// HTML has always allowed these end tags to be omitted, and HTML4 pages —
+/// which is most hand-authored legacy markup — leave them out routinely.
+/// The list follows the "optional tags" section of the HTML spec.
+fn implicitly_closed_by(open: &str, next: &str) -> bool {
+    match open {
+        "p" => matches!(
+            next,
+            "address" | "article" | "aside" | "blockquote" | "details" | "div" | "dl"
+                | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
+                | "h3" | "h4" | "h5" | "h6" | "header" | "hgroup" | "hr" | "main"
+                | "menu" | "nav" | "ol" | "p" | "pre" | "section" | "table" | "ul"
+        ),
+        "li" => next == "li",
+        "dt" | "dd" => matches!(next, "dt" | "dd"),
+        "option" => matches!(next, "option" | "optgroup"),
+        "tr" => next == "tr",
+        "td" | "th" => matches!(next, "td" | "th" | "tr"),
+        "thead" | "tbody" => matches!(next, "tbody" | "tfoot"),
+        _ => false,
+    }
+}
+
+/// Find where a block ends, tolerating an omitted end tag.
+///
+/// Returns `(end_exclusive, had_explicit_close)`. `end_exclusive` is just past
+/// `</tag>` when there is one, and otherwise the offset of the markup that
+/// implicitly closed it — so the caller can resume there without skipping it.
+///
+/// The scan keeps a stack of elements opened since `from`. A closing tag that
+/// matches nothing on that stack must belong to an ancestor (`</div>`,
+/// `</body>`), which ends the block; a closing tag that does match is ordinary
+/// nested markup and is consumed. That distinction is what keeps `</a>` inside
+/// `<p>Hello <a>link</a> world` from truncating the paragraph at "Hello".
+pub fn find_block_end(s: &str, from: usize, tag: &str) -> (usize, bool) {
+    if let Some(end) = find_matching_tag_end(s, from, tag) {
+        return (end, true);
+    }
+    let bytes = s.as_bytes();
+    let mut stack: Vec<String> = Vec::new();
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let Some(parsed) = parse_tag_at(s, i) else {
+            i += 1;
+            continue;
+        };
+        if parsed.is_closing {
+            match stack.iter().rposition(|t| t == &parsed.name) {
+                Some(pos) => stack.truncate(pos),
+                // Unmatched close: it belongs to an ancestor, so we are past
+                // the end of this block.
+                None => return (i, false),
+            }
+        } else if stack.is_empty() && implicitly_closed_by(tag, &parsed.name) {
+            return (i, false);
+        } else if !parsed.is_self_closing && !is_void_element(&parsed.name) {
+            stack.push(parsed.name.clone());
+        }
+        i = parsed.end;
+    }
+    (s.len(), false)
+}
+
 pub fn is_ignored_container(tag: &str) -> bool {
     matches!(
         tag,
@@ -304,10 +384,9 @@ pub fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
             i = tag.end;
             continue;
         };
-        let Some(end) = find_matching_tag_end(html, tag.end, &tag.name) else {
-            i = tag.end;
-            continue;
-        };
+        // An omitted end tag used to discard the whole block: w3c_html40_cover.htm
+        // yielded 611 characters out of 53 KB. Infer the implicit close instead.
+        let (end, _explicit) = find_block_end(html, tag.end, &tag.name);
         if let Some(content) = extract_block_content(&html[i..end], &tag.name, block_type) {
             if !content.is_empty() {
                 let heading_level = heading_level_from_tag(&tag.name);
@@ -406,10 +485,11 @@ pub fn extract_tag_blocks<'a>(html: &'a str, tag: &str) -> Vec<&'a str> {
             i = parsed.end;
             continue;
         }
-        let Some(end) = find_matching_tag_end(html, parsed.end, tag) else {
+        let (end, _explicit) = find_block_end(html, parsed.end, tag);
+        if end <= i {
             i = parsed.end;
             continue;
-        };
+        }
         out.push(&html[i..end]);
         i = end;
     }
@@ -421,8 +501,10 @@ fn extract_inner_html(raw: &str, tag: &str) -> Option<String> {
     if open.is_closing || open.name != tag {
         return None;
     }
-    let close = find_last_close_tag(raw, tag)?;
-    Some(raw[open.end..close].to_string())
+    // With the end tag omitted, `raw` was already cut at the implicit
+    // boundary by find_block_end, so everything after the open tag is content.
+    let close = find_last_close_tag(raw, tag).unwrap_or(raw.len());
+    Some(raw[open.end..close.max(open.end)].to_string())
 }
 
 fn find_last_close_tag(html: &str, tag: &str) -> Option<usize> {
