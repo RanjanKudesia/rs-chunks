@@ -198,6 +198,9 @@ pub struct SlideContent {
     /// lives in a separate `ppt/diagrams/dataN.xml` part, so the parser can only
     /// record the ids here; `read_all_slides` resolves and reads them.
     pub diagram_rids: Vec<String>,
+    /// `r:id` values of any embedded charts on the slide. Like SmartArt, the
+    /// plotted numbers live in a separate `ppt/charts/chartN.xml` part.
+    pub chart_rids: Vec<String>,
 }
 
 impl SlideContent {
@@ -252,6 +255,20 @@ fn diagram_data_rid(attrs: Attributes<'_>) -> Option<String> {
         let key = attr.key.as_ref();
         let local = key.rsplit(|b| *b == b':').next().unwrap_or(key);
         if local == b"dm" {
+            let v = attr.unescape_value().ok()?.trim().to_string();
+            return (!v.is_empty()).then_some(v);
+        }
+    }
+    None
+}
+
+/// `<c:chart r:id="rId2"/>` inside a `<a:graphicData>` — the pointer to the
+/// part holding the plotted data.
+fn chart_rel_id(attrs: Attributes<'_>) -> Option<String> {
+    for attr in attrs.flatten() {
+        let key = attr.key.as_ref();
+        let local = key.rsplit(|b| *b == b':').next().unwrap_or(key);
+        if local == b"id" {
             let v = attr.unescape_value().ok()?.trim().to_string();
             return (!v.is_empty()).then_some(v);
         }
@@ -358,6 +375,13 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                             slide.diagram_rids.push(rid);
                         }
                     }
+                    // A chart contributes no text to the slide either — only
+                    // the pointer to the part holding its numbers.
+                    b"chart" => {
+                        if let Some(rid) = chart_rel_id(e.attributes()) {
+                            slide.chart_rids.push(rid);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -366,6 +390,13 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                 if local.as_slice() == b"relIds" {
                     if let Some(rid) = diagram_data_rid(e.attributes()) {
                         slide.diagram_rids.push(rid);
+                    }
+                }
+                // `<c:chart r:id=…/>` is self-closing, so this is the arm that
+                // actually fires for every chart in our fixtures.
+                if local.as_slice() == b"chart" {
+                    if let Some(rid) = chart_rel_id(e.attributes()) {
+                        slide.chart_rids.push(rid);
                     }
                 }
                 if local.as_slice() == b"ph" && sp_depth > 0 && !sp_ph_checked {
@@ -783,6 +814,19 @@ pub fn read_all_slides(
                 slide
                     .body_paragraphs
                     .extend(super::diagram::parse_diagram_xml(&bytes));
+            }
+        }
+        // Charts, same shape. The rows are pushed as body paragraphs so every
+        // chunking mode picks them up through `all_text()`.
+        for part in super::chart::resolve_chart_parts(archive, name, &slide.chart_rids) {
+            if let Ok(bytes) = read_zip_entry(archive, &part) {
+                let rows = super::chart::parse_chart_xml(&bytes);
+                if !rows.is_empty() {
+                    slide.body_paragraphs.push("Chart".to_string());
+                    for row in rows {
+                        slide.body_paragraphs.push(row.join(" | "));
+                    }
+                }
             }
         }
         // Load speaker notes via the slide's .rels file (best-effort; ignore failures).
