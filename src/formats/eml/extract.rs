@@ -26,6 +26,11 @@ pub struct EmlDocument {
     pub bcc: Vec<String>,
     pub date: Option<String>,
     pub message_id: Option<String>,
+    /// `In-Reply-To` and `References`. mail-parser has always exposed these and
+    /// nothing read them — the cheapest email-specific structure there is, and
+    /// the only thing that lets a consumer reconstruct a thread. (#37)
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
     pub body: String,
     pub attachments: Vec<EmlAttachment>,
     /// Inline / attached images as (filename, bytes) for `list_images`.
@@ -195,6 +200,17 @@ fn redecode_if_charset_mismatched(msg: &Message<'_>, decoded: &str) -> Option<St
     (replacement_ratio(text) < replacement_ratio(decoded)).then(|| text.trim().to_string())
 }
 
+/// Message-ids out of a threading header, which may hold one id or many.
+fn header_ids(value: &mail_parser::HeaderValue<'_>) -> Vec<String> {
+    match value {
+        mail_parser::HeaderValue::Text(t) => vec![t.to_string()],
+        mail_parser::HeaderValue::TextList(list) => {
+            list.iter().map(|t| t.to_string()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
     part.content_type().map(|ct| match ct.subtype() {
         Some(sub) => format!("{}/{}", ct.ctype(), sub),
@@ -211,6 +227,8 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
         bcc: format_addresses(msg.bcc()),
         date: msg.date().map(|d| d.to_rfc3339()),
         message_id: msg.message_id().map(|s| s.to_string()),
+        in_reply_to: header_ids(msg.in_reply_to()),
+        references: header_ids(msg.references()),
         body: select_body(msg),
         ..Default::default()
     };

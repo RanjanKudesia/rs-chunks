@@ -76,7 +76,25 @@ fn split_keep_eol(raw: &[u8]) -> Vec<&[u8]> {
 
 /// Assemble an mbox into one markdown document with a section per message, plus
 /// the collected images and the message count.
-pub fn mbox_to_markdown(raw: &[u8]) -> (String, Vec<(String, Vec<u8>)>, usize) {
+/// What a `.mbox` chunk needs to say which message it came from.
+///
+/// A 152-message mailbox gave every chunk the same
+/// `{source_type, message_count}` — the per-message envelope was parsed and
+/// thrown away, so "which message is this?" was unanswerable. (#36)
+#[derive(Clone)]
+pub struct MboxMessageInfo {
+    pub index: usize,
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub date: Option<String>,
+    pub message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+}
+
+pub fn mbox_to_markdown(
+    raw: &[u8],
+) -> (String, Vec<(String, Vec<u8>)>, usize, Vec<MboxMessageInfo>) {
     let messages = split_mbox(raw);
     let count = messages.len();
     let mut out = String::new();
@@ -87,8 +105,18 @@ pub fn mbox_to_markdown(raw: &[u8]) -> (String, Vec<(String, Vec<u8>)>, usize) {
         if count == 1 { "" } else { "s" }
     ));
 
+    let mut infos: Vec<MboxMessageInfo> = Vec::with_capacity(count);
     for (i, msg_bytes) in messages.iter().enumerate() {
         let doc = parse_message_bytes(msg_bytes);
+        infos.push(MboxMessageInfo {
+            index: i + 1,
+            subject: doc.subject.clone(),
+            from: doc.from.clone(),
+            date: doc.date.clone(),
+            message_id: doc.message_id.clone(),
+            in_reply_to: doc.in_reply_to.clone(),
+            references: doc.references.clone(),
+        });
         out.push_str(&format!("## Message {}\n\n", i + 1));
         out.push_str(&document_to_markdown(&doc, 3));
         out.push_str("\n\n");
@@ -98,5 +126,5 @@ pub fn mbox_to_markdown(raw: &[u8]) -> (String, Vec<(String, Vec<u8>)>, usize) {
         }
     }
 
-    (out.trim().to_string(), images, count)
+    (out.trim().to_string(), images, count, infos)
 }
