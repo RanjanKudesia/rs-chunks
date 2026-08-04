@@ -282,7 +282,11 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
             if !paragraph.is_empty() {
                 flush_paragraph(&mut blocks, &mut paragraph);
             }
-            list.push(compact.to_string());
+            // Keep the leading whitespace: a list's nesting is carried entirely
+            // by its indentation, and pushing the trimmed line here destroyed it
+            // before any consumer could see it. `trimmed` is the line with only
+            // trailing whitespace removed. (#27)
+            list.push(trimmed.to_string());
             i += 1;
             continue;
         }
@@ -431,9 +435,31 @@ pub fn is_list_item_line(line: &str) -> bool {
 
 // ── Text cleaning ─────────────────────────────────────────────────────────────
 
+/// Widest indent kept, so a pathological input cannot blow up a chunk.
+const MAX_LIST_INDENT: usize = 24;
+
+/// Leading whitespace of `line`, in spaces, with a tab counted as four.
+fn indent_width(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
 pub fn strip_block_content(text: &str, strip_bullets: bool) -> String {
     text.lines()
         .map(|line| {
+            // A list's nesting lives entirely in its indentation, and trimming
+            // every line flattened it: a three-level list came out as seven
+            // unrelated lines. That hurts most on JSON, where nested objects are
+            // rendered as indented bullets and the structure is the meaning.
+            // Bullet markers are still stripped — the indent alone carries the
+            // hierarchy, without putting Markdown syntax back into the content.
+            let indent = if strip_bullets {
+                indent_width(line).min(MAX_LIST_INDENT)
+            } else {
+                0
+            };
             let mut l = line.trim_start();
             while l.starts_with('>') {
                 l = l.trim_start_matches('>').trim_start();
@@ -443,9 +469,14 @@ pub fn strip_block_content(text: &str, strip_bullets: bool) -> String {
             } else {
                 l
             };
-            strip_inline(l).trim().to_string()
+            let body = strip_inline(l).trim().to_string();
+            if body.is_empty() || indent == 0 {
+                body
+            } else {
+                format!("{}{}", " ".repeat(indent), body)
+            }
         })
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
