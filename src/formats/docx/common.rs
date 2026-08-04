@@ -212,6 +212,14 @@ pub(super) struct DocxBlock {
     pub image_alt: Option<String>,
     /// Relationship id from `<a:blip r:embed="rIdN"/>` for inline images.
     pub image_rid: Option<String>,
+    /// Every `<a:blip r:embed>` in the paragraph, in document order, each with
+    /// the alt text of its own drawing.
+    ///
+    /// `image_rid`/`image_alt` above hold only the FIRST, which silently
+    /// dropped the rest: a paragraph whose first drawing is an unsupported
+    /// `.wmf`/`.emf` returned no image at all, because the supported `.png`
+    /// beside it was never even captured (#13).
+    pub images: Vec<(String, Option<String>)>,
     /// IDs of footnotes referenced by `<w:footnoteReference>` inside this
     /// paragraph, in document order. Resolved against `word/footnotes.xml`
     /// at the structural / chunking layer so anchored footnote text lands
@@ -403,11 +411,25 @@ pub(super) fn parse_docx_paragraph_events_with_images(
                 }
 
                 if block.has_drawing {
-                    items.push(ParaOrImage::Image {
-                        rid: block.image_rid,
-                        alt: block.image_alt,
-                        signal,
-                    });
+                    if block.images.is_empty() {
+                        // A drawing with no resolvable blip (chart, shape, OLE
+                        // object) still counts as one image slot.
+                        items.push(ParaOrImage::Image {
+                            rid: block.image_rid,
+                            alt: block.image_alt,
+                            signal,
+                        });
+                    } else {
+                        // One item per blip, so a gallery paragraph yields every
+                        // image rather than only its first. (#13)
+                        for (rid, alt) in block.images {
+                            items.push(ParaOrImage::Image {
+                                rid: Some(rid),
+                                alt: alt.or_else(|| block.image_alt.clone()),
+                                signal,
+                            });
+                        }
+                    }
                 }
             }
             DocxBlockKind::Table => {
@@ -739,6 +761,8 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
     let mut para_outline_lvl: Option<u32> = None;
     let mut para_image_alt: Option<String> = None;
     let mut para_image_rid: Option<String> = None;
+    let mut para_images: Vec<(String, Option<String>)> = Vec::new();
+    let mut pending_alt: Option<String> = None;
     let mut para_footnote_refs: Vec<String> = Vec::new();
     let mut para_endnote_refs: Vec<String> = Vec::new();
     let mut para_num_id: Option<u32> = None;
@@ -840,6 +864,8 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                         para_outline_lvl = None;
                         para_image_alt = None;
                         para_image_rid = None;
+                        para_images.clear();
+                        pending_alt = None;
                         para_footnote_refs.clear();
                         para_endnote_refs.clear();
                         para_num_id = None;
@@ -887,15 +913,27 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                 } else if (qname_eq(name, b"docPr") || qname_eq(name, b"cNvPr"))
                     && in_paragraph
                     && drawing_depth > 0
-                    && para_image_alt.is_none()
                 {
-                    para_image_alt = harvest_image_alt(&e);
-                } else if qname_eq(name, b"blip")
-                    && in_paragraph
-                    && drawing_depth > 0
-                    && para_image_rid.is_none()
-                {
-                    para_image_rid = harvest_blip_embed(&e);
+                    // Alt text belongs to the drawing it sits in, so remember it
+                    // for the next blip rather than only for the paragraph's
+                    // first image.
+                    if let Some(alt) = harvest_image_alt(&e) {
+                        if para_image_alt.is_none() {
+                            para_image_alt = Some(alt.clone());
+                        }
+                        pending_alt.get_or_insert(alt);
+                    }
+                } else if qname_eq(name, b"blip") && in_paragraph && drawing_depth > 0 {
+                    if let Some(rid) = harvest_blip_embed(&e) {
+                        if para_image_rid.is_none() {
+                            para_image_rid = Some(rid.clone());
+                        }
+                        // Keep EVERY blip: a paragraph can hold a gallery, and
+                        // the first one may be a format we cannot decode. (#13)
+                        if !para_images.iter().any(|(r, _)| *r == rid) {
+                            para_images.push((rid, pending_alt.take()));
+                        }
+                    }
                 } else if qname_eq(name, b"footnoteReference") && in_paragraph {
                     if let Some(id) = harvest_note_id(&e) {
                         para_footnote_refs.push(id);
@@ -1036,15 +1074,27 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                 } else if (qname_eq(name, b"docPr") || qname_eq(name, b"cNvPr"))
                     && in_paragraph
                     && drawing_depth > 0
-                    && para_image_alt.is_none()
                 {
-                    para_image_alt = harvest_image_alt(&e);
-                } else if qname_eq(name, b"blip")
-                    && in_paragraph
-                    && drawing_depth > 0
-                    && para_image_rid.is_none()
-                {
-                    para_image_rid = harvest_blip_embed(&e);
+                    // Alt text belongs to the drawing it sits in, so remember it
+                    // for the next blip rather than only for the paragraph's
+                    // first image.
+                    if let Some(alt) = harvest_image_alt(&e) {
+                        if para_image_alt.is_none() {
+                            para_image_alt = Some(alt.clone());
+                        }
+                        pending_alt.get_or_insert(alt);
+                    }
+                } else if qname_eq(name, b"blip") && in_paragraph && drawing_depth > 0 {
+                    if let Some(rid) = harvest_blip_embed(&e) {
+                        if para_image_rid.is_none() {
+                            para_image_rid = Some(rid.clone());
+                        }
+                        // Keep EVERY blip: a paragraph can hold a gallery, and
+                        // the first one may be a format we cannot decode. (#13)
+                        if !para_images.iter().any(|(r, _)| *r == rid) {
+                            para_images.push((rid, pending_alt.take()));
+                        }
+                    }
                 } else if qname_eq(name, b"footnoteReference") && in_paragraph {
                     if let Some(id) = harvest_note_id(&e) {
                         para_footnote_refs.push(id);
@@ -1240,6 +1290,7 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                                     rendered_page_break: false,
                                     image_alt: None,
                                     image_rid: None,
+                            images: Vec::new(),
                                     footnote_refs: Vec::new(),
                                     endnote_refs: Vec::new(),
                                     num_id: None,
@@ -1270,6 +1321,7 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                                 rendered_page_break: para_has_rendered_break,
                                 image_alt: para_image_alt.take(),
                                 image_rid: para_image_rid.take(),
+                            images: std::mem::take(&mut para_images),
                                 footnote_refs: std::mem::take(&mut para_footnote_refs),
                                 endnote_refs: std::mem::take(&mut para_endnote_refs),
                                 num_id: para_num_id,
@@ -1298,6 +1350,11 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                                     rendered_page_break: para_has_rendered_break && i == 0,
                                     image_alt: if i == 0 { para_image_alt.clone() } else { None },
                                     image_rid: if i == 0 { para_image_rid.clone() } else { None },
+                                    images: if i == 0 {
+                                        para_images.clone()
+                                    } else {
+                                        Vec::new()
+                                    },
                                     footnote_refs: if i == 0 {
                                         para_footnote_refs.clone()
                                     } else {

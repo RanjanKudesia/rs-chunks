@@ -234,6 +234,25 @@ fn lower_blocks_to_elements(raw: Vec<DocxBlock>) -> Vec<DocumentElement> {
                         endnote_refs: block.endnote_refs.clone(),
                         image_rid: block.image_rid.clone(),
                     });
+
+                    // A paragraph can hold a whole gallery, but only its first
+                    // blip rides along on the element above — the rest were
+                    // dropped. poi_VariousPictures.docx puts five drawings in
+                    // one <w:p>, and because the first is an .wmf we cannot
+                    // decode, it returned NO images at all. (#13)
+                    for (rid, alt) in block.images.iter().skip(1) {
+                        out.push(DocumentElement {
+                            content_type: ContentType::Image,
+                            text: image_placeholder(
+                                alt.as_deref().or(block.image_alt.as_deref()),
+                            ),
+                            page_number: Some(block_page),
+                            heading_level: None,
+                            footnote_refs: Vec::new(),
+                            endnote_refs: Vec::new(),
+                            image_rid: Some(rid.clone()),
+                        });
+                    }
                 }
             }
         }
