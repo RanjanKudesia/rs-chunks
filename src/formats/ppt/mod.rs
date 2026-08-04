@@ -11,7 +11,7 @@ pub mod to_markdown;
 
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
-use crate::formats::doc::records_to_chunks;
+use crate::formats::doc::{records_to_chunks, validate_mode_args};
 use crate::formats::doc::structural::{
     build_page_aware_chunks, build_section_chunks, build_semantic_chunks, build_sentence_chunks,
     build_sliding_window_chunks, build_structural_chunks,
@@ -28,6 +28,7 @@ pub fn chunk(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     validate_ppt_path(file_path).map_err(ChunkError::InvalidArg)?;
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let paragraphs = load_ppt_paragraphs(file_path).map_err(ChunkError::Parse)?;
     Ok(records_to_chunks(file_path, build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?))
 }
@@ -53,6 +54,7 @@ fn build_by_mode(
 
 /// No-filesystem entry (wasm/browser).
 pub fn chunk_from_bytes(data: &[u8], source: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let paragraphs = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     Ok(records_to_chunks(source, build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?))
 }
@@ -99,6 +101,7 @@ pub fn chunk_with_images(
     paragraphs_per_page: usize,
 ) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
     validate_ppt_path(file_path).map_err(ChunkError::InvalidArg)?;
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let res = match mode {
         "default" | "structural" => images::chunk_with_images_impl(file_path, build_structural_chunks),
         "section" => images::chunk_with_images_impl(file_path, build_section_chunks),
@@ -124,6 +127,7 @@ pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, 
 /// No-filesystem `chunk_with_images` (wasm/browser). `filename` is recorded as
 /// each chunk's `source`.
 pub fn chunk_with_images_from_bytes(bytes: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let res = match mode {
         "default" | "structural" => images::chunk_with_images_impl_bytes(bytes, filename, build_structural_chunks),
         "section" => images::chunk_with_images_impl_bytes(bytes, filename, build_section_chunks),

@@ -40,6 +40,31 @@ pub(crate) fn records_to_chunks(file_path: &str, records: Vec<ChunkRecord>) -> V
         .collect()
 }
 
+/// Reject the argument combinations a mode cannot express, *before* any
+/// parsing work happens.
+///
+/// The builders themselves degrade to an empty `Vec` on bad arguments, which
+/// silently turns a caller mistake into "this document has no content".
+/// py_chunks has always raised instead, and that is the better behaviour, so it
+/// moves into the engine rather than staying in the binding
+/// (CONSOLIDATION_PLAN.md §4). `.ppt` calls this too — it reuses these builders.
+pub(crate) fn validate_mode_args(
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<()> {
+    let bad = |m: &str| Err(ChunkError::InvalidArg(m.to_string()));
+    match mode {
+        "sliding_window" if window_size == 0 => bad("window_size must be greater than 0"),
+        "sliding_window" if overlap >= window_size => bad("overlap must be less than window_size"),
+        "sentence" if sentences_per_chunk == 0 => bad("sentences_per_chunk must be greater than 0"),
+        "page_aware" if paragraphs_per_page == 0 => bad("paragraphs_per_page must be greater than 0"),
+        _ => Ok(()),
+    }
+}
+
 pub fn chunk(
     file_path: &str,
     mode: &str,
@@ -49,6 +74,7 @@ pub fn chunk(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     validate_doc_path(file_path).map_err(ChunkError::InvalidArg)?;
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let paragraphs = load_doc_paragraphs(file_path).map_err(ChunkError::Parse)?;
     let records = build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     Ok(records_to_chunks(file_path, records))
@@ -76,6 +102,7 @@ fn build_by_mode(
 /// No-filesystem entry (wasm/browser). `source` label is used for the `source`
 /// metadata field (pass the filename).
 pub fn chunk_from_bytes(data: &[u8], source: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let paragraphs = structural::load_doc_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     let records = build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     Ok(records_to_chunks(source, records))
@@ -123,6 +150,7 @@ pub fn chunk_with_images(
     paragraphs_per_page: usize,
 ) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
     validate_doc_path(file_path).map_err(ChunkError::InvalidArg)?;
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let res = match mode {
         "default" | "structural" => images::chunk_with_images_impl(file_path, build_structural_chunks),
         "section" => images::chunk_with_images_impl(file_path, build_section_chunks),
@@ -148,6 +176,7 @@ pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, 
 /// No-filesystem `chunk_with_images` (wasm/browser). `filename` is recorded as
 /// each chunk's `source`.
 pub fn chunk_with_images_from_bytes(bytes: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let res = match mode {
         "default" | "structural" => images::chunk_with_images_impl_bytes(bytes, filename, build_structural_chunks),
         "section" => images::chunk_with_images_impl_bytes(bytes, filename, build_section_chunks),
