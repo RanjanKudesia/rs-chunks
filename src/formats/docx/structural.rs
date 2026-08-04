@@ -15,10 +15,25 @@ const MAX_DOCX_AUX_XML_BYTES: u64 = 10 * 1024 * 1024;
 /// `semantic_chunks` before emission.
 const LONG_PARAGRAPH_THRESHOLD: usize = 500;
 
-/// A paragraph whose visible text length (in bytes) is strictly below this
+/// A paragraph whose visible text length (in characters) is strictly below this
 /// threshold is classified as `ShortDisconnectedParagraph` and aggregated
 /// with neighbouring shorts before emission.
 const SHORT_PARAGRAPH_THRESHOLD: usize = 80;
+
+/// Whether a paragraph reads as a finished thought rather than a stray
+/// fragment.
+///
+/// The short-paragraph bucket exists to glue captions, labels and stray lines
+/// back together. Length alone cannot tell those from a complete sentence in a
+/// dense script: `这是一个中文段落，用于测试提取和再生成。` is a whole sentence in
+/// 20 characters, and measuring bytes instead only moves the cliff rather than
+/// removing it. Ending on sentence-final punctuation is the script-neutral
+/// signal — `Figure 3` and `Screen Reader` do not, in any language.
+fn is_complete_sentence(text: &str) -> bool {
+    const SENTENCE_END: [char; 8] = ['.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}'];
+    let t = text.trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}', ' ']);
+    t.chars().count() >= 12 && t.ends_with(SENTENCE_END)
+}
 
 /// Maximum target size (in bytes) for one semantic sub-chunk when splitting
 /// a long paragraph or image-caption block.
@@ -307,7 +322,7 @@ fn classify_paragraph_content(
         ContentType::Image
     } else if text.len() > LONG_PARAGRAPH_THRESHOLD {
         ContentType::LongSingleParagraph
-    } else if text.len() < SHORT_PARAGRAPH_THRESHOLD {
+    } else if text.len() < SHORT_PARAGRAPH_THRESHOLD && !is_complete_sentence(text) {
         ContentType::ShortDisconnectedParagraph
     } else {
         ContentType::PlainParagraph
