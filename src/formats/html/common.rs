@@ -571,27 +571,21 @@ fn decode_entity(entity: &str) -> Option<String> {
         "gt" => Some(">".to_string()),
         "quot" => Some("\"".to_string()),
         "apos" | "#39" => Some("'".to_string()),
+        // These four are deliberately lossy: HTML is flattened to plain text,
+        // and a non-breaking space or a bullet glyph reads better normalised.
+        // Everything else should be its real character.
         "nbsp" => Some(" ".to_string()),
         "bull" => Some("*".to_string()),
         "mdash" | "ndash" | "minus" => Some("-".to_string()),
         _ => {
-            if let Some(hex) = entity
-                .strip_prefix("#x")
-                .or_else(|| entity.strip_prefix("#X"))
-            {
-                return u32::from_str_radix(hex, 16)
-                    .ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string());
-            }
-            if let Some(dec) = entity.strip_prefix('#') {
-                return dec
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string());
-            }
-            None
+            // Numeric references and the rest of the named table live in the
+            // shared resolver, so HTML gets the same coverage as the XML
+            // walkers instead of its own short list — "&copy;" used to survive
+            // into the output verbatim.
+            let resolved = crate::entities::resolve_entity(entity);
+            // The resolver echoes "&name;" back for anything it doesn't know;
+            // returning None there keeps the original text untouched.
+            (resolved != format!("&{entity};")).then_some(resolved)
         }
     }
 }

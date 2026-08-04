@@ -443,6 +443,21 @@ pub fn strip_list_prefix(line: &str) -> &str {
     t
 }
 
+/// CommonMark forbids `_` from opening or closing emphasis *inside* a word:
+/// a `_` run flanked by alphanumerics on both sides is literal text. Without
+/// this rule `snake_case_word` renders as `snakecaseword`, which is wrong for
+/// Markdown itself and doubly wrong for the formats that assemble Markdown from
+/// a source that never had emphasis at all (ODF, `.msg`, PDF).
+///
+/// `*` is deliberately NOT subject to this rule — CommonMark does allow
+/// intraword `*` emphasis, so `star*inside*word` really is emphasis.
+fn underscore_is_intraword(chars: &[char], run_start: usize, run_len: usize) -> bool {
+    let before = run_start.checked_sub(1).map(|j| chars[j]);
+    let after = chars.get(run_start + run_len).copied();
+    matches!(before, Some(c) if c.is_alphanumeric())
+        && matches!(after, Some(c) if c.is_alphanumeric())
+}
+
 pub fn strip_inline(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
@@ -587,6 +602,19 @@ pub fn strip_inline(s: &str) -> String {
                     i += 1;
                 }
                 out.push_str(inner.trim());
+            }
+            // A `_` run wedged between two alphanumerics is literal text,
+            // not an emphasis delimiter (CommonMark left/right-flanking rule).
+            '_' if underscore_is_intraword(
+                &chars,
+                i,
+                chars[i..].iter().take_while(|c| **c == '_').count(),
+            ) =>
+            {
+                while i < n && chars[i] == '_' {
+                    out.push('_');
+                    i += 1;
+                }
             }
             '_' => {
                 if i + 2 < n && chars[i + 1] == '_' && chars[i + 2] == '_' {
