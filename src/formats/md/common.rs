@@ -518,6 +518,30 @@ fn underscore_is_intraword(chars: &[char], run_start: usize, run_len: usize) -> 
         && matches!(after, Some(c) if c.is_alphanumeric())
 }
 
+/// `Some(alt)` when `tag` is an `<img …>` start tag; the alt text may be empty.
+///
+/// Only `alt`/`title` are read — `src` is a path, not something a reader wants
+/// in the text.
+fn html_img_alt(tag: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let name = lower.trim_start_matches('<').trim_start();
+    if !(name.starts_with("img ") || name.starts_with("img>") || name.starts_with("img/")) {
+        return None;
+    }
+    for attr in ["alt", "title"] {
+        for quote in ['"', '\''] {
+            let needle = format!("{attr}={quote}");
+            if let Some(start) = lower.find(&needle) {
+                let from = start + needle.len();
+                if let Some(len) = tag[from..].find(quote) {
+                    return Some(tag[from..from + len].to_string());
+                }
+            }
+        }
+    }
+    Some(String::new())
+}
+
 pub fn strip_inline(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
@@ -531,11 +555,22 @@ pub fn strip_inline(s: &str) -> String {
                 i += 2;
             }
             '<' if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '/') => {
+                let tag_start = i;
                 while i < n && chars[i] != '>' {
                     i += 1;
                 }
                 if i < n {
                     i += 1;
+                }
+                // Raw <img> is as much an image reference as ![](…) is, and
+                // Markdown allows it — Jupyter notebooks use it constantly. It
+                // was being swallowed with the rest of the inline HTML. (#41/#42)
+                let tag: String = chars[tag_start..i].iter().collect();
+                if let Some(alt) = html_img_alt(&tag) {
+                    match alt.trim() {
+                        "" => out.push_str("[Image]"),
+                        a => out.push_str(&format!("[Image: {a}]")),
+                    }
                 }
             }
             '!' if i + 1 < n && chars[i + 1] == '[' => {
@@ -556,8 +591,15 @@ pub fn strip_inline(s: &str) -> String {
                         i += 1;
                     }
                 }
-                if !alt.is_empty() {
-                    out.push_str(&alt);
+                // An image with no alt text used to leave NOTHING behind, so
+                // every image reference vanished from the chunks even though
+                // get_markdown showed it (#41) — and a notebook made only of
+                // image references produced zero chunks at all (#42). Use the
+                // same placeholder docx and pptx already use, so a reader can
+                // tell an image was there.
+                match alt.trim() {
+                    "" => out.push_str("[Image]"),
+                    a => out.push_str(&format!("[Image: {a}]")),
                 }
             }
             '[' if i + 1 < n && chars[i + 1] == '^' => {
