@@ -171,7 +171,36 @@ pub fn heading_path_strings(stack: &[(u8, String)]) -> Vec<String> {
 
 // ── Markdown block parser ─────────────────────────────────────────────────────
 
+/// Split any block that is too large to ever be one chunk.
+///
+/// Paragraphs were bounded downstream, but lists, tables and code blocks were
+/// carried whole into every mode. A TopoJSON document rendered as a single
+/// bullet list produced one 764,655-character chunk — orders of magnitude past
+/// what an embedding model accepts, which defeats the point of chunking.
+///
+/// Doing it here rather than in each mode means all seven get it, and get it
+/// the same way. A table repeats its header and separator in each part so every
+/// part stands alone; lines are never broken mid-way, so no list item or table
+/// row is mangled.
+fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let repeat_prefix = if block.block_type == MdBlockType::Table { 2 } else { 0 };
+        for part in crate::shared::split_block_on_lines(&block.content, MAX_CHUNK_CHARS, repeat_prefix) {
+            out.push(MdBlock {
+                block_type: block.block_type,
+                content: part,
+            });
+        }
+    }
+    out
+}
+
 pub fn parse_markdown_blocks(text: &str) -> Vec<MdBlock> {
+    bound_block_size(parse_markdown_blocks_unbounded(text))
+}
+
+fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
     let mut blocks: Vec<MdBlock> = Vec::new();
     let mut lines: Vec<&str> = text.lines().collect();
 

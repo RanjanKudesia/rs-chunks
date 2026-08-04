@@ -198,6 +198,46 @@ pub fn split_sentences(text: &str) -> Vec<String> {
 
 /// Splits `text` into chunks of at most `max_chars`, breaking at sentence
 /// boundaries where possible.
+/// Split a block that is too large to be one chunk, on line boundaries.
+///
+/// Paragraphs were already bounded by [`split_at_sentences`], but lists, tables
+/// and code blocks were emitted whole however big they got. A single TopoJSON
+/// object rendered as one bullet list produced a 764,655-character chunk —
+/// orders of magnitude past what any embedding model accepts, which makes the
+/// chunk useless for the one job this library exists to do.
+///
+/// Lines are never broken mid-way, so a list item or table row stays intact. A
+/// single line longer than `max_chars` is emitted alone rather than mangled.
+/// `repeat_prefix` re-emits the leading lines (a table's header and separator)
+/// at the top of every part, so each part stays readable on its own.
+pub fn split_block_on_lines(content: &str, max_chars: usize, repeat_prefix: usize) -> Vec<String> {
+    if content.chars().count() <= max_chars {
+        return vec![content.to_string()];
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let prefix: Vec<&str> = lines.iter().take(repeat_prefix).copied().collect();
+    let prefix_len: usize = prefix.iter().map(|l| l.chars().count() + 1).sum();
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = prefix.clone();
+    let mut cur_len = prefix_len;
+
+    for line in lines.iter().skip(repeat_prefix) {
+        let add = line.chars().count() + 1;
+        if cur_len + add > max_chars && cur.len() > prefix.len() {
+            parts.push(cur.join("\n"));
+            cur = prefix.clone();
+            cur_len = prefix_len;
+        }
+        cur.push(line);
+        cur_len += add;
+    }
+    if cur.len() > prefix.len() || parts.is_empty() {
+        parts.push(cur.join("\n"));
+    }
+    parts
+}
+
 pub fn split_at_sentences(text: &str, max_chars: usize) -> Vec<String> {
     if text.len() <= max_chars {
         return vec![text.trim().to_string()];
