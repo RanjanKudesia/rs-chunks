@@ -73,6 +73,16 @@ fn ensure_pdf(file_path: &str) -> Result<()> {
 fn load(file_path: &str, embed_images: bool) -> Result<Loaded> {
     ensure_pdf(file_path)?;
     let conv = liteparse_backend::pdf_to_markdown(file_path, embed_images).map_err(ChunkError::Parse)?;
+    // Say what actually happened. A scanned or otherwise text-less PDF used to
+    // fall through to the Markdown chunker and surface as "Markdown file is
+    // empty after decoding", which names the wrong format and gives the caller
+    // nothing to act on. (#56)
+    if conv.markdown.trim().is_empty() {
+        return Err(ChunkError::Parse(format!(
+            "PDF contains no extractable text ({} page(s) scanned or image-only).              OCR is not enabled, and page-image rendering is not implemented, so there is nothing to return.",
+            conv.total_pages
+        )));
+    }
     let images = conv.images.into_iter().map(|img| (img.name, img.bytes)).collect();
     Ok(pdf_loaded(conv.markdown, images, conv.total_pages))
 }

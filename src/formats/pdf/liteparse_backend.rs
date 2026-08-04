@@ -25,6 +25,20 @@ pub struct PdfConversion {
     pub total_pages: usize,
 }
 
+/// True when a page's markdown holds anything beyond empty code fences.
+///
+/// liteparse renders a page with no extractable text as an empty fenced block
+/// (```` ```text\n\n``` ````), which is not the empty string — so a plain
+/// `is_empty` filter let it through and a 100-page contentless PDF produced 100
+/// chunks of `` ```text `` typed `code_block`. A fenced block with real lines
+/// inside is genuine content and still passes.
+fn page_has_content(markdown: &str) -> bool {
+    markdown
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .any(|l| !l.trim().is_empty())
+}
+
 pub fn pdf_to_markdown(
     file_path: &str,
     embed_images: bool,
@@ -57,7 +71,7 @@ pub fn pdf_to_markdown(
             .pages
             .iter()
             .map(|p| p.markdown.trim_end().to_string())
-            .filter(|m| !m.is_empty())
+            .filter(|m| page_has_content(m))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
