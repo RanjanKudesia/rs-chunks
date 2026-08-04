@@ -77,9 +77,12 @@ fn load(file_path: &str, embed_images: bool) -> Result<Loaded> {
     // fall through to the Markdown chunker and surface as "Markdown file is
     // empty after decoding", which names the wrong format and gives the caller
     // nothing to act on. (#56)
-    if conv.markdown.trim().is_empty() {
+    // No text AND no images means there is genuinely nothing to return. With
+    // list_images on, a scanned PDF yields one rendered image per page instead
+    // (supported-formats.mdx), so that path is not an error.
+    if conv.markdown.trim().is_empty() && conv.images.is_empty() {
         return Err(ChunkError::Parse(format!(
-            "PDF contains no extractable text ({} page(s) scanned or image-only).              OCR is not enabled, and page-image rendering is not implemented, so there is nothing to return.",
+            "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
             conv.total_pages
         )));
     }

@@ -75,7 +75,7 @@ pub fn pdf_to_markdown(
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
-        let images = if embed_images {
+        let mut images: Vec<PdfImage> = if embed_images {
             result
                 .images
                 .into_iter()
@@ -89,6 +89,24 @@ pub fn pdf_to_markdown(
         } else {
             Vec::new()
         };
+
+        // A scanned PDF has no text and no embedded image XObjects — the page
+        // *is* the picture. supported-formats.mdx promises one image per page
+        // in that case, so render them. Only on the text-less path: a PDF that
+        // has text keeps its own embedded images and must not be rasterised.
+        if embed_images && images.is_empty() && markdown.trim().is_empty() && total_pages > 0 {
+            let shots = parser
+                .screenshot(&path, None)
+                .await
+                .map_err(|e| format!("liteparse failed to render PDF pages: {e}"))?;
+            images = shots
+                .into_iter()
+                .map(|s| PdfImage {
+                    name: format!("page_{}.png", s.page_num),
+                    bytes: s.image_bytes,
+                })
+                .collect();
+        }
 
         Ok(PdfConversion {
             markdown,

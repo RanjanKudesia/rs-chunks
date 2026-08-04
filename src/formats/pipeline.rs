@@ -138,13 +138,18 @@ pub(crate) fn chunk_with_images(
         .iter()
         .map(|(name, _)| Chunk::new(name.clone(), "image", serde_json::json!({ "image_name": name })))
         .collect();
-    chunks.extend(chunk(
-        loaded,
-        mode,
-        window_size,
-        overlap,
-        sentences_per_chunk,
-        paragraphs_per_page,
-    )?);
+    // A scanned PDF has images but no markdown to chunk. Running the text
+    // chunker on an empty string errors ("Markdown file is empty after
+    // decoding") and would throw the images away — the images ARE the output.
+    if !loaded.markdown.trim().is_empty() {
+        chunks.extend(chunk(
+            loaded,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        )?);
+    }
     Ok((chunks, dedup_images(loaded.images.clone())))
 }
