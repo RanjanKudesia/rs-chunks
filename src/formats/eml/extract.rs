@@ -2,7 +2,7 @@
 //! markdown document (header block + body + attachments), mirroring the `.msg`
 //! pipeline so both email formats share output shape and the Markdown chunker.
 
-use mail_parser::{Address, Message, MessageParser, MimeHeaders, PartType};
+use mail_parser::{Address, Encoding, Message, MessageParser, MimeHeaders, PartType};
 
 use crate::formats::html::to_markdown::html_to_markdown_str;
 
@@ -70,6 +70,11 @@ fn select_body(msg: &Message) -> String {
     if let Some(text) = msg.body_text(0) {
         let t = text.trim();
         if !t.is_empty() {
+            // The declared charset can be wrong; check the result before
+            // trusting it. (#72)
+            if let Some(fixed) = redecode_if_charset_mismatched(msg, t) {
+                return fixed;
+            }
             return if primary_text_is_html {
                 crate::formats::html::common::decode_html_entities(t)
             } else {
@@ -149,6 +154,45 @@ fn readable_attachment_text(text: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_string())
+}
+
+/// Fraction of a string that is U+FFFD. A charset mismatch produces these in
+/// bulk; ordinary text has none.
+fn replacement_ratio(text: &str) -> f32 {
+    let total = text.chars().count();
+    if total == 0 {
+        return 0.0;
+    }
+    text.chars().filter(|c| *c == '\u{fffd}').count() as f32 / total as f32
+}
+
+/// Re-decode a body whose declared charset clearly did not match the bytes.
+///
+/// `mimekit_jwz.mbox` has a Japanese message declaring `charset=ISO-2022-JP`
+/// while the bytes on disk are UTF-8; honouring the label produced 687
+/// replacement characters from a file with only 16 invalid sequences of its
+/// own. A declared charset is a claim, and this is the same rule
+/// `text_encoding.rs` already applies to `.txt` — verify before trusting. (#72)
+///
+/// Only untransformed bodies are retried; base64/quoted-printable ones have
+/// already been transfer-decoded and re-deriving them here would be wrong.
+fn redecode_if_charset_mismatched(msg: &Message<'_>, decoded: &str) -> Option<String> {
+    if replacement_ratio(decoded) < 0.05 {
+        return None;
+    }
+    let raw = msg.raw_message();
+    let part = msg
+        .text_body
+        .first()
+        .and_then(|id| msg.parts.get(*id as usize))?;
+    if !matches!(part.encoding, Encoding::None) {
+        return None;
+    }
+    let (from, to) = (part.offset_body as usize, part.offset_end as usize);
+    let slice = raw.get(from..to.min(raw.len()))?;
+    let text = std::str::from_utf8(slice).ok()?;
+    // Only take the retry if it is genuinely cleaner.
+    (replacement_ratio(text) < replacement_ratio(decoded)).then(|| text.trim().to_string())
 }
 
 fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
