@@ -3,6 +3,7 @@
 //! receiver as a native `Iterator`. Ported from the Python engine's streaming
 //! path minus the `#[pyclass]` boundary.
 
+use super::chunker::read_header_with_lookahead;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -289,6 +290,7 @@ fn open_csv_reader(
 
 fn build_row_group_chunk(
     headers: &[String],
+    has_header: bool,
     rows: &[Vec<String>],
     include_headers: bool,
     delimiter: u8,
@@ -318,6 +320,7 @@ fn build_row_group_chunk(
             "row_count": rows.len(),
             "col_count": headers.len(),
             "header_row": headers,
+            "has_header": has_header,
             "delimiter_detected": char::from(delimiter).to_string(),
             "encoding": encoding.to_ascii_lowercase(),
             "chunk_index": chunk_index,
@@ -340,20 +343,23 @@ fn build_row_streaming(
 
     let (mut reader, used_delimiter) = open_csv_reader(file_path, delimiter, encoding)?;
     let mut records = reader.records();
-    let header_record = match records.next() {
-        Some(Ok(record)) => record,
-        Some(Err(err)) => return Err(format!("Failed to read CSV header: {err}")),
-        None => return Err("CSV file is empty".to_string()),
+    let Some((mut headers, has_header, prelude)) =
+        read_header_with_lookahead(&mut records, skip_empty_rows)?
+    else {
+        return Err("CSV file is empty".to_string());
     };
-
-    let mut headers = header_record.iter().map(|value| value.to_string()).collect::<Vec<_>>();
     let mut buffer: Vec<Vec<String>> = Vec::new();
     let mut row_start = 1usize;
     let mut chunk_index = 0usize;
 
-    for record in records {
-        let record = record.map_err(|err| format!("Failed to read CSV row: {err}"))?;
-        let row: Vec<String> = record.iter().map(|value| value.to_string()).collect();
+    // Process the lookahead rows before the rest of the reader, so deciding
+    // header-vs-data costs nothing in output order.
+    let rest = records.map(|r| {
+        r.map(|rec| rec.iter().map(|v| v.to_string()).collect::<Vec<String>>())
+            .map_err(|err| format!("Failed to read CSV row: {err}"))
+    });
+    for row in prelude.into_iter().map(Ok).chain(rest) {
+        let row: Vec<String> = row?;
         if skip_empty_rows && is_empty_row(&row) {
             continue;
         }
@@ -363,7 +369,7 @@ fn build_row_streaming(
         buffer.push(row);
         if buffer.len() == rows_per_chunk {
             let chunk = build_row_group_chunk(
-                &headers, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+                &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
             );
             sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
             row_start += buffer.len();
@@ -374,7 +380,7 @@ fn build_row_streaming(
 
     if !buffer.is_empty() {
         let chunk = build_row_group_chunk(
-            &headers, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+            &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
         );
         sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
     }
@@ -401,22 +407,25 @@ fn build_sliding_window_streaming(
 
     let (mut reader, used_delimiter) = open_csv_reader(file_path, delimiter, encoding)?;
     let mut records = reader.records();
-    let header_record = match records.next() {
-        Some(Ok(record)) => record,
-        Some(Err(err)) => return Err(format!("Failed to read CSV header: {err}")),
-        None => return Err("CSV file is empty".to_string()),
+    let Some((mut headers, has_header, prelude)) =
+        read_header_with_lookahead(&mut records, skip_empty_rows)?
+    else {
+        return Err("CSV file is empty".to_string());
     };
-
-    let mut headers = header_record.iter().map(|value| value.to_string()).collect::<Vec<_>>();
     let mut buffer: VecDeque<Vec<String>> = VecDeque::new();
     let mut row_start = 1usize;
     let mut chunk_index = 0usize;
     let mut window_index = 0usize;
     let step = window_size - overlap;
 
-    for record in records {
-        let record = record.map_err(|err| format!("Failed to read CSV row: {err}"))?;
-        let row: Vec<String> = record.iter().map(|value| value.to_string()).collect();
+    // Process the lookahead rows before the rest of the reader, so deciding
+    // header-vs-data costs nothing in output order.
+    let rest = records.map(|r| {
+        r.map(|rec| rec.iter().map(|v| v.to_string()).collect::<Vec<String>>())
+            .map_err(|err| format!("Failed to read CSV row: {err}"))
+    });
+    for row in prelude.into_iter().map(Ok).chain(rest) {
+        let row: Vec<String> = row?;
         if skip_empty_rows && is_empty_row(&row) {
             continue;
         }
@@ -451,6 +460,7 @@ fn build_sliding_window_streaming(
                         "row_end": row_end,
                         "actual_row_count": rows.len(),
                         "header_row": headers,
+            "has_header": has_header,
                         "col_count": headers.len(),
                         "delimiter_detected": char::from(used_delimiter).to_string(),
                         "encoding": encoding.to_ascii_lowercase(),
@@ -495,6 +505,7 @@ fn build_sliding_window_streaming(
                     "row_end": row_end,
                     "actual_row_count": rows.len(),
                     "header_row": headers,
+            "has_header": has_header,
                     "col_count": headers.len(),
                     "delimiter_detected": char::from(used_delimiter).to_string(),
                     "encoding": encoding.to_ascii_lowercase(),

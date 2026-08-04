@@ -38,7 +38,7 @@ pub fn build_sliding_window_chunks(
         return Err("overlap must be less than window_size".to_string());
     }
 
-    let (headers, data_rows, delimiter) =
+    let (headers, data_rows, delimiter, has_header) =
         parse_csv_to_rows(data, delimiter, encoding, skip_empty_rows)?;
 
     let mut chunks = Vec::new();
@@ -63,6 +63,7 @@ pub fn build_sliding_window_chunks(
                 "row_end": row_end,
                 "actual_row_count": window.len(),
                 "header_row": headers,
+                "has_header": has_header,
                 "col_count": headers.len(),
                 "delimiter_detected": delimiter_str(delimiter),
                 "encoding": encoding.to_ascii_lowercase(),

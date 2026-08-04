@@ -1,5 +1,6 @@
 //! CSV/TSV → Markdown pipe table (native).
 
+use super::chunker::{first_row_is_header, synthetic_headers};
 use csv::{ReaderBuilder, Trim};
 
 use super::chunker::{is_empty_row, normalize_headers};
@@ -64,6 +65,12 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
         data_rows.push(row);
     }
 
+    // A headerless file must not lose its first row to the header slot. (#26)
+    if !first_row_is_header(&headers, &data_rows) {
+        max_width = max_width.max(headers.len());
+        data_rows.insert(0, std::mem::take(&mut headers));
+        headers = synthetic_headers(max_width);
+    }
     headers = normalize_headers(headers, max_width);
 
     for row in &mut data_rows {
