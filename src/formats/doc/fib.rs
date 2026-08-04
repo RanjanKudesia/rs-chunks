@@ -77,10 +77,15 @@ pub fn parse_fib(word_doc: &[u8]) -> Result<Fib, String> {
     if lw_array_end > word_doc.len() {
         return Err(format!("FIB truncated at offset {lw_array_end}"));
     }
-    if cslw < 3 {
+    if cslw < 4 {
         return Err("FIB FibRgLw does not include ccpText".to_string());
     }
-    let ccp_text = read_i32(word_doc, lw_array_start + 8)?;
+    // [MS-DOC] 2.5.4 FibRgLw97: cbMac(0) reserved1(4) reserved2(8) ccpText(12).
+    // This read +8 — reserved2 — which on sample.doc holds 30505 against a real
+    // ccpText of 30153. The 352-character overrun ran past the end of the main
+    // story and into the footnote story, so extraction ended part-way through a
+    // footnote, mid-word.
+    let ccp_text = read_i32(word_doc, lw_array_start + 12)?;
 
     let cfclcb_off = lw_array_end;
     let cfclcb = read_u16(word_doc, cfclcb_off)? as usize;

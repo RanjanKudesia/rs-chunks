@@ -177,9 +177,20 @@ pub fn parse_pieces(
         }
 
         let pcd_off = pcd_start + i * 8;
+        // [MS-DOC] 2.9.74 FcCompressed: bits 0-29 hold fc, bit 30 is fCompressed,
+        // bit 31 is r1 (reserved). Two things were wrong here.
+        //
+        // The mask cleared only bit 30, leaving a set reserved bit in the
+        // offset. And for a compressed (single-byte, cp1252) piece, fc is
+        // *twice* the real byte offset — the spec stores it in the same units
+        // as an uncompressed piece — so it must be halved. Without that, every
+        // piece was read from double its true position: on sample.doc the title,
+        // author line, whole Abstract and the INTRODUCTION heading vanished, and
+        // the text began and ended mid-word.
         let fc_raw = read_u32(plcpcd, pcd_off + 2)?;
         let compressed = (fc_raw & 0x4000_0000) != 0;
-        let real_offset = (fc_raw & !0x4000_0000) as usize;
+        let fc = (fc_raw & 0x3FFF_FFFF) as usize;
+        let real_offset = if compressed { fc / 2 } else { fc };
 
         pieces.push(Piece {
             cp_start: start_cp,
@@ -212,7 +223,10 @@ pub fn parse_piece_table(
             let end = real_offset
                 .checked_add(char_count)
                 .ok_or_else(|| "Compressed piece offset overflow".to_string())?;
-            let bytes = match word_doc.get(real_offset..end) {
+            // A piece that runs past the end of the stream used to be dropped
+            // whole. Take what is actually there instead: sample.doc's last
+            // piece overran slightly and the text ended mid-word.
+            let bytes = match word_doc.get(real_offset..end.min(word_doc.len())) {
                 Some(b) => b,
                 None => continue,
             };
@@ -229,7 +243,9 @@ pub fn parse_piece_table(
             let end = real_offset
                 .checked_add(byte_count)
                 .ok_or_else(|| "Unicode piece offset overflow".to_string())?;
-            let bytes = match word_doc.get(real_offset..end) {
+            // Same clamp as the compressed branch — keep the readable prefix
+            // rather than discarding the piece.
+            let bytes = match word_doc.get(real_offset..end.min(word_doc.len())) {
                 Some(b) => b,
                 None => continue,
             };
