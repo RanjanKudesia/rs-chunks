@@ -364,15 +364,59 @@ pub fn flush_list(blocks: &mut Vec<MdBlock>, list: &mut Vec<String>) {
     }
 }
 
+/// A GFM delimiter row: `| --- | :---: |`. Its presence is what makes the
+/// preceding line a table header rather than a sentence containing pipes.
+fn is_table_delimiter_row(line: &str) -> bool {
+    let cells: Vec<&str> = line
+        .trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect();
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            !c.is_empty()
+                && c.chars().all(|ch| ch == '-' || ch == ':')
+                && c.contains('-')
+        })
+}
+
+/// True when the collected rows really are a table.
+///
+/// `looks_like_table_row` only counts pipes, so a sentence like
+/// "run foo | grep bar | wc -l" was flushed as `content_type: "table"`. GFM
+/// requires a delimiter row, and a hand-written table without one still gives
+/// itself away by starting and ending every row with a pipe. Anything else is
+/// prose that happens to contain a pipe.
+fn rows_form_a_table(rows: &[String]) -> bool {
+    if rows.len() >= 2 && is_table_delimiter_row(&rows[1]) {
+        return true;
+    }
+    rows.len() >= 2
+        && rows
+            .iter()
+            .all(|r| r.trim().starts_with('|') && r.trim().ends_with('|'))
+}
+
 pub fn flush_table(blocks: &mut Vec<MdBlock>, table: &mut Vec<String>) {
+    let is_table = rows_form_a_table(table);
     let content = table.join("\n").trim().to_string();
     table.clear();
-    if !content.is_empty() {
-        blocks.push(MdBlock {
-            block_type: MdBlockType::Table,
-            content,
-        });
+    if content.is_empty() {
+        return;
     }
+    blocks.push(MdBlock {
+        // Pipes alone do not make a table. Misclassifying prose as one is not
+        // content loss, but `content_type` is a documented field consumers
+        // branch on, so it has to be right. (#29)
+        block_type: if is_table {
+            MdBlockType::Table
+        } else {
+            MdBlockType::Paragraph
+        },
+        content,
+    });
 }
 
 // ── Block detection ───────────────────────────────────────────────────────────
