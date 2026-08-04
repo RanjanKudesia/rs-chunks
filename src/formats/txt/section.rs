@@ -115,9 +115,7 @@ fn block_type_str(ct: ContentType) -> &'static str {
 // ── Core build function ───────────────────────────────────────────────────────
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = crate::text_encoding::decode_text(bytes).0;
     if text.trim().is_empty() { return Err("TXT file is empty".to_string()); }
 
     let blocks = parse_txt_blocks(&text);

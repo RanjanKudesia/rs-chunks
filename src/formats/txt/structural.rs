@@ -67,9 +67,10 @@ fn merge_short_prose(
 // ── Core build function ───────────────────────────────────────────────────────
 
 pub fn build_chunks_from_txt_bytes(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    // Detect the encoding instead of assuming UTF-8: a Notepad "Unicode" save is
+    // UTF-16, "ANSI" is cp1252, and both used to come out as replacement
+    // characters. Also strips a BOM, which otherwise leaks into the first chunk.
+    let (text, _encoding) = crate::text_encoding::decode_text(bytes);
 
     if text.trim().is_empty() {
         return Err("TXT file is empty after decoding".to_string());

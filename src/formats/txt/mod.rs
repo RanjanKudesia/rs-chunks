@@ -87,7 +87,7 @@ pub fn chunk_from_bytes(
 
 /// No-filesystem Markdown (`.txt` is returned as-is, lossy-UTF8).
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    Ok(String::from_utf8_lossy(bytes).to_string())
+    Ok(crate::text_encoding::decode_text(bytes).0)
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -119,7 +119,7 @@ pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Ch
 pub fn to_markdown(file_path: &str) -> Result<String> {
     ensure_txt(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+    Ok(crate::text_encoding::decode_text(&bytes).0)
 }
 
 pub fn stream(

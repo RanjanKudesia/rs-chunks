@@ -30,6 +30,7 @@ pub mod options;
 
 pub(crate) mod entities;
 pub(crate) mod shared;
+pub(crate) mod text_encoding;
 
 pub use chunk::Chunk;
 pub use dispatch::{
