@@ -57,11 +57,20 @@ pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
     let sheet_names = workbook.sheet_names().to_vec();
     let mut parts: Vec<String> = Vec::new();
 
+    let mut readable_sheets = 0usize;
+    let mut first_sheet_error: Option<String> = None;
     for sheet_name in &sheet_names {
         // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
         // take the whole workbook down with it — skip it and keep going.
-        let Ok(range) = read_worksheet_range(&mut workbook, sheet_name)? else {
-            continue;
+        let range = match read_worksheet_range(&mut workbook, sheet_name) {
+            Ok(range) => {
+                readable_sheets += 1;
+                range
+            }
+            Err(e) => {
+                first_sheet_error.get_or_insert(e);
+                continue;
+            }
         };
         let raw_rows: Vec<&[Data]> = range.rows().collect();
         if raw_rows.is_empty() || raw_rows.iter().all(|r| row_is_empty_public(r)) {
@@ -93,6 +102,14 @@ pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
             parts.push(rendered);
         }
     }
+    // Every selected sheet failed to read: this is not an empty workbook,
+    // it is an unreadable one — surface the first failure rather than
+    // returning success with no chunks.
+    if readable_sheets == 0 {
+        if let Some(e) = first_sheet_error {
+            return Err(e);
+        }
+    }
     Ok(parts.join("\n\n---\n\n"))
 }
 
@@ -111,11 +128,20 @@ pub(super) fn to_markdown_with_images(data: &[u8], ext: &str) -> Result<(String,
     }
 
     let mut parts: Vec<String> = Vec::new();
+    let mut readable_sheets = 0usize;
+    let mut first_sheet_error: Option<String> = None;
     for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
         // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
         // take the whole workbook down with it — skip it and keep going.
-        let Ok(range) = read_worksheet_range(&mut workbook, sheet_name)? else {
-            continue;
+        let range = match read_worksheet_range(&mut workbook, sheet_name) {
+            Ok(range) => {
+                readable_sheets += 1;
+                range
+            }
+            Err(e) => {
+                first_sheet_error.get_or_insert(e);
+                continue;
+            }
         };
         let sheet_images = sheet_image_map.get(&sheet_idx);
         let raw_rows: Vec<&[Data]> = range.rows().collect();
@@ -158,6 +184,14 @@ pub(super) fn to_markdown_with_images(data: &[u8], ext: &str) -> Result<(String,
             }
         }
         parts.push(section);
+    }
+    // Every selected sheet failed to read: this is not an empty workbook,
+    // it is an unreadable one — surface the first failure rather than
+    // returning success with no chunks.
+    if readable_sheets == 0 {
+        if let Some(e) = first_sheet_error {
+            return Err(e);
+        }
     }
     Ok((parts.join("\n\n---\n\n"), image_out))
 }

@@ -206,6 +206,8 @@ pub fn build_page_aware_chunks(
     let mut chunks = Vec::new();
     let mut chunk_index = 0usize;
 
+    let mut readable_sheets = 0usize;
+    let mut first_sheet_error: Option<String> = None;
     for sheet_name in selected_sheets {
         let sheet_index = workbook_sheet_names
             .iter()
@@ -214,8 +216,15 @@ pub fn build_page_aware_chunks(
 
         // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
         // take the whole workbook down with it — skip it and keep going.
-        let Ok(range) = super::common::read_worksheet_range(&mut workbook, &sheet_name)? else {
-            continue;
+        let range = match super::common::read_worksheet_range(&mut workbook, &sheet_name) {
+            Ok(range) => {
+                readable_sheets += 1;
+                range
+            }
+            Err(e) => {
+                first_sheet_error.get_or_insert(e);
+                continue;
+            }
         };
         let (base_row, base_col) = range
             .start()
@@ -370,6 +379,14 @@ pub fn build_page_aware_chunks(
                 });
                 chunk_index += 1;
             }
+        }
+    }
+    // Every selected sheet failed to read: this is not an empty workbook,
+    // it is an unreadable one — surface the first failure rather than
+    // returning success with no chunks.
+    if readable_sheets == 0 {
+        if let Some(e) = first_sheet_error {
+            return Err(e);
         }
     }
 

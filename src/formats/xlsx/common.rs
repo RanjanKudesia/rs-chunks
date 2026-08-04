@@ -643,6 +643,8 @@ pub fn build_row_chunks(
     };
 
     let mut chunks = Vec::new();
+    let mut readable_sheets = 0usize;
+    let mut first_sheet_error: Option<String> = None;
     for sheet_name in selected_sheets {
         let sheet_index = workbook_sheet_names
             .iter()
@@ -651,8 +653,15 @@ pub fn build_row_chunks(
 
         // A sheet calamine cannot read (chart sheets, XLM macro sheets) must not
         // take the whole workbook down with it — skip it and keep going.
-        let Ok(range) = read_worksheet_range(&mut workbook, &sheet_name)? else {
-            continue;
+        let range = match read_worksheet_range(&mut workbook, &sheet_name) {
+            Ok(range) => {
+                readable_sheets += 1;
+                range
+            }
+            Err(e) => {
+                first_sheet_error.get_or_insert(e);
+                continue;
+            }
         };
         let base_row_index = range.start().map(|(row, _)| row as usize).unwrap_or(0);
 
@@ -732,6 +741,14 @@ pub fn build_row_chunks(
                     "chunk_index": chunk_index,
                 }),
             });
+        }
+    }
+    // Every selected sheet failed to read: this is not an empty workbook,
+    // it is an unreadable one — surface the first failure rather than
+    // returning success with no chunks.
+    if readable_sheets == 0 {
+        if let Some(e) = first_sheet_error {
+            return Err(e);
         }
     }
 
