@@ -92,6 +92,25 @@ struct SlideMarkdownContent {
     pub title: Option<String>,
     pub blocks: Vec<SlideBlock>,
     pub notes: Option<String>,
+    /// `r:dm` ids of SmartArt diagrams; their text lives in `ppt/diagrams/`.
+    pub diagram_rids: Vec<String>,
+}
+
+/// Append a slide's SmartArt text as paragraph blocks. Shared by both markdown
+/// entry points so `get_markdown` and `get_markdown_with_images` agree.
+fn append_diagram_blocks(
+    archive: &mut ZipArchive<Cursor<Vec<u8>>>,
+    slide_name: &str,
+    slide: &mut SlideMarkdownContent,
+) {
+    let parts = super::diagram::resolve_diagram_parts(archive, slide_name, &slide.diagram_rids);
+    for part in parts {
+        if let Ok(bytes) = read_zip_entry(archive, &part) {
+            for text in super::diagram::parse_diagram_xml(&bytes) {
+                slide.blocks.push(SlideBlock::paragraph(text));
+            }
+        }
+    }
 }
 
 fn push_text(dst: &mut String, text: &str) {
@@ -107,6 +126,21 @@ fn push_text(dst: &mut String, text: &str) {
 
 fn attr_local_name(key: &[u8]) -> &[u8] {
     key.rsplit(|b| *b == b':').next().unwrap_or(key)
+}
+
+/// Resolve XML entities in an attribute value, falling back to the raw bytes if
+/// the value references an entity quick-xml cannot expand.
+fn decode_attr(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
+    match attr.unescape_value() {
+        Ok(v) => v.into_owned(),
+        Err(_) => String::from_utf8_lossy(attr.value.as_ref()).into_owned(),
+    }
+}
+
+/// Squash any run of whitespace (including the newlines `&#xA;` decodes to)
+/// into single spaces, so the text can be rendered on one line.
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn parse_slide_for_markdown(
@@ -287,9 +321,11 @@ fn parse_slide_for_markdown(
                         let mut name: Option<String> = None;
                         for attr in e.attributes().flatten() {
                             let key_local = attr_local_name(attr.key.as_ref());
-                            let val = String::from_utf8_lossy(attr.value.as_ref())
-                                .trim()
-                                .to_string();
+                            // descr/name are human-authored, so they carry real
+                            // entities — a raw byte read leaks "&#xA;" into the
+                            // alt text. Decode, then flatten the newlines that
+                            // decoding reveals: this renders inline.
+                            let val = collapse_ws(&decode_attr(&attr));
                             if val.is_empty() {
                                 continue;
                             }
@@ -364,6 +400,20 @@ fn parse_slide_for_markdown(
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
 
                 match local {
+                    // SmartArt: the slide only points at the part holding the text.
+                    b"relIds" => {
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"dm" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !v.is_empty() {
+                                    slide.diagram_rids.push(v);
+                                }
+                                break;
+                            }
+                        }
+                    }
                     b"pPr" if in_para => {
                         for attr in e.attributes().flatten() {
                             if attr_local_name(attr.key.as_ref()) == b"lvl" {
@@ -443,9 +493,11 @@ fn parse_slide_for_markdown(
                         let mut name: Option<String> = None;
                         for attr in e.attributes().flatten() {
                             let key_local = attr_local_name(attr.key.as_ref());
-                            let val = String::from_utf8_lossy(attr.value.as_ref())
-                                .trim()
-                                .to_string();
+                            // descr/name are human-authored, so they carry real
+                            // entities — a raw byte read leaks "&#xA;" into the
+                            // alt text. Decode, then flatten the newlines that
+                            // decoding reveals: this renders inline.
+                            let val = collapse_ws(&decode_attr(&attr));
                             if val.is_empty() {
                                 continue;
                             }
@@ -1127,6 +1179,7 @@ pub(super) fn to_markdown(bytes: &[u8]) -> Result<String, String> {
         let xml_bytes = read_zip_entry(&mut archive, slide_name)?;
         let slide_rels = parse_slide_rels(&mut archive, slide_name);
         let mut slide = parse_slide_for_markdown(&xml_bytes, &slide_rels)?;
+        append_diagram_blocks(&mut archive, slide_name, &mut slide);
         slide.notes = extract_notes_text(&mut archive, slide_name);
         slides.push((*slide_num, slide));
     }
@@ -1147,6 +1200,7 @@ pub(super) fn to_markdown_with_images(bytes: &[u8]) -> Result<(String, Vec<(Stri
         let xml_bytes = read_zip_entry(&mut archive, slide_name)?;
         let (slide_rels, image_rids) = parse_slide_rels_with_images(&mut archive, slide_name);
         let mut slide = parse_slide_for_markdown(&xml_bytes, &slide_rels)?;
+        append_diagram_blocks(&mut archive, slide_name, &mut slide);
         slide.notes = extract_notes_text(&mut archive, slide_name);
         slides.push((*slide_num, slide));
         slide_image_rids.insert(*slide_num, image_rids);

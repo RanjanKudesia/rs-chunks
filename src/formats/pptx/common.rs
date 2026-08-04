@@ -193,6 +193,10 @@ pub struct SlideContent {
     pub has_table: bool,
     /// Speaker notes extracted from the slide's associated notes slide XML.
     pub notes_text: Option<String>,
+    /// `r:dm` relationship ids of any SmartArt diagrams on the slide. The text
+    /// lives in a separate `ppt/diagrams/dataN.xml` part, so the parser can only
+    /// record the ids here; `read_all_slides` resolves and reads them.
+    pub diagram_rids: Vec<String>,
 }
 
 impl SlideContent {
@@ -239,6 +243,20 @@ impl SlideContent {
 }
 
 // ── Slide XML parser ──────────────────────────────────────────────────────────
+
+/// `<dgm:relIds r:dm="rId2" r:lo=… r:qs=… r:cs=…/>` — only `dm` (the *data
+/// model*) carries text; the others are layout, quick-style and colours.
+fn diagram_data_rid(attrs: Attributes<'_>) -> Option<String> {
+    for attr in attrs.flatten() {
+        let key = attr.key.as_ref();
+        let local = key.rsplit(|b| *b == b':').next().unwrap_or(key);
+        if local == b"dm" {
+            let v = attr.unescape_value().ok()?.trim().to_string();
+            return (!v.is_empty()).then_some(v);
+        }
+    }
+    None
+}
 
 pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
     let mut reader = Reader::from_reader(BufReader::new(xml_bytes));
@@ -329,11 +347,23 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                         in_tc_para = true;
                         tc_para_text.clear();
                     }
+                    // A SmartArt graphic's text is not in this file at all —
+                    // only the pointer to the part that holds it.
+                    b"relIds" => {
+                        if let Some(rid) = diagram_data_rid(e.attributes()) {
+                            slide.diagram_rids.push(rid);
+                        }
+                    }
                     _ => {}
                 }
             }
             Ok(Event::Empty(ref e)) => {
                 let local = local_name(e.name());
+                if local.as_slice() == b"relIds" {
+                    if let Some(rid) = diagram_data_rid(e.attributes()) {
+                        slide.diagram_rids.push(rid);
+                    }
+                }
                 if local.as_slice() == b"ph" && sp_depth > 0 && !sp_ph_checked {
                     sp_ph_checked = true;
                     let (mut ph_type, mut ph_idx) = (None::<String>, None::<String>);
@@ -740,6 +770,16 @@ pub fn read_all_slides(
     for (slide_num, name) in slide_names {
         let xml_bytes = read_zip_entry(archive, name)?;
         let mut slide = parse_slide_xml(&xml_bytes)?;
+        // SmartArt keeps its text in a sibling part, so pull it in and append it
+        // to the body — otherwise every diagram label is silently dropped.
+        // Best-effort: a broken diagram must not fail the slide.
+        for part in super::diagram::resolve_diagram_parts(archive, name, &slide.diagram_rids) {
+            if let Ok(bytes) = read_zip_entry(archive, &part) {
+                slide
+                    .body_paragraphs
+                    .extend(super::diagram::parse_diagram_xml(&bytes));
+            }
+        }
         // Load speaker notes via the slide's .rels file (best-effort; ignore failures).
         if let Some(notes_path) = find_notes_for_slide(archive, name) {
             if let Ok(notes_bytes) = read_zip_entry(archive, &notes_path) {
@@ -1149,6 +1189,7 @@ mod tests {
             body_paragraphs: vec!["Body".to_string()],
             has_table: false,
             notes_text: None,
+            ..Default::default()
         };
         let t = s.all_text();
         assert!(t.contains("Title"));
@@ -1162,6 +1203,7 @@ mod tests {
             body_paragraphs: vec!["Body".to_string()],
             has_table: false,
             notes_text: Some("Speaker note text.".to_string()),
+            ..Default::default()
         };
         let t = s.all_text();
         assert!(t.contains("[Notes]"));
@@ -1175,6 +1217,7 @@ mod tests {
             body_paragraphs: vec!["Cell A | Cell B".to_string()],
             has_table: true,
             notes_text: None,
+            ..Default::default()
         };
         let t = s.all_text();
         assert!(

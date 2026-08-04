@@ -2,6 +2,7 @@
 //! Every mode builds directly from the package bytes.
 
 pub mod common;
+mod diagram;
 mod page_aware;
 mod section;
 mod semantic;
