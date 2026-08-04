@@ -201,6 +201,18 @@ fn lower_blocks_to_elements(raw: Vec<DocxBlock>) -> Vec<DocumentElement> {
                         image_rid: None,
                     });
                 }
+                // Pictures inside table cells are content like any other. (#71)
+                for (rid, alt) in &block.images {
+                    out.push(DocumentElement {
+                        content_type: ContentType::Image,
+                        text: image_placeholder(alt.as_deref()),
+                        page_number: Some(block_page),
+                        heading_level: None,
+                        footnote_refs: Vec::new(),
+                        endnote_refs: Vec::new(),
+                        image_rid: Some(rid.clone()),
+                    });
+                }
             }
             DocxBlockKind::Paragraph => {
                 let text = block.text.trim().to_string();

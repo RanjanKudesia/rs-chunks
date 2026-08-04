@@ -444,6 +444,14 @@ pub(super) fn parse_docx_paragraph_events_with_images(
                         is_table: true,
                     }));
                 }
+                // Pictures inside table cells are content like any other. (#71)
+                for (rid, alt) in block.images {
+                    items.push(ParaOrImage::Image {
+                        rid: Some(rid),
+                        alt,
+                        signal: PageBreakSignal::None,
+                    });
+                }
             }
         }
     }
@@ -784,6 +792,12 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
     // content. Pushed on `<w:tbl>` Start, popped on `<w:tbl>` End. Nested
     // tables push additional states without disturbing parent state.
     let mut table_stack: Vec<TableState> = Vec::new();
+    // Images inside table cells. Cell paragraphs deliberately do not set
+    // `in_paragraph` (the table walker owns them), so the paragraph-level blip
+    // harvest never sees them and every picture in a table was dropped. (#71)
+    let mut table_images: Vec<(String, Option<String>)> = Vec::new();
+    let mut table_drawing_depth: i32 = 0;
+    let mut table_pending_alt: Option<String> = None;
 
     loop {
         // Entity references arrive as their own event; fold them back into text.
@@ -907,6 +921,20 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                     para_has_section_break = true;
                 } else if qname_eq(name, b"lastRenderedPageBreak") && in_paragraph {
                     para_has_rendered_break = true;
+                } else if qname_eq(name, b"drawing") && !table_stack.is_empty() {
+                    table_drawing_depth = table_drawing_depth.saturating_add(1);
+                } else if (qname_eq(name, b"docPr") || qname_eq(name, b"cNvPr"))
+                    && table_drawing_depth > 0
+                {
+                    if let Some(alt) = harvest_image_alt(&e) {
+                        table_pending_alt.get_or_insert(alt);
+                    }
+                } else if qname_eq(name, b"blip") && table_drawing_depth > 0 {
+                    if let Some(rid) = harvest_blip_embed(&e) {
+                        if !table_images.iter().any(|(r, _)| *r == rid) {
+                            table_images.push((rid, table_pending_alt.take()));
+                        }
+                    }
                 } else if qname_eq(name, b"drawing") && in_paragraph {
                     para_has_drawing = true;
                     drawing_depth = drawing_depth.saturating_add(1);
@@ -1084,6 +1112,20 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                         }
                         pending_alt.get_or_insert(alt);
                     }
+                } else if (qname_eq(name, b"docPr") || qname_eq(name, b"cNvPr"))
+                    && table_drawing_depth > 0
+                {
+                    if let Some(alt) = harvest_image_alt(&e) {
+                        table_pending_alt.get_or_insert(alt);
+                    }
+                } else if qname_eq(name, b"blip") && table_drawing_depth > 0 {
+                    // `<a:blip/>` is self-closing, so it only ever reaches the
+                    // Empty arm — the Start-arm branch never sees it. (#71)
+                    if let Some(rid) = harvest_blip_embed(&e) {
+                        if !table_images.iter().any(|(r, _)| *r == rid) {
+                            table_images.push((rid, table_pending_alt.take()));
+                        }
+                    }
                 } else if qname_eq(name, b"blip") && in_paragraph && drawing_depth > 0 {
                     if let Some(rid) = harvest_blip_embed(&e) {
                         if para_image_rid.is_none() {
@@ -1189,6 +1231,14 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                     }
                 } else if qname_eq(name, b"drawing") {
                     drawing_depth = drawing_depth.saturating_sub(1);
+                    // Only unwind the table counter for drawings that actually
+                    // opened inside a table — decrementing on every </w:drawing>
+                    // drove it negative, so the `> 0` guard below never passed
+                    // and no table image was ever harvested.
+                    if table_drawing_depth > 0 {
+                        table_drawing_depth -= 1;
+                        table_pending_alt = None;
+                    }
                 } else if qname_eq(name, b"hyperlink") && in_paragraph {
                     let anchor = hyperlink_text.trim().to_string();
                     if !anchor.is_empty() && !hyperlink_rid.is_empty() {
@@ -1276,11 +1326,14 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                             }
                         } else {
                             let rendered = render_table_markdown(&state);
-                            if !rendered.is_empty() {
+                            // A table whose cells hold only pictures renders as
+                            // empty text — but it still has content. Emitting
+                            // nothing here discarded the images with it. (#71)
+                            if !rendered.is_empty() || !table_images.is_empty() {
                                 blocks.push(DocxBlock {
                                     kind: DocxBlockKind::Table,
                                     text: rendered,
-                                    has_drawing: false,
+                                    has_drawing: !table_images.is_empty(),
                                     is_list: false,
                                     list_level: 0,
                                     heading_style: None,
@@ -1290,7 +1343,7 @@ fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<Doc
                                     rendered_page_break: false,
                                     image_alt: None,
                                     image_rid: None,
-                            images: Vec::new(),
+                                    images: std::mem::take(&mut table_images),
                                     footnote_refs: Vec::new(),
                                     endnote_refs: Vec::new(),
                                     num_id: None,
