@@ -18,7 +18,7 @@ pub struct DocParagraph {
     pub heading_level: Option<u8>,
 }
 
-fn collapse_whitespace(text: &str) -> String {
+pub(super) fn collapse_whitespace(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_space = false;
     for ch in text.chars() {

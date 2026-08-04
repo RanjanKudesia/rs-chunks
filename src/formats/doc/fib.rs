@@ -7,6 +7,14 @@ pub struct Fib {
     pub fc_stshf: u32,
     pub lcb_stshf: u32,
     pub ccp_text: i32,
+    /// Lengths of the stories that follow the main text in CP order.
+    pub ccp_ftn: i32,
+    pub ccp_hdd: i32,
+    pub ccp_mcr: i32,
+    pub ccp_atn: i32,
+    pub ccp_edn: i32,
+    pub ccp_txbx: i32,
+    pub ccp_hdr_txbx: i32,
     /// PlcfBteChpx (character-run FKP index) in the table stream. Optional:
     /// 0/0 when the FIB does not carry the entry. Used only by the image
     /// extractor to locate inline pictures (sprmCPicLocation).
@@ -86,6 +94,25 @@ pub fn parse_fib(word_doc: &[u8]) -> Result<Fib, String> {
     // story and into the footnote story, so extraction ended part-way through a
     // footnote, mid-word.
     let ccp_text = read_i32(word_doc, lw_array_start + 12)?;
+    // [MS-DOC] 2.5.4: the stories follow ccpText in CP order — footnotes,
+    // headers/footers, macros (reserved3), annotations, endnotes, text boxes,
+    // header text boxes. Each is real document content and none of it was ever
+    // extracted (#70). Read defensively: older FIBs are shorter, so a field
+    // past the end is simply absent.
+    let ccp_at = |i: usize| -> i32 {
+        if cslw > i {
+            read_i32(word_doc, lw_array_start + i * 4).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+    let ccp_ftn = ccp_at(4);
+    let ccp_hdd = ccp_at(5);
+    let ccp_mcr = ccp_at(6);
+    let ccp_atn = ccp_at(7);
+    let ccp_edn = ccp_at(8);
+    let ccp_txbx = ccp_at(9);
+    let ccp_hdr_txbx = ccp_at(10);
 
     let cfclcb_off = lw_array_end;
     let cfclcb = read_u16(word_doc, cfclcb_off)? as usize;
@@ -126,6 +153,13 @@ pub fn parse_fib(word_doc: &[u8]) -> Result<Fib, String> {
         fc_stshf,
         lcb_stshf,
         ccp_text,
+        ccp_ftn,
+        ccp_hdd,
+        ccp_mcr,
+        ccp_atn,
+        ccp_edn,
+        ccp_txbx,
+        ccp_hdr_txbx,
         fc_plcf_bte_chpx,
         lcb_plcf_bte_chpx,
         fc_dgg_info,

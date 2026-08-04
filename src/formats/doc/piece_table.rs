@@ -93,6 +93,17 @@ pub fn parse_pieces(
     lcb_clx: u32,
     ccp_text: i32,
 ) -> Result<Vec<Piece>, String> {
+    parse_pieces_range(table_stream, fc_clx, lcb_clx, 0, ccp_text)
+}
+
+/// Pieces covering the half-open CP range `[cp_from, ccp_text)`.
+pub fn parse_pieces_range(
+    table_stream: &[u8],
+    fc_clx: u32,
+    lcb_clx: u32,
+    cp_from: u32,
+    ccp_text: i32,
+) -> Result<Vec<Piece>, String> {
     let clx_start = fc_clx as usize;
     let clx_len = lcb_clx as usize;
     let clx_end = clx_start
@@ -160,21 +171,30 @@ pub fn parse_pieces(
     }
 
     let pcd_start = cp_bytes;
-    let ccp_limit = ccp_text.max(0) as u32;
+    // `ccp_text` is the exclusive CP limit; `cp_from` the inclusive start. The
+    // main text is [0, ccpText), and each later story is its own slice of the
+    // same piece table — see [MS-DOC] 2.5.4. (#70)
+    let cp_hi = ccp_text.max(0) as u32;
+    let cp_lo = cp_from;
     let mut pieces = Vec::with_capacity(n);
 
     for i in 0..n {
-        let start_cp = cps[i];
-        let end_cp = cps[i + 1];
-        if end_cp <= start_cp || start_cp >= ccp_limit {
+        let piece_start = cps[i];
+        let piece_end = cps[i + 1];
+        if piece_end <= piece_start || piece_start >= cp_hi || piece_end <= cp_lo {
             continue;
         }
 
-        let mut char_count = (end_cp - start_cp) as usize;
-        let allowed = (ccp_limit - start_cp) as usize;
-        if char_count > allowed {
-            char_count = allowed;
+        // Clip the piece to the requested range, advancing `fc` by however many
+        // characters we skipped at the front (1 byte each when compressed, 2
+        // when UTF-16).
+        let start_cp = piece_start.max(cp_lo);
+        let end_cp = piece_end.min(cp_hi);
+        if end_cp <= start_cp {
+            continue;
         }
+        let skipped = (start_cp - piece_start) as usize;
+        let char_count = (end_cp - start_cp) as usize;
 
         let pcd_off = pcd_start + i * 8;
         // [MS-DOC] 2.9.74 FcCompressed: bits 0-29 hold fc, bit 30 is fCompressed,
@@ -190,7 +210,8 @@ pub fn parse_pieces(
         let fc_raw = read_u32(plcpcd, pcd_off + 2)?;
         let compressed = (fc_raw & 0x4000_0000) != 0;
         let fc = (fc_raw & 0x3FFF_FFFF) as usize;
-        let real_offset = if compressed { fc / 2 } else { fc };
+        let base = if compressed { fc / 2 } else { fc };
+        let real_offset = base + skipped * if compressed { 1 } else { 2 };
 
         pieces.push(Piece {
             cp_start: start_cp,
@@ -203,6 +224,30 @@ pub fn parse_pieces(
     Ok(pieces)
 }
 
+/// Reconstruct the text of a single story — the CP range `[cp_from, cp_to)`.
+///
+/// A `.doc`'s CP space runs main text, then footnotes, headers/footers,
+/// annotations, endnotes and text boxes, each with its own length in the FIB.
+/// Only the main text was ever read, so on sample.doc a footnote block, a
+/// header and a text box holding a whole table were silently dropped. (#70)
+pub fn reconstruct_story(
+    word_doc: &[u8],
+    table_stream: &[u8],
+    fc_clx: u32,
+    lcb_clx: u32,
+    cp_from: u32,
+    cp_to: u32,
+) -> Option<String> {
+    if cp_to <= cp_from {
+        return None;
+    }
+    let pieces =
+        parse_pieces_range(table_stream, fc_clx, lcb_clx, cp_from, cp_to as i32).ok()?;
+    let text = reconstruct_from_pieces(word_doc, &pieces).text;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 pub fn parse_piece_table(
     word_doc: &[u8],
     table_stream: &[u8],
@@ -211,18 +256,24 @@ pub fn parse_piece_table(
     ccp_text: i32,
 ) -> Result<ReconstructedText, String> {
     let pieces = parse_pieces(table_stream, fc_clx, lcb_clx, ccp_text)?;
+    Ok(reconstruct_from_pieces(word_doc, &pieces))
+}
 
+/// Decode a piece list into text plus the CP→byte map.
+pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> ReconstructedText {
     let mut text = String::new();
     let mut cp_to_byte = Vec::new();
 
-    for piece in &pieces {
+    for piece in pieces {
         let char_count = (piece.cp_end - piece.cp_start) as usize;
         let real_offset = piece.fc;
 
         if piece.compressed {
-            let end = real_offset
-                .checked_add(char_count)
-                .ok_or_else(|| "Compressed piece offset overflow".to_string())?;
+            // Overflow here means a corrupt offset; skip the piece rather than
+            // failing the whole document.
+            let Some(end) = real_offset.checked_add(char_count) else {
+                continue;
+            };
             // A piece that runs past the end of the stream used to be dropped
             // whole. Take what is actually there instead: sample.doc's last
             // piece overran slightly and the text ended mid-word.
@@ -237,12 +288,12 @@ pub fn parse_piece_table(
                 }
             }
         } else {
-            let byte_count = char_count
-                .checked_mul(2)
-                .ok_or_else(|| "Unicode piece size overflow".to_string())?;
-            let end = real_offset
-                .checked_add(byte_count)
-                .ok_or_else(|| "Unicode piece offset overflow".to_string())?;
+            let Some(byte_count) = char_count.checked_mul(2) else {
+                continue;
+            };
+            let Some(end) = real_offset.checked_add(byte_count) else {
+                continue;
+            };
             // Same clamp as the compressed branch — keep the readable prefix
             // rather than discarding the piece.
             let bytes = match word_doc.get(real_offset..end.min(word_doc.len())) {
@@ -267,5 +318,5 @@ pub fn parse_piece_table(
         }
     }
 
-    Ok(ReconstructedText { text, cp_to_byte })
+    ReconstructedText { text, cp_to_byte }
 }

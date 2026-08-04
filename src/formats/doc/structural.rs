@@ -59,6 +59,69 @@ pub(crate) fn load_doc_paragraphs(file_path: &str) -> Result<Vec<DocParagraph>, 
     load_doc_paragraphs_bytes(&bytes)
 }
 
+/// Append the stories that follow the main text — footnotes, headers/footers,
+/// annotations, endnotes and text boxes — as labelled paragraphs.
+///
+/// A `.doc`'s CP space holds all of these after `ccpText`, each with its own
+/// length in the FIB, and none of them were ever extracted (#70). On
+/// sample.doc that is 2,761 characters: a footnote block, a header, and a text
+/// box holding the "Units for Magnetic Properties" table.
+///
+/// They are appended rather than interleaved because the binary format gives no
+/// reliable way to place a footnote back at its reference point, and a labelled
+/// block at the end is honest about that.
+fn append_side_stories(
+    paragraphs: &mut Vec<DocParagraph>,
+    word_doc: &[u8],
+    table: &[u8],
+    fib: &fib::Fib,
+) {
+    let mut cp = fib.ccp_text.max(0) as u32;
+    let stories: [(&str, i32); 6] = [
+        ("Footnotes", fib.ccp_ftn),
+        ("Headers and footers", fib.ccp_hdd),
+        ("Macros", fib.ccp_mcr),
+        ("Comments", fib.ccp_atn),
+        ("Endnotes", fib.ccp_edn),
+        ("Text boxes", fib.ccp_txbx),
+    ];
+    for (label, len) in stories {
+        let len = len.max(0) as u32;
+        if len == 0 {
+            continue;
+        }
+        let (from, to) = (cp, cp + len);
+        cp = to;
+        let Some(text) = piece_table::reconstruct_story(
+            word_doc,
+            table,
+            fib.fc_clx,
+            fib.lcb_clx,
+            from,
+            to,
+        ) else {
+            continue;
+        };
+        paragraphs.push(DocParagraph {
+            content: format!("[{label}]"),
+            paragraph_type: text_extractor::ParagraphType::Heading(2),
+            heading_level: Some(2),
+        });
+        for line in text.split('\r') {
+            let line = text_extractor::collapse_whitespace(
+                &line.replace('\x07', " "),
+            );
+            if !line.is_empty() {
+                paragraphs.push(DocParagraph {
+                    content: line,
+                    paragraph_type: text_extractor::ParagraphType::Normal,
+                    heading_level: None,
+                });
+            }
+        }
+    }
+}
+
 pub(crate) fn load_doc_paragraphs_bytes(bytes: &[u8]) -> Result<Vec<DocParagraph>, String> {
     let word_doc = cfb_reader::read_word_document_stream(bytes)?;
     let fib = fib::parse_fib(&word_doc)?;
@@ -77,11 +140,9 @@ pub(crate) fn load_doc_paragraphs_bytes(bytes: &[u8]) -> Result<Vec<DocParagraph
         fib.fc_plcf_papx,
         fib.lcb_plcf_papx,
     )?;
-    Ok(text_extractor::extract_paragraphs(
-        &reconstructed,
-        &props,
-        &stylesheet,
-    ))
+    let mut paragraphs = text_extractor::extract_paragraphs(&reconstructed, &props, &stylesheet);
+    append_side_stories(&mut paragraphs, &word_doc, &table, &fib);
+    Ok(paragraphs)
 }
 
 /// Like [`load_doc_paragraphs`] but keeps each paragraph's raw ordinal, so
