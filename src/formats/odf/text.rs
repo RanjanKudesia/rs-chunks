@@ -55,6 +55,8 @@ struct Walker {
     list_depth: usize,
     in_list_item: bool,
     ordered_stack: Vec<bool>,
+    /// `<text:list-style>` name -> numbers its items.
+    list_styles: std::collections::HashMap<String, bool>,
     table: Option<TableState>,
     // Footnotes collected for a trailing "## Notes" section.
     notes: Vec<String>,
@@ -90,6 +92,7 @@ impl Walker {
             list_depth: 0,
             in_list_item: false,
             ordered_stack: Vec::new(),
+            list_styles: std::collections::HashMap::new(),
             table: None,
             notes: Vec::new(),
             in_note_body: false,
@@ -182,10 +185,39 @@ impl Walker {
 }
 
 /// Walk `content.xml` and produce a markdown document.
+/// Map each `<text:list-style>` name to whether it numbers its items.
+///
+/// ODF puts the marker style in a definition elsewhere in the document, so a
+/// `<text:list>` on its own cannot say whether it is ordered. The walker
+/// hardcoded `false`, and every numbered list rendered as bullets —
+/// odftoolkit_Bullets_and_Numbering.odt has four numbered lists and one
+/// bulleted one, and all five came out identical. (#50)
+fn ordered_list_styles(content_xml: &str) -> std::collections::HashMap<String, bool> {
+    let mut out = std::collections::HashMap::new();
+    let mut rest = content_xml;
+    while let Some(start) = rest.find("<text:list-style") {
+        let after = &rest[start..];
+        let Some(name_at) = after.find("style:name=\"") else { break };
+        let name_rest = &after[name_at + 12..];
+        let Some(name_end) = name_rest.find('"') else { break };
+        let name = name_rest[..name_end].to_string();
+        let body_end = after.find("</text:list-style>").unwrap_or(after.len());
+        let numbered = after[..body_end].contains("<text:list-level-style-number");
+        out.insert(name, numbered);
+        rest = &after[body_end.min(after.len())..];
+        if rest.is_empty() {
+            break;
+        }
+        rest = &rest[1..];
+    }
+    out
+}
+
 pub fn content_to_markdown(content_xml: &str, kind: OdfKind) -> (String, usize) {
     let mut reader = XmlReader::from_str(content_xml);
     reader.config_mut().trim_text(false);
     let mut w = Walker::new();
+    w.list_styles = ordered_list_styles(content_xml);
     let mut buf = Vec::new();
 
     loop {
@@ -200,9 +232,14 @@ pub fn content_to_markdown(content_xml: &str, kind: OdfKind) -> (String, usize) 
                         .or(Some(1)),
                     b"list" => {
                         w.list_depth += 1;
-                        // Heuristic: numbered if a number style is referenced; we
-                        // default to bullet and let list-item text carry meaning.
-                        w.ordered_stack.push(false);
+                        // A nested list usually omits the style name and
+                        // continues its parent's, so inherit rather than
+                        // falling back to "bullet". (#50)
+                        let inherited = w.ordered_stack.last().copied().unwrap_or(false);
+                        let ordered = attr(&e, b"text:style-name")
+                            .and_then(|n| w.list_styles.get(&n).copied())
+                            .unwrap_or(inherited);
+                        w.ordered_stack.push(ordered);
                     }
                     b"list-item" => w.in_list_item = true,
                     b"table" => w.table = Some(TableState::default()),
