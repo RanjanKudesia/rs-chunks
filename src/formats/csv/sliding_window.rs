@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::chunker::parse_csv_to_rows;
+use super::chunker::{normalize_headers, parse_csv_to_rows};
 use super::common::{serialize_row_kv, serialize_row_values, CsvChunkRecord, CT_ROW_WINDOW};
 
 fn build_chunk_content(headers: &[String], rows: &[Vec<String>], include_headers: bool) -> String {
@@ -48,10 +48,16 @@ pub fn build_sliding_window_chunks(
     let step = window_size - overlap;
     let mut cursor = 0usize;
 
+    let mut headers = headers;
     while cursor < data_rows.len() {
         let end = (cursor + window_size).min(data_rows.len());
         let window = &data_rows[cursor..end];
         let row_end = row_start + window.len() - 1;
+        // Widest row seen so far, matching what streaming can know. (#25)
+        let widest = window.iter().map(Vec::len).max().unwrap_or(0);
+        if widest > headers.len() {
+            headers = normalize_headers(headers, widest);
+        }
         chunks.push(CsvChunkRecord {
             content: build_chunk_content(&headers, window, include_headers),
             content_type: CT_ROW_WINDOW.to_string(),

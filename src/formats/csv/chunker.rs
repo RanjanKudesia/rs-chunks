@@ -188,19 +188,19 @@ pub(crate) fn parse_csv_to_rows(
     // CSV cannot say whether row 1 is a header. Assuming it always is deletes
     // the first row of every headerless file — and with include_headers=True,
     // stamps its values onto every other row as labels. (#26)
-    let has_header = first_row_is_header(&headers, &data_rows);
+    // Decide from the same short lookahead streaming uses, and do NOT pad to a
+    // global maximum — streaming cannot see the whole file, so any use of
+    // whole-file knowledge here makes the two paths disagree on a ragged file
+    // and breaks the "streaming output is identical to batch" guarantee (#25).
+    // Widths are grown per emitted chunk instead, exactly as streaming does.
+    let sniff = &data_rows[..data_rows.len().min(HEADER_SNIFF_ROWS)];
+    let has_header = first_row_is_header(&headers, sniff);
     if !has_header {
-        max_width = max_width.max(headers.len());
+        let width = headers.len().max(sniff.iter().map(Vec::len).max().unwrap_or(0));
         data_rows.insert(0, std::mem::take(&mut headers));
-        headers = synthetic_headers(max_width);
+        headers = synthetic_headers(width);
     }
-
-    headers = normalize_headers(headers, max_width);
-    for row in &mut data_rows {
-        if row.len() < max_width {
-            row.extend(std::iter::repeat_with(String::new).take(max_width - row.len()));
-        }
-    }
+    let _ = max_width;
 
     Ok((headers, data_rows, delimiter, has_header))
 }
@@ -239,10 +239,17 @@ pub fn build_row_chunks(
 
     let mut chunks = Vec::new();
     let mut row_start = 1usize;
+    let mut headers = headers;
 
     for (chunk_index, group) in data_rows.chunks(rows_per_chunk).enumerate() {
         let row_count = group.len();
         let row_end = row_start + row_count - 1;
+        // Grow to the widest row seen SO FAR, not the widest in the file —
+        // that is all streaming can know at this point. (#25)
+        let widest = group.iter().map(Vec::len).max().unwrap_or(0);
+        if widest > headers.len() {
+            headers = normalize_headers(headers, widest);
+        }
         chunks.push(CsvChunkRecord {
             content: build_content(&headers, group, include_headers),
             content_type: CT_ROW_GROUP.to_string(),
