@@ -128,6 +128,29 @@ pub fn parse_message_bytes(raw: &[u8]) -> EmlDocument {
     result.unwrap_or_default()
 }
 
+/// Attachment text worth inlining, or `None`.
+///
+/// A `text/*` content type is not a promise. `mimekit_missing-subtype.eml`
+/// carries a gzip named `document.xml.gz` under a `text/` type, and inlining
+/// its bytes would inject binary noise into the chunk. Require the decoded text
+/// to be overwhelmingly printable before trusting the label.
+fn readable_attachment_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let total = trimmed.chars().count();
+    let printable = trimmed
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .count();
+    // 5% slack for the odd stray control character in real mail.
+    if printable * 20 < total * 19 || trimmed.contains('\u{0}') {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
     part.content_type().map(|ct| match ct.subtype() {
         Some(sub) => format!("{}/{}", ct.ctype(), sub),
@@ -187,12 +210,26 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
                     embedded_text: None,
                 });
             }
-            PartType::Text(t) | PartType::Html(t) => {
+            PartType::Text(t) => {
+                // A text attachment's content is content. It was decoded and
+                // then thrown away, so only the filename line rendered. (#35)
                 doc.attachments.push(EmlAttachment {
                     filename: part.attachment_name().map(|s| s.to_string()),
                     mime: full_content_type(part),
                     size: t.len(),
-                    embedded_text: None,
+                    embedded_text: readable_attachment_text(t.as_ref()),
+                });
+            }
+            PartType::Html(t) => {
+                // An HTML attachment goes through the same converter the HTML
+                // *body* uses. Inlining the raw markup would dump a DOCTYPE and
+                // a stylesheet into the chunk instead of the words. (#35)
+                let text = html_to_markdown_str(t.as_ref());
+                doc.attachments.push(EmlAttachment {
+                    filename: part.attachment_name().map(|s| s.to_string()),
+                    mime: full_content_type(part),
+                    size: t.len(),
+                    embedded_text: readable_attachment_text(&text),
                 });
             }
             _ => {}
