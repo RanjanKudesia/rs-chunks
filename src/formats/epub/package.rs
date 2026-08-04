@@ -18,6 +18,12 @@ type Zip = ZipArchive<Cursor<Vec<u8>>>;
 pub struct EpubDoc {
     pub href: String,
     pub bytes: Vec<u8>,
+    /// This spine document is the book's navigation, not its content.
+    ///
+    /// A TOC's link list chunked as `short_disconnected_paragraph` is
+    /// indistinguishable from real prose and pollutes retrieval — every book
+    /// contributes a chunk that is just chapter names. (#40)
+    pub is_navigation: bool,
 }
 
 #[derive(Default)]
@@ -27,10 +33,116 @@ pub struct EpubPackage {
     pub creator: Option<String>,
     pub identifier: Option<String>,
     pub version: Option<String>,
+    /// Every value of each repeatable Dublin Core element, in document order.
+    ///
+    /// The singular fields above keep the FIRST value, which is what they
+    /// always held — changing their type would break consumers. But collapsing
+    /// to the first is real loss: `tika_testEPUB_multi-metadata-vals.epub` has
+    /// two authors, two identifiers, two publishers, two languages and **eight
+    /// contributors**, and contributors were not surfaced at all. (#38)
+    pub creators: Vec<String>,
+    pub identifiers: Vec<String>,
+    pub publishers: Vec<String>,
+    pub contributors: Vec<String>,
+    pub subjects: Vec<String>,
+    pub languages: Vec<String>,
+    /// The book's own table of contents: `(title, href)` in reading order,
+    /// from `nav.xhtml` (EPUB 3) or `toc.ncx` (EPUB 2). Never parsed before, so
+    /// chapter titles surfaced only when the HTML happened to use headings. (#39)
+    pub toc: Vec<(String, String)>,
     /// XHTML content documents in spine (reading) order.
     pub spine: Vec<EpubDoc>,
     /// Embedded images: full zip path → bytes.
     pub images: Vec<(String, Vec<u8>)>,
+}
+
+/// A book's own table of contents, from `nav.xhtml` (EPUB 3) or `toc.ncx`
+/// (EPUB 2). Returns `(title, href)` in document order.
+///
+/// Both formats bury the same two facts in different places: NCX puts the label
+/// in `<navLabel><text>` and the target in `<content src>`; the XHTML nav puts
+/// both on an `<a href>`. Handled with one walker rather than two.
+fn parse_toc(xml: &[u8]) -> Vec<(String, String)> {
+    let mut reader = XmlReader::from_reader(std::io::BufReader::new(xml));
+    let mut buf = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+
+    let mut in_text = false;     // <text> (ncx) or <a> (xhtml)
+    let mut label = String::new();
+    let mut pending_src: Option<String> = None;
+    let mut anchor_href: Option<String> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                match local_name(e.name()).as_slice() {
+                    b"text" => {
+                        in_text = true;
+                        label.clear();
+                    }
+                    b"a" => {
+                        in_text = true;
+                        label.clear();
+                        anchor_href = attr(e, b"href");
+                    }
+                    b"content" => pending_src = attr(e, b"src"),
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if in_text {
+                    label.push_str(e.decode().unwrap_or_default().as_ref());
+                }
+            }
+            Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
+                b"a" => {
+                    in_text = false;
+                    let title = label.trim().to_string();
+                    if let (false, Some(href)) = (title.is_empty(), anchor_href.take()) {
+                        out.push((title, href));
+                    }
+                }
+                b"text" => in_text = false,
+                b"navPoint" => {
+                    let title = label.trim().to_string();
+                    if let (false, Some(src)) = (title.is_empty(), pending_src.take()) {
+                        out.push((title, src));
+                    }
+                    label.clear();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// EPUB 3 marks its navigation document with `properties="nav"`. EPUB 2 has no
+/// such marker — the TOC is just another spine document — so fall back to the
+/// naming convention every EPUB 2 producer follows. A heuristic, and labelled
+/// as one: it only sets a metadata flag, never drops content. (#40)
+fn looks_like_navigation(id: &str, href: &str) -> bool {
+    let stem = href
+        .rsplit('/')
+        .next()
+        .unwrap_or(href)
+        .split('.')
+        .next()
+        .unwrap_or("");
+    [id, stem].iter().any(|s| {
+        let squashed: String = s
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        matches!(
+            squashed.as_str(),
+            "toc" | "tableofcontents" | "contents" | "nav" | "navigation"
+        )
+    })
 }
 
 fn local_name(name: QName<'_>) -> Vec<u8> {
@@ -144,7 +256,7 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
 
     // ── Parse the OPF: metadata + manifest (id→href,media-type) + spine order ──
     let mut pkg = EpubPackage::default();
-    let mut manifest: HashMap<String, (String, String)> = HashMap::new();
+    let mut manifest: HashMap<String, (String, String, String)> = HashMap::new();
     let mut spine_idrefs: Vec<String> = Vec::new();
 
     let mut reader = XmlReader::from_reader(opf.as_slice());
@@ -162,13 +274,15 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                 let name = local_name(e.name());
                 match name.as_slice() {
                     b"package" => pkg.version = attr(e, b"version"),
-                    b"title" | b"language" | b"creator" | b"identifier" => {
+                    b"title" | b"language" | b"creator" | b"identifier" | b"publisher"
+                    | b"contributor" | b"subject" => {
                         cur_meta = Some(name);
                     }
                     b"item" => {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
-                            manifest.insert(id, (href, mt));
+                            let props = attr(e, b"properties").unwrap_or_default();
+                            manifest.insert(id, (href, mt, props));
                         }
                     }
                     b"itemref" => {
@@ -185,7 +299,8 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                     b"item" => {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
-                            manifest.insert(id, (href, mt));
+                            let props = attr(e, b"properties").unwrap_or_default();
+                            manifest.insert(id, (href, mt, props));
                         }
                     }
                     b"itemref" => {
@@ -207,6 +322,22 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                             b"identifier" => &mut pkg.identifier,
                             _ => &mut None,
                         };
+                        // Every occurrence goes into the list; the singular
+                        // field keeps the first, as it always did. (#38)
+                        let list = match m.as_slice() {
+                            b"creator" => Some(&mut pkg.creators),
+                            b"identifier" => Some(&mut pkg.identifiers),
+                            b"publisher" => Some(&mut pkg.publishers),
+                            b"contributor" => Some(&mut pkg.contributors),
+                            b"subject" => Some(&mut pkg.subjects),
+                            b"language" => Some(&mut pkg.languages),
+                            _ => None,
+                        };
+                        if let Some(list) = list {
+                            if !list.iter().any(|v| v == &text) {
+                                list.push(text.clone());
+                            }
+                        }
                         if slot.is_none() {
                             *slot = Some(text);
                         }
@@ -221,14 +352,33 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
 
     // ── Resolve spine → ordered XHTML docs; collect images ──
     for idref in &spine_idrefs {
-        if let Some((href, _mt)) = manifest.get(idref) {
+        if let Some((href, _mt, props)) = manifest.get(idref) {
             let full = resolve_href(&opf_dir, href);
+            let is_navigation =
+                props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
             if let Some(bytes) = read_entry(&mut zip, &full) {
-                pkg.spine.push(EpubDoc { href: full, bytes });
+                pkg.spine.push(EpubDoc { href: full, bytes, is_navigation });
             }
         }
     }
-    for (href, mt) in manifest.values() {
+
+    // The TOC lives in the nav document (EPUB 3) or the NCX (EPUB 2). (#39)
+    let toc_href = manifest
+        .values()
+        .find(|(_, _, props)| props.split_whitespace().any(|p| p == "nav"))
+        .or_else(|| {
+            manifest
+                .values()
+                .find(|(_, mt, _)| mt == "application/x-dtbncx+xml")
+        })
+        .map(|(href, _, _)| resolve_href(&opf_dir, href));
+    if let Some(href) = toc_href {
+        if let Some(bytes) = read_entry(&mut zip, &href) {
+            pkg.toc = parse_toc(&bytes);
+        }
+    }
+
+    for (href, mt, _props) in manifest.values() {
         if mt.starts_with("image/") {
             let full = resolve_href(&opf_dir, href);
             if let Some(bytes) = read_entry(&mut zip, &full) {

@@ -41,6 +41,17 @@ fn doc_metadata(pkg: &EpubPackage) -> serde_json::Value {
         "identifier": pkg.identifier,
         "epub_version": pkg.version,
         "spine_count": pkg.spine.len(),
+        // Plural forms carry EVERY value. The singular fields above keep the
+        // first, so existing consumers are unaffected. (#38)
+        "creators": pkg.creators,
+        "identifiers": pkg.identifiers,
+        "publishers": pkg.publishers,
+        "contributors": pkg.contributors,
+        "subjects": pkg.subjects,
+        "languages": pkg.languages,
+        // The book's own chapter list, so a consumer gets titles even when the
+        // XHTML uses no heading tags. (#39)
+        "toc": pkg.toc.iter().map(|(t, h)| json!({ "title": t, "href": h })).collect::<Vec<_>>(),
     })
 }
 
@@ -74,6 +85,9 @@ pub fn chunk_package(
                 map.insert("document_metadata".to_string(), meta.clone());
                 map.insert("spine_index".to_string(), json!(spine_index));
                 map.insert("href".to_string(), json!(doc.href));
+                // A TOC's link list reads exactly like prose once chunked.
+                // Flag it so retrieval can skip it. (#40)
+                map.insert("is_navigation".to_string(), json!(doc.is_navigation));
             }
         }
         out.append(&mut records);
