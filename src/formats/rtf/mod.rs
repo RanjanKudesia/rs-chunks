@@ -1,6 +1,13 @@
 //! `.rtf` Rich Text Format chunking (markdown pipeline).
 
+pub mod encoding;
 pub mod extract;
+pub mod fonts;
+pub mod lists;
+pub mod meta;
+pub mod scan;
+pub mod styles;
+pub mod writer;
 
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
