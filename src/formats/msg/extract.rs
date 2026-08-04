@@ -23,6 +23,10 @@ const PID_RTF_COMPRESSED: u16 = 0x1009;
 const PID_SENDER_NAME: u16 = 0x0C1A;
 const PID_SENDER_EMAIL: u16 = 0x0C1F;
 const PID_SENDER_SMTP: u16 = 0x5D01;
+/// PidTagSenderAddrType — "SMTP" for a real address, "EX" for an Exchange DN.
+const PID_SENDER_ADDRTYPE: u16 = 0x0C1E;
+/// PidTagRecipientAddrType, the per-recipient equivalent.
+const PID_RECIP_ADDRTYPE: u16 = 0x3002;
 const PID_DISPLAY_TO: u16 = 0x0E04;
 const PID_DISPLAY_CC: u16 = 0x0E03;
 const PID_DISPLAY_BCC: u16 = 0x0E02;
@@ -244,13 +248,48 @@ fn recipient_type_label(t: u32) -> &'static str {
     }
 }
 
+/// An address worth showing a reader, or `None`.
+///
+/// Outlook stores an Exchange sender as an X.500 legacyDN, and formatting it
+/// like an email produced output such as
+/// `Ashley, Carl E (PACE) </O=GOV+DOS/OU=PUBAFFF/CN=RECIPIENTS/CN=HO/CN=ASHLEYCE2>`
+/// — noise that is not routable and not what the sender's address is. The
+/// display name alone is the honest answer when no SMTP address is recorded.
+///
+/// `addr_type` is authoritative when present (`"SMTP"` vs `"EX"`); the shape
+/// check is the fallback, because plenty of files omit it.
+fn usable_email(addr_type: Option<&str>, value: Option<String>) -> Option<String> {
+    let value = value?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(t) = addr_type {
+        if !t.trim().eq_ignore_ascii_case("SMTP") {
+            return None;
+        }
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with("/O=") || upper.contains("/CN=RECIPIENTS/") || upper.starts_with("EX:") {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 fn read_recipients(cfb: &mut Cfb, codepage: u32, doc: &mut MsgDocument) {
     let storages = child_storages(cfb, "/", "__recip_version1.0");
     for st in storages {
         let prefix = format!("/{st}");
         let name = read_string(cfb, &prefix, PID_RECIP_NAME, codepage);
-        let email = read_string(cfb, &prefix, PID_RECIP_SMTP, codepage)
-            .or_else(|| read_string(cfb, &prefix, PID_RECIP_EMAIL, codepage));
+        // Same rule as the sender: an Exchange DN is not an address. (#47)
+        let addr_type = read_string(cfb, &prefix, PID_RECIP_ADDRTYPE, codepage);
+        let email = usable_email(None, read_string(cfb, &prefix, PID_RECIP_SMTP, codepage))
+            .or_else(|| {
+                usable_email(
+                    addr_type.as_deref(),
+                    read_string(cfb, &prefix, PID_RECIP_EMAIL, codepage),
+                )
+            });
         let display = match (name, email) {
             (Some(n), Some(e)) if n != e => format!("{n} <{e}>"),
             (Some(n), _) => n,
@@ -565,8 +604,16 @@ pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
 
     // From (name + best-available email).
     let from_name = read_string(&mut cfb, "", PID_SENDER_NAME, codepage);
-    let from_email = read_string(&mut cfb, "", PID_SENDER_SMTP, codepage)
-        .or_else(|| read_string(&mut cfb, "", PID_SENDER_EMAIL, codepage));
+    // PidTagSenderSmtpAddress is SMTP by definition; PidTagSenderEmailAddress
+    // is only an address when the addr-type says so. (#47)
+    let sender_addr_type = read_string(&mut cfb, "", PID_SENDER_ADDRTYPE, codepage);
+    let from_email = usable_email(None, read_string(&mut cfb, "", PID_SENDER_SMTP, codepage))
+        .or_else(|| {
+            usable_email(
+                sender_addr_type.as_deref(),
+                read_string(&mut cfb, "", PID_SENDER_EMAIL, codepage),
+            )
+        });
     doc.from = match (from_name, from_email) {
         (Some(n), Some(e)) if n != e => Some(format!("{n} <{e}>")),
         (Some(n), _) => Some(n),
