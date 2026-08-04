@@ -125,7 +125,11 @@ pub fn open_spreadsheet_from_bytes(data: &[u8], ext: &str) -> Result<Workbook, S
     let owned: Vec<u8> = if ext == "ods" {
         repair_ods_bytes(data).unwrap_or_else(|| data.to_vec())
     } else {
-        data.to_vec()
+        // An XLM macro sheet or a <sheet> with an empty r:id makes calamine
+        // reject the whole workbook at open time, before any sheet is read —
+        // so the per-sheet isolation below never gets a chance. Drop those
+        // entries from the sheet list and the ordinary worksheets load. (#21)
+        super::repair::repair_ooxml_workbook_bytes(data).unwrap_or_else(|| data.to_vec())
     };
     let result = catch_calamine_panic(move || {
         calamine::open_workbook_auto_from_rs(std::io::Cursor::new(owned))

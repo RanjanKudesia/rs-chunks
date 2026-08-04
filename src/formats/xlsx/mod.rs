@@ -4,6 +4,7 @@
 
 pub mod common;
 pub mod images;
+pub mod repair;
 mod page_aware;
 mod semantic;
 mod sheet;
