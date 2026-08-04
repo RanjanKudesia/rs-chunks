@@ -71,6 +71,8 @@ pub struct MsgDocument {
     /// Item-type-specific (label, value) pairs, e.g. appointment when/where.
     pub item_fields: Vec<(String, String)>,
     pub attachments: Vec<Attachment>,
+    /// Attached images as (filename, bytes) for `list_images`, mirroring `.eml`.
+    pub images: Vec<(String, Vec<u8>)>,
 }
 
 // ── Low-level CFB / property access ───────────────────────────────────────────
@@ -264,6 +266,63 @@ fn read_recipients(cfb: &mut Cfb, codepage: u32, doc: &mut MsgDocument) {
     }
 }
 
+/// Extension for an image attachment, from its MIME type or its filename.
+///
+/// `.msg` records both, and neither is reliable on its own: Outlook often
+/// stores `application/octet-stream` for a perfectly good JPEG, and plenty of
+/// attachments have no filename at all.
+fn image_ext_for(mime: Option<&str>, filename: Option<&str>) -> Option<&'static str> {
+    if let Some(name) = filename {
+        let lower = name.to_ascii_lowercase();
+        for ext in [".png", ".jpeg", ".jpg", ".gif", ".webp", ".bmp", ".tiff", ".tif"] {
+            if lower.ends_with(ext) {
+                return Some(match ext {
+                    ".jpg" => ".jpg",
+                    ".tif" => ".tif",
+                    e => e,
+                });
+            }
+        }
+    }
+    let m = mime?.to_ascii_lowercase();
+    let m = m.split(';').next()?.trim().to_string();
+    match m.as_str() {
+        "image/png" => Some(".png"),
+        "image/jpeg" | "image/jpg" => Some(".jpg"),
+        "image/gif" => Some(".gif"),
+        "image/webp" => Some(".webp"),
+        "image/bmp" | "image/x-ms-bmp" => Some(".bmp"),
+        "image/tiff" => Some(".tiff"),
+        _ => None,
+    }
+}
+
+/// Recognise an image from its magic bytes.
+///
+/// The last line of defence for the `application/octet-stream` + no-extension
+/// case, which is common in real Outlook mail.
+fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(".png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(".jpg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(".gif");
+    }
+    if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some(".webp");
+    }
+    if bytes.starts_with(b"BM") {
+        return Some(".bmp");
+    }
+    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A]) {
+        return Some(".tiff");
+    }
+    None
+}
+
 fn read_attachments(cfb: &mut Cfb, codepage: u32, depth: usize, doc: &mut MsgDocument) {
     if depth > 3 {
         return; // guard against pathological nesting
@@ -297,6 +356,26 @@ fn read_attachments(cfb: &mut Cfb, codepage: u32, depth: usize, doc: &mut MsgDoc
                 }
                 if att.filename.is_none() {
                     att.filename = sub.subject.clone().map(|s| format!("{s}.msg"));
+                }
+            }
+        }
+        // Non-embedded attachments: read the bytes so image attachments can be
+        // returned by `list_images`, which was a no-op for .msg while .eml has
+        // always supported it. tika_test-outlook2003.msg carries 11 JPEGs. (#48)
+        if method != 5 {
+            if let Some(bytes) = read_binary(cfb, &prefix, PID_ATTACH_DATA) {
+                if !bytes.is_empty() {
+                    if let Some(ext) = image_ext_for(att.mime.as_deref(), att.filename.as_deref())
+                        .or_else(|| sniff_image_ext(&bytes))
+                    {
+                        let name = match att.filename.as_deref() {
+                            Some(f) if !f.trim().is_empty() => f.to_string(),
+                            _ => {
+                                format!("image_{}{ext}", doc.images.len() + 1)
+                            }
+                        };
+                        doc.images.push((name, bytes));
+                    }
                 }
             }
         }

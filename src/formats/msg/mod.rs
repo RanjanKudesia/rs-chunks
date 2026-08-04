@@ -57,7 +57,7 @@ fn loaded_from_doc(doc: extract::MsgDocument) -> Result<Loaded> {
         "has_attachments": !doc.attachments.is_empty(),
         "attachment_count": doc.attachments.len(),
     });
-    Ok(Loaded { markdown, images: Vec::new(), metadata })
+    Ok(Loaded { markdown, images: doc.images, metadata })
 }
 
 pub fn chunk(
@@ -73,6 +73,40 @@ pub fn chunk(
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
     pipeline::chunk_opts(&load(file_path)?, opts)
+}
+
+/// `list_images=True` for `.msg`, mirroring the `.eml` entry points it was
+/// missing entirely. (#48)
+pub fn chunk_with_images(
+    file_path: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    pipeline::chunk_with_images(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+}
+
+pub fn chunk_with_images_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    pipeline::chunk_with_images(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+}
+
+pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+    let l = load(file_path)?;
+    Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
+}
+
+pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+    let l = load_bytes(data)?;
+    Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
