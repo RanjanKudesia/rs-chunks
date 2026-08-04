@@ -8,6 +8,7 @@
 //!   [`chunk_pdf_markdown`] / [`chunk_pdf_markdown_with_images`]. This is how the
 //!   browser/WASM build handles PDF without bundling PDFium.
 
+pub mod author_block;
 #[cfg(feature = "pdf-native")]
 pub mod liteparse_backend;
 
@@ -20,9 +21,11 @@ use crate::error::ChunkError;
 #[cfg(feature = "pdf-native")]
 use crate::options::ChunkOptions;
 
+/// Single funnel for both entry styles, so the native and host-composed paths
+/// cannot drift: whatever normalisation PDF markdown needs happens here once.
 fn pdf_loaded(markdown: String, images: Vec<(String, Vec<u8>)>, total_pages: usize) -> Loaded {
     Loaded {
-        markdown,
+        markdown: author_block::normalize(&markdown),
         images,
         metadata: serde_json::json!({ "source_type": "pdf", "total_pages": total_pages }),
     }
