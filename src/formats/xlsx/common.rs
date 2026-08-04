@@ -624,6 +624,21 @@ fn build_chunk_content(
         .join("\n")
 }
 
+/// Record which sheets were skipped, on every chunk.
+///
+/// #8 made an unreadable sheet skippable instead of fatal, which was right —
+/// but it made the loss *silent*: a workbook whose chart sheet cannot be read
+/// now returns the other sheets and says nothing. `skipped_sheets` is always
+/// present (empty when nothing was dropped) so its absence never has to be
+/// interpreted. (#66)
+pub fn stamp_skipped_sheets(chunks: &mut [XlsxChunkRecord], skipped: &[String]) {
+    for chunk in chunks.iter_mut() {
+        if let Some(map) = chunk.metadata.as_object_mut() {
+            map.insert("skipped_sheets".into(), json!(skipped));
+        }
+    }
+}
+
 pub fn build_row_chunks(
     data: &[u8],
     ext: &str,
@@ -649,6 +664,7 @@ pub fn build_row_chunks(
     let mut chunks = Vec::new();
     let mut readable_sheets = 0usize;
     let mut first_sheet_error: Option<String> = None;
+    let mut skipped_sheets: Vec<String> = Vec::new();
     for sheet_name in selected_sheets {
         let sheet_index = workbook_sheet_names
             .iter()
@@ -664,6 +680,7 @@ pub fn build_row_chunks(
             }
             Err(e) => {
                 first_sheet_error.get_or_insert(e);
+                skipped_sheets.push(sheet_name.clone());
                 continue;
             }
         };
@@ -756,5 +773,6 @@ pub fn build_row_chunks(
         }
     }
 
+    stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
