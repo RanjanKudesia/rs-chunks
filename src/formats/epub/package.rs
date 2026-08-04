@@ -4,6 +4,7 @@
 //! `<manifest>`+`<spine>` → the ordered list of XHTML content documents (the
 //! reading order). Works for both EPUB 2 and EPUB 3 (both expose manifest+spine).
 
+use crate::entities::read_event_folding_entities;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
@@ -112,7 +113,10 @@ fn find_opf_path(zip: &mut Zip) -> Result<String, String> {
     let mut reader = XmlReader::from_reader(data.as_slice());
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Bad container.xml: {e}")),
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -148,7 +152,10 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
     let mut buf = Vec::new();
     let mut cur_meta: Option<Vec<u8>> = None; // which dc:* element we're inside
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Bad OPF XML: {e}")),
             Ok(Event::Start(ref e)) => {

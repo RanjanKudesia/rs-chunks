@@ -10,6 +10,7 @@
 //! of the diagram that PowerPoint may omit or leave stale, and it duplicates
 //! text the data model already holds authoritatively.
 
+use crate::entities::read_event_folding_entities;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::io::BufReader;
@@ -89,7 +90,9 @@ pub fn parse_diagram_xml(xml_bytes: &[u8]) -> Vec<String> {
     let mut para_text = String::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) | Err(_) => break,
             Ok(Event::Start(ref e)) => match local_name(e.name()).as_slice() {
                 b"pt" => {

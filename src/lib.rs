@@ -28,6 +28,7 @@ pub mod error;
 pub mod formats;
 pub mod options;
 
+pub(crate) mod entities;
 pub(crate) mod shared;
 
 pub use chunk::Chunk;

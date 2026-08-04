@@ -3,6 +3,7 @@
 //! text in `text:p`/`text:h`, lists in `text:list`, tables in `table:table`,
 //! links in `text:a`, footnotes in `text:note`, and (odp) slides in `draw:page`.
 
+use crate::entities::read_event_folding_entities;
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 
@@ -188,7 +189,9 @@ pub fn content_to_markdown(content_xml: &str, kind: OdfKind) -> (String, usize) 
     let mut buf = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 match local(name.as_ref()) {

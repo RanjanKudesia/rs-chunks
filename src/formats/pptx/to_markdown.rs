@@ -1,3 +1,4 @@
+use crate::entities::read_event_folding_entities;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Cursor, Read};
@@ -197,7 +198,10 @@ fn parse_slide_for_markdown(
     let mut slide = SlideMarkdownContent::default();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(XmlEvent::Start(ref e)) => {
                 let ename = e.name();
                 let ebytes = ename.as_ref();
@@ -733,7 +737,10 @@ fn extract_presentation_title(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Opti
     let mut title = String::new();
 
     loop {
-        match reader.read_event_into(&mut event_buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut event_buf, &mut spill, &mut is_entity) {
             Ok(XmlEvent::Start(ref e)) => {
                 let ename = e.name();
                 let ebytes = ename.as_ref();
@@ -802,7 +809,10 @@ fn parse_slide_rels_with_images(
     let mut buf = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(XmlEvent::Empty(ref e)) | Ok(XmlEvent::Start(ref e)) => {
                 let ename = e.name();
                 let ebytes = ename.as_ref();

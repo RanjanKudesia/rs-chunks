@@ -1,3 +1,4 @@
+use crate::entities::read_event_folding_entities;
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -107,7 +108,9 @@ fn parse_print_areas_for_workbook(
     let mut out: HashMap<usize, Vec<(usize, usize, usize, usize)>> = HashMap::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse workbook XML: {e}")),
             Ok(Event::Start(ref e)) => {

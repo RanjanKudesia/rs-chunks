@@ -1,4 +1,5 @@
 /// Shared types, slide parser, and helpers for all PPTX chunking strategies.
+use crate::entities::read_event_folding_entities;
 use quick_xml::events::attributes::Attributes;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
@@ -282,7 +283,10 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
     let mut table_all_rows: Vec<String> = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("XML parse error in slide: {e}")),
             Ok(Event::Start(ref e)) => {
@@ -390,13 +394,11 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
             }
             Ok(Event::Text(ref e)) => {
                 if in_t {
-                    let txt = e.decode().unwrap_or_default().trim().to_string();
-                    if !txt.is_empty() {
-                        if !t_buf.is_empty() {
-                            t_buf.push(' ');
-                        }
-                        t_buf.push_str(&txt);
-                    }
+                    // One <a:t> arrives as several events when it contains
+                    // entity references, so concatenate verbatim here and let
+                    // the flush at </a:t> do the trimming and joining. Trimming
+                    // per event would put a space inside a word.
+                    t_buf.push_str(e.decode().unwrap_or_default().as_ref());
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -404,6 +406,7 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                 match local.as_slice() {
                     b"t" if in_t => {
                         in_t = false;
+                        let t_buf = std::mem::take(&mut t_buf).trim().to_string();
                         if !t_buf.is_empty() {
                             // Route accumulated text to the correct buffer.
                             if in_tc_para {
@@ -417,7 +420,6 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                                 }
                                 para_text.push_str(&t_buf);
                             }
-                            t_buf.clear();
                         }
                     }
                     b"p" if in_para => {
@@ -519,7 +521,10 @@ pub fn parse_presentation_sections(
     let mut in_section_sld_id_lst = false;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(_) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -902,7 +907,10 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
     let mut pic_alt: Option<String> = None;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Start(ref e)) => {
                 let raw = e.name().as_ref().to_vec();
                 let local: &[u8] = raw.rsplit(|b| *b == b':').next().unwrap_or(&raw);

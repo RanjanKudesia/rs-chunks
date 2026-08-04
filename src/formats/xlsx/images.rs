@@ -1,3 +1,4 @@
+use crate::entities::read_event_folding_entities;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Read;
@@ -98,7 +99,9 @@ fn parse_sheet_drawing_targets(
     let mut targets = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) => break,
             Err(_) => return Vec::new(),
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -146,7 +149,9 @@ fn parse_drawing_image_rids(
     let mut images = HashMap::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) => break,
             Err(_) => return HashMap::new(),
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -188,7 +193,9 @@ fn extract_drawing_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<Str
     let mut pic_alt: Option<String> = None;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) | Err(_) => break,
             Ok(Event::Start(ref e)) => {
                 let raw = e.name().as_ref().to_vec();
@@ -432,7 +439,9 @@ pub fn collect_all_ods_images(
     let mut capture_text_into: Option<&'static str> = None;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) | Err(_) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let name = local_name(e.name());
