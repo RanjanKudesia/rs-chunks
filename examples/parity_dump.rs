@@ -1,10 +1,16 @@
 //! Dumps chunks-rs output for every implemented fixture × mode as JSON lines,
-//! for cross-checking against the Python engine. Each line:
+//! for cross-checking against the Python engine. Each line is either
 //!   {"path": <abs>, "ext": <ext>, "mode": <mode>, "ok": bool, "chunks": [...]}
+//! or, once per file,
+//!   {"path": <abs>, "ext": <ext>, "mode": "__markdown__", "ok": bool, "markdown": <str>}
+//!
+//! `get_markdown` is dumped because chunks alone were not enough: TECH_DEBT #75
+//! was a whole public API corrupting text while this harness stayed at 0
+//! mismatches, because it never looked at markdown.
 
 use std::path::PathBuf;
 
-use chunks_rs::get_chunks;
+use chunks_rs::{get_chunks, get_markdown};
 
 const PROSE_EXTS: &[&str] = &[
     "md", "txt", "html", "htm", "json", "jsonl", "ndjson", "eml", "mbox", "odt", "odp", "msg",
@@ -61,6 +67,16 @@ fn main() {
             continue;
         }
         let p = path.to_str().unwrap();
+        // One markdown record per file — the surface #75 hid in.
+        let line = match get_markdown(p) {
+            Ok(md) => serde_json::json!({
+                "path": p, "ext": ext, "mode": "__markdown__", "ok": true, "markdown": md,
+            }),
+            Err(e) => serde_json::json!({
+                "path": p, "ext": ext, "mode": "__markdown__", "ok": false, "error": e.to_string(),
+            }),
+        };
+        println!("{}", serde_json::to_string(&line).unwrap());
         for mode in modes {
             match get_chunks(p, mode, 3, 1, 3, 15) {
                 Ok(chunks) => {

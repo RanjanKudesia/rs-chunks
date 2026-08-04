@@ -7,7 +7,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, ".")  # run from py_chunks/ dir
-from py_chunks import get_chunks  # noqa: E402
+from py_chunks import get_chunks, get_markdown  # noqa: E402
 
 passed = defaultdict(int)
 failed = defaultdict(int)
@@ -21,6 +21,34 @@ for raw in sys.stdin:
     rec = json.loads(raw)
     path, ext, mode = rec["path"], rec["ext"], rec["mode"]
     key = ext
+
+    # get_markdown is a separate public API and diverged silently once (#75),
+    # so it is compared here rather than assumed to follow the chunks.
+    if mode == "__markdown__":
+        try:
+            py_md = get_markdown(path)
+        except Exception as e:  # noqa: BLE001
+            if not rec["ok"]:
+                passed[key] += 1
+            else:
+                errors[key] += 1
+                if len(mismatch_samples) < 25:
+                    mismatch_samples.append(f"[{ext} markdown] PY errored but RS ok: {path}: {e}")
+            continue
+        if not rec["ok"]:
+            errors[key] += 1
+            if len(mismatch_samples) < 25:
+                mismatch_samples.append(
+                    f"[{ext} markdown] RS errored but PY ok: {path}: {rec.get('error')}")
+        elif py_md == rec["markdown"]:
+            passed[key] += 1
+        else:
+            failed[key] += 1
+            if len(mismatch_samples) < 25:
+                mismatch_samples.append(
+                    f"[{ext} markdown] differs: {path} "
+                    f"(rs {len(rec['markdown'])} chars, py {len(py_md)} chars)")
+        continue
 
     try:
         py_chunks = get_chunks(path, mode=mode, window_size=3, overlap=1,
