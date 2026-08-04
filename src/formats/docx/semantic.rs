@@ -10,7 +10,6 @@ use zip::ZipArchive;
 
 const MAX_CHUNK_CHARS: usize = 1500;
 const SHORT_PARAGRAPH_CHARS: usize = 80;
-const MIN_SHORT_MERGE_OUTPUT_CHARS: usize = 60;
 
 const REFERENCE_STARTS: [&str; 8] = [
     "this", "it", "they", "these", "that", "those", "its", "their",
@@ -170,9 +169,9 @@ fn build_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<ChunkRecordI
         return Vec::new();
     }
 
-    let semantic_chunks = prune_small_short_chunks(propagate_section_headings(
+    let semantic_chunks = propagate_section_headings(
         merge_heading_singletons(group_semantic_chunks(cleaned)),
-    ));
+    );
     semantic_chunks
         .into_iter()
         .map(|chunk| {
@@ -193,55 +192,61 @@ fn build_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<ChunkRecordI
         .collect()
 }
 
+/// Fold a lone heading into the body chunk that follows it.
+///
+/// A heading is held back until the next chunk arrives, because it only reads
+/// as a heading once there is a body to head. But holding it back is not the
+/// same as discarding it: if no body ever arrives — the document ends on a
+/// heading, or two headings run together, or the whole document is short
+/// paragraphs — the held-back text must still be emitted on its own.
+///
+/// It previously was not, and `is_heading_singleton` treats *any* paragraph
+/// under 30 characters as a heading. So a document made only of short lines had
+/// every line held back and then dropped, and semantic mode returned nothing at
+/// all while every other mode returned the text (poi_chartex.docx,
+/// poi_saut_page.docx).
 fn merge_heading_singletons(chunks: Vec<SemanticChunk>) -> Vec<SemanticChunk> {
     let mut merged: Vec<SemanticChunk> = Vec::new();
-    let mut pending_heading: Option<(String, Option<u32>)> = None;
+    let mut pending: Option<SemanticChunk> = None;
 
     for mut chunk in chunks {
         if is_heading_singleton(&chunk) {
-            pending_heading = chunk
-                .paragraphs
-                .into_iter()
-                .next()
-                .map(|heading| (heading, chunk.section_heading_level));
+            // A second heading in a row means the first one never found a body.
+            // Emit it as its own chunk rather than letting it fall on the floor.
+            if let Some(orphan) = pending.replace(chunk) {
+                merged.push(orphan);
+            }
             continue;
         }
 
-        if let Some((heading, heading_level)) = pending_heading.take() {
+        if let Some(held) = pending.take() {
             if has_actual_body_content(&chunk) {
+                let heading = held.paragraphs.into_iter().next().unwrap_or_default();
                 if chunk.section_heading.is_none() {
                     chunk.section_heading = Some(heading.clone());
                 }
                 if chunk.section_heading_level.is_none() {
-                    chunk.section_heading_level = heading_level;
+                    chunk.section_heading_level = held.section_heading_level;
                 }
                 let mut paragraphs = vec![heading];
                 paragraphs.extend(chunk.paragraphs);
                 chunk.paragraphs = paragraphs;
                 chunk.merge_reason = "heading_merge";
+            } else {
+                // Nothing substantial to attach to — keep both, separately.
+                merged.push(held);
             }
         }
 
         merged.push(chunk);
     }
 
-    merged
-}
+    // The document ended on a heading.
+    if let Some(orphan) = pending {
+        merged.push(orphan);
+    }
 
-fn prune_small_short_chunks(chunks: Vec<SemanticChunk>) -> Vec<SemanticChunk> {
-    chunks
-        .into_iter()
-        .filter(|chunk| {
-            if chunk.merge_reason != "short_paragraph" {
-                return true;
-            }
-            // Multi-paragraph short chunks were worth grouping — always keep them.
-            if chunk.paragraphs.len() > 1 {
-                return true;
-            }
-            chunk.paragraphs.join("\n\n").len() >= MIN_SHORT_MERGE_OUTPUT_CHARS
-        })
-        .collect()
+    merged
 }
 
 fn propagate_section_headings(mut chunks: Vec<SemanticChunk>) -> Vec<SemanticChunk> {
