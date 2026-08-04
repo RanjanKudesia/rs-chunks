@@ -243,15 +243,35 @@ fn render_outputs(
                     md.push_str(&format!("![]({name})\n\n"));
                     images.push((name, img));
                 }
-                // Text representation.
-                if let Some(t) = data.and_then(|d| d.get("text/plain")).map(join_source) {
+                // Text representation, richest first.
+                //
+                // `text/plain` was preferred unconditionally, which loses badly
+                // when a renderer supplies something better: nbc_rst_output.ipynb
+                // has text/plain `<__main__.Note at 0x7f457c0250d0>` — a repr
+                // address, pure noise — next to text/html "Testing testing" and a
+                // text/x-rst note block. Jupyter's own front-ends pick the richest
+                // available; so do we, falling back whenever the richer form
+                // converts to nothing. (#43)
+                let rich = data
+                    .and_then(|d| d.get("text/html"))
+                    .map(join_source)
+                    .map(|h| html_to_text(&h))
+                    .filter(|t| !t.trim().is_empty())
+                    .or_else(|| {
+                        data.and_then(|d| d.get("text/markdown"))
+                            .map(join_source)
+                            .filter(|t| !t.trim().is_empty())
+                    })
+                    .or_else(|| {
+                        data.and_then(|d| d.get("text/x-rst"))
+                            .map(join_source)
+                            .filter(|t| !t.trim().is_empty())
+                    });
+                if let Some(text) = rich {
+                    md.push_str(&format!("{}\n\n", cap(text.trim())));
+                } else if let Some(t) = data.and_then(|d| d.get("text/plain")).map(join_source) {
                     if !t.trim().is_empty() {
                         md.push_str(&format!("```\n{}\n```\n\n", cap(t.trim_end())));
-                    }
-                } else if let Some(h) = data.and_then(|d| d.get("text/html")).map(join_source) {
-                    let text = html_to_text(&h);
-                    if !text.trim().is_empty() {
-                        md.push_str(&format!("{}\n\n", cap(text.trim())));
                     }
                 }
             }

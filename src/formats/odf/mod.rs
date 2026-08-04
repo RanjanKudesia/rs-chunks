@@ -144,7 +144,7 @@ fn slide_number_of(text: &str) -> Option<u64> {
 fn load_bytes(bytes: &[u8], filename: &str) -> Result<Loaded> {
     let kind = kind_for(filename)?;
     let container = load_container(bytes, kind).map_err(ChunkError::Parse)?;
-    let (markdown, slide_count) = content_to_markdown(&container.content_xml, kind);
+    let (markdown, slide_count) = content_to_markdown(&container.content_xml, kind, &container.image_names);
     let (title, creator) = container
         .meta_xml
         .as_deref()

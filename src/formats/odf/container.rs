@@ -17,6 +17,25 @@ pub struct OdfContainer {
     pub meta_xml: Option<String>,
     /// (basename, bytes) for each `Pictures/` image, in archive order.
     pub images: Vec<(String, Vec<u8>)>,
+    /// Original `Pictures/…` basename → hashed key, so `content.xml`'s
+    /// `xlink:href` can be turned into a reference the caller can resolve.
+    pub image_names: std::collections::HashMap<String, String>,
+}
+
+/// `<16 hex chars>.<ext>`, matching every other format's image naming.
+///
+/// ODF stored the raw internal name (`100000010000049D…8055A9FB.png`), so the
+/// same picture appearing in two files got two different keys and identical
+/// bytes inside one file were never deduped. (#53)
+fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let lower = zip_path.to_ascii_lowercase();
+    let ext = [".png", ".jpeg", ".jpg", ".gif", ".webp"]
+        .into_iter()
+        .find(|e| lower.ends_with(e))?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(format!("{:016x}{ext}", hasher.finish()))
 }
 
 fn read_entry<R: Read + std::io::Seek>(
@@ -65,13 +84,21 @@ pub fn load(bytes: &[u8], expected: OdfKind) -> Result<OdfContainer, String> {
 
     // Collect Pictures/ images.
     let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
     for name in names {
         if name.starts_with("Pictures/") && !name.ends_with('/') {
             if let Some(bytes) = read_entry(&mut archive, &name) {
-                let base = name.rsplit('/').next().unwrap_or(&name).to_string();
-                if !base.is_empty() {
-                    images.push((base, bytes));
+                // Unsupported codecs (.wmf/.emf) have no hash name and are
+                // skipped, exactly as the OOXML formats skip them.
+                if let Some(hash_name) = image_hash_name(&bytes, &name) {
+                    // content.xml references images by their original path, so
+                    // keep a map to the hashed key for the inline refs. (#53)
+                    let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+                    image_names.insert(base, hash_name.clone());
+                    if !images.iter().any(|(n, _)| n == &hash_name) {
+                        images.push((hash_name, bytes));
+                    }
                 }
             }
         }
@@ -81,6 +108,7 @@ pub fn load(bytes: &[u8], expected: OdfKind) -> Result<OdfContainer, String> {
         content_xml,
         meta_xml,
         images,
+        image_names,
     })
 }
 

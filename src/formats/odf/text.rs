@@ -55,6 +55,10 @@ struct Walker {
     list_depth: usize,
     in_list_item: bool,
     ordered_stack: Vec<bool>,
+    /// `draw:name` of the frame currently being walked, used as image alt text.
+    pending_frame_name: Option<String>,
+    /// Original basename → hashed image key, from the container.
+    image_names: std::collections::HashMap<String, String>,
     /// `<text:list-style>` name -> numbers its items.
     list_styles: std::collections::HashMap<String, bool>,
     table: Option<TableState>,
@@ -92,6 +96,8 @@ impl Walker {
             list_depth: 0,
             in_list_item: false,
             ordered_stack: Vec::new(),
+            pending_frame_name: None,
+            image_names: std::collections::HashMap::new(),
             list_styles: std::collections::HashMap::new(),
             table: None,
             notes: Vec::new(),
@@ -213,11 +219,16 @@ fn ordered_list_styles(content_xml: &str) -> std::collections::HashMap<String, b
     out
 }
 
-pub fn content_to_markdown(content_xml: &str, kind: OdfKind) -> (String, usize) {
+pub fn content_to_markdown(
+    content_xml: &str,
+    kind: OdfKind,
+    image_names: &std::collections::HashMap<String, String>,
+) -> (String, usize) {
     let mut reader = XmlReader::from_str(content_xml);
     reader.config_mut().trim_text(false);
     let mut w = Walker::new();
     w.list_styles = ordered_list_styles(content_xml);
+    w.image_names = image_names.clone();
     let mut buf = Vec::new();
 
     loop {
@@ -230,6 +241,28 @@ pub fn content_to_markdown(content_xml: &str, kind: OdfKind) -> (String, usize) 
                     b"h" => w.heading_level = attr(&e, b"text:outline-level")
                         .and_then(|s| s.parse::<u8>().ok())
                         .or(Some(1)),
+                    // An image contributes nothing to the text otherwise, so a
+                    // reader cannot tell one was there. Same `[Image]`
+                    // placeholder docx, pptx and Markdown already emit. (#53)
+                    b"image" => {
+                        // Emit a real Markdown image reference, not a literal
+                        // "[Image]". The Markdown chunker strips `[` and `]` as
+                        // link syntax, so a bare placeholder arrives as the word
+                        // "Image"; `![](…)` is converted to `[Image]` by the
+                        // stripper itself and survives intact. It also makes
+                        // get_markdown correct, and points at the hashed key the
+                        // caller gets back from list_images. (#53)
+                        let alt = w.pending_frame_name.take().unwrap_or_default();
+                        let href = attr(&e, b"xlink:href").unwrap_or_default();
+                        let base = href.rsplit('/').next().unwrap_or(&href).to_string();
+                        let name = w.image_names.get(&base).cloned().unwrap_or(base);
+                        w.blocks.push(format!("![{}]({})", alt.trim(), name));
+                    }
+                    b"frame" => {
+                        // `draw:name` is the closest thing ODF gives an image to
+                        // alt text.
+                        w.pending_frame_name = attr(&e, b"draw:name");
+                    }
                     b"list" => {
                         w.list_depth += 1;
                         // A nested list usually omits the style name and
