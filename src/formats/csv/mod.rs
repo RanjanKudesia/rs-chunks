@@ -12,6 +12,10 @@ mod sliding_window;
 mod stream;
 mod to_markdown;
 
+/// CSV/TSV rendered as a markdown table. Public because the bindings expose it
+/// directly (`csv_to_markdown` in Python); the module itself stays private.
+pub use to_markdown::{csv_to_markdown, csv_to_markdown_from_bytes};
+
 pub use stream::{stream, CsvStreamIterator};
 pub use to_markdown::csv_to_markdown as to_markdown;
 pub use to_markdown::csv_to_markdown_from_bytes as to_markdown_from_bytes;
