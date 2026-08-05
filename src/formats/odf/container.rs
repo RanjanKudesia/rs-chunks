@@ -28,14 +28,7 @@ pub struct OdfContainer {
 /// same picture appearing in two files got two different keys and identical
 /// bytes inside one file were never deduped. (#53)
 fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let lower = zip_path.to_ascii_lowercase();
-    let ext = [".png", ".jpeg", ".jpg", ".gif", ".webp"]
-        .into_iter()
-        .find(|e| lower.ends_with(e))?;
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(format!("{:016x}{ext}", hasher.finish()))
+    crate::image_naming::name_for_path(bytes, zip_path)
 }
 
 fn read_entry<R: Read + std::io::Seek>(

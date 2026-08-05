@@ -1,6 +1,5 @@
 // src/extensions/html/images.rs
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -11,13 +10,7 @@ pub struct HtmlImageInfo {
 
 /// Returns `"{16hexchars}.{ext}"` for web-renderable formats; None otherwise.
 pub fn image_hash_name(bytes: &[u8], ext: &str) -> Option<String> {
-    let supported = matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp");
-    if !supported {
-        return None;
-    }
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(format!("{:016x}.{ext}", hasher.finish()))
+    crate::image_naming::name_with_ext(bytes, ext)
 }
 
 /// Extracts the value of an HTML attribute from a raw tag slice like

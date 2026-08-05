@@ -1,6 +1,5 @@
 use crate::entities::read_event_folding_entities;
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Cursor, Read};
 
 use quick_xml::events::Event as XmlEvent;
@@ -934,22 +933,7 @@ fn parse_slide_rels_with_images(
 
 fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
     let path = zip_path.to_ascii_lowercase();
-    let ext = if path.ends_with(".png") {
-        ".png"
-    } else if path.ends_with(".jpg") {
-        ".jpg"
-    } else if path.ends_with(".jpeg") {
-        ".jpeg"
-    } else if path.ends_with(".gif") {
-        ".gif"
-    } else if path.ends_with(".webp") {
-        ".webp"
-    } else {
-        return None;
-    };
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(format!("{:016x}{ext}", hasher.finish()))
+    crate::image_naming::name_for_path(bytes, &path)
 }
 
 fn resolve_relative_path(base_dir: &str, relative: &str) -> String {

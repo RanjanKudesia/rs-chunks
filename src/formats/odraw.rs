@@ -7,7 +7,6 @@
 //! module provides a header walker plus a BLIP payload decoder shared by the
 //! `.doc` and `.ppt` image extractors.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// recVer value that marks a container record.
 pub const REC_VER_CONTAINER: u16 = 0xF;
@@ -240,9 +239,10 @@ pub fn collect_pib_values(data: &[u8], start: usize, end: usize, out: &mut Vec<u
 
 /// Hash image bytes into the library-wide `"<16hex>.<ext>"` naming scheme.
 pub fn blip_hash_name(bytes: &[u8], ext: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}{ext}", hasher.finish())
+    // ODRAW only ever produces renderable rasters, so the `None` arm is
+    // unreachable; fall back to `.png` rather than panic if that changes.
+    crate::image_naming::name_with_ext(bytes, ext)
+        .unwrap_or_else(|| crate::image_naming::name_with_ext(bytes, "png").unwrap_or_default())
 }
 
 #[cfg(test)]

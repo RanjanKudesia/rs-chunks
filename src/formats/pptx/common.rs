@@ -865,24 +865,9 @@ pub fn pptx_metadata(
 /// Returns `None` for unsupported formats (.emf, .wmf, etc.).
 /// Returns `"<16hexchars>.<ext>"` for .png/.jpg/.jpeg/.gif/.webp.
 pub fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
-    use std::hash::{DefaultHasher, Hash, Hasher};
+    
     let path = zip_path.to_ascii_lowercase();
-    let ext = if path.ends_with(".png") {
-        ".png"
-    } else if path.ends_with(".jpg") {
-        ".jpg"
-    } else if path.ends_with(".jpeg") {
-        ".jpeg"
-    } else if path.ends_with(".gif") {
-        ".gif"
-    } else if path.ends_with(".webp") {
-        ".webp"
-    } else {
-        return None;
-    };
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(format!("{:016x}{ext}", hasher.finish()))
+    crate::image_naming::name_for_path(bytes, &path)
 }
 
 /// Parse a slide's .rels file and return rId → zip_path for image relationships only.

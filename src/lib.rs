@@ -29,6 +29,7 @@ pub mod formats;
 pub mod options;
 
 pub(crate) mod entities;
+pub(crate) mod image_naming;
 pub(crate) mod shared;
 pub(crate) mod text_encoding;
 

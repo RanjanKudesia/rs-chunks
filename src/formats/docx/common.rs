@@ -7,9 +7,7 @@
 //! duplicated walkers in `sliding_window.rs` and `sentence.rs`.
 
 use crate::entities::read_event_folding_entities;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Cursor, Read};
 
 use quick_xml::events::Event;
@@ -709,22 +707,7 @@ pub(super) fn parse_rels_xml_images(xml: &str) -> HashMap<String, String> {
 /// formats (`.emf`, `.wmf`, etc.).
 pub(super) fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
     let path = zip_path.to_ascii_lowercase();
-    let ext = if path.ends_with(".png") {
-        ".png"
-    } else if path.ends_with(".jpg") {
-        ".jpg"
-    } else if path.ends_with(".jpeg") {
-        ".jpeg"
-    } else if path.ends_with(".gif") {
-        ".gif"
-    } else if path.ends_with(".webp") {
-        ".webp"
-    } else {
-        return None;
-    };
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(format!("{:016x}{ext}", hasher.finish()))
+    crate::image_naming::name_for_path(bytes, &path)
 }
 
 /// Returns true when the paragraph style name indicates a list item without
