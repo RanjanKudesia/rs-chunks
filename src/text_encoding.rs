@@ -56,6 +56,62 @@ impl DetectedEncoding {
 
 /// Decode plain-text bytes, detecting the encoding and stripping any BOM.
 pub fn decode_text(bytes: &[u8]) -> (String, DetectedEncoding) {
+    let (text, encoding) = decode_raw(bytes);
+    (normalize_newlines(text), encoding)
+}
+
+/// Turn every line terminator into `\n`.
+///
+/// A document's paragraph break is two line terminators, and every block
+/// splitter in the engine looks for the literal `"\n\n"`. A Windows file's
+/// break is `"\r\n\r\n"`, which contains no `"\n\n"` — so a CRLF document
+/// used to come back as a single unsplit chunk with no heading, no section and
+/// no size bound, on every mode (TECH_DEBT #89). A classic Mac file, terminated
+/// with bare `\r`, had no line breaks at all as far as `str::lines` was
+/// concerned, and the raw CR reached chunk content (#90).
+///
+/// Normalising once here is the fix rather than teaching seven `split("\n\n")`
+/// sites about `\r`: any splitter added later inherits it.
+pub fn normalize_newlines(text: String) -> String {
+    if !text.contains('\r') {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            // CRLF is one terminator, not two.
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Decode a UTF-8 document, falling back to lossy, with line endings
+/// normalised.
+///
+/// Markdown files are UTF-8 by contract, so this does not sniff encodings the
+/// way [`decode_text`] does — but it must normalise newlines for the same
+/// reason (TECH_DEBT #89): a CRLF `.md` file has no `"\n\n"` in it, so the
+/// block parser saw one block and returned the whole document as one chunk.
+///
+/// Six copies of the decode expression were spread across `md/`'s strategy
+/// files, which is why fixing this in one of them would have fixed one mode.
+pub fn decode_utf8_document(bytes: &[u8]) -> String {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(v) => v.to_string(),
+        Err(_) => String::from_utf8_lossy(bytes).to_string(),
+    };
+    normalize_newlines(text)
+}
+
+/// Decode plain-text bytes without touching line endings.
+fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return (lossy_utf8(rest), DetectedEncoding::Utf8Bom);
     }
@@ -209,5 +265,66 @@ mod tests {
         assert_eq!(decode_text(b"").0, "");
         assert_eq!(decode_text(b"a").0, "a");
         assert_eq!(decode_text(&[0xFF, 0xFE]).0, "");
+    }
+}
+
+#[cfg(test)]
+mod newline_tests {
+    use super::*;
+
+    /// TECH_DEBT #89. Every block splitter in the engine looks for `"\n\n"`.
+    /// A Windows paragraph break is `"\r\n\r\n"`, which does not contain it, so
+    /// a CRLF document came back as one unsplit chunk on every mode.
+    #[test]
+    fn a_windows_paragraph_break_becomes_a_plain_one() {
+        let (text, _) = decode_text(b"HEADING\r\n\r\nBody text.\r\n");
+        assert_eq!(text, "HEADING\n\nBody text.\n");
+        assert!(text.contains("\n\n"), "the block splitter must see a break");
+    }
+
+    /// TECH_DEBT #90. `str::lines()` strips a `\r` that precedes a `\n` but
+    /// treats a lone `\r` as ordinary text, so a classic Mac document had no
+    /// line breaks at all and the raw CR reached chunk content.
+    #[test]
+    fn a_bare_cr_becomes_a_line_feed() {
+        let (text, _) = decode_text(b"FIRST\r\rSecond line.\r");
+        assert_eq!(text, "FIRST\n\nSecond line.\n");
+        assert!(!text.contains('\r'), "no raw CR may reach the caller");
+    }
+
+    #[test]
+    fn mixed_terminators_all_normalise() {
+        let (text, _) = decode_text(b"a\r\nb\rc\nd");
+        assert_eq!(text, "a\nb\nc\nd");
+    }
+
+    /// CRLF is one terminator. Treating it as two would double every line
+    /// break and turn every Windows line into its own block.
+    #[test]
+    fn crlf_is_one_terminator_not_two() {
+        let (text, _) = decode_text(b"one\r\ntwo\r\nthree");
+        assert_eq!(text.matches('\n').count(), 2);
+    }
+
+    /// UTF-16 is where CRLF is most likely — it is what Notepad writes.
+    #[test]
+    fn normalisation_applies_after_utf16_decoding() {
+        let utf16: Vec<u8> = "HEAD\r\n\r\nBody.\r\n"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(utf16);
+        let (text, enc) = decode_text(&bytes);
+        assert_eq!(enc, DetectedEncoding::Utf16Le);
+        assert_eq!(text, "HEAD\n\nBody.\n");
+    }
+
+    /// A document with no CR at all must come back untouched, and must not pay
+    /// for a rebuild of the string.
+    #[test]
+    fn a_unix_document_is_returned_unchanged() {
+        let src = "already\nnormal\n\ntext\n".to_string();
+        assert_eq!(normalize_newlines(src.clone()), src);
     }
 }

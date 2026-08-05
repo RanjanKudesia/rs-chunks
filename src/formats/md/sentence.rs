@@ -150,9 +150,7 @@ pub fn build_sentence_chunks(
         return Err("sentences_per_chunk must be greater than 0".to_string());
     }
 
-    let text = std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = crate::text_encoding::decode_utf8_document(bytes);
     if text.trim().is_empty() {
         return Err("Markdown file is empty".to_string());
     }

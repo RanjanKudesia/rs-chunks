@@ -83,9 +83,7 @@ fn md_metadata(section_heading: Option<String>, section_level: u8) -> Value {
 // ── Core build function ───────────────────────────────────────────────────────
 
 pub fn build_chunks_from_md_bytes(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = crate::text_encoding::decode_utf8_document(bytes);
 
     if text.trim().is_empty() {
         return Err("Markdown file is empty after decoding".to_string());

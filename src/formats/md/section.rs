@@ -121,9 +121,7 @@ fn flush_section(
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = crate::text_encoding::decode_utf8_document(bytes);
     if text.trim().is_empty() {
         return Err("Markdown file is empty".to_string());
     }

@@ -123,7 +123,11 @@ pub fn chunk_from_bytes(
 
 /// No-filesystem Markdown passthrough (a `.md` document is already Markdown).
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    String::from_utf8(bytes.to_vec()).map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    // Normalised for the same reason `get_chunks` is: `get_markdown` and
+    // `get_chunks` must decode a document identically (TECH_DEBT #75, #89).
+    String::from_utf8(bytes.to_vec())
+        .map(crate::text_encoding::normalize_newlines)
+        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
 }
 
 /// Dispatch-layer entry: map a unified [`ChunkOptions`] onto MD's strategies.
@@ -161,5 +165,7 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
         )));
     }
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    String::from_utf8(bytes).map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    String::from_utf8(bytes)
+        .map(crate::text_encoding::normalize_newlines)
+        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
 }

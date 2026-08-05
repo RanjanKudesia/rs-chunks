@@ -296,9 +296,7 @@ fn finalize(
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
 pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = crate::text_encoding::decode_utf8_document(bytes);
 
     if text.trim().is_empty() {
         return Err("Markdown file is empty after decoding".to_string());
