@@ -65,7 +65,7 @@ pub(crate) fn split(glyphs: &[Glyph]) -> Vec<Region> {
     out
 }
 
-fn cut<'a>(glyphs: &[&'a Glyph], depth: usize, horizontal_first: bool, out: &mut Vec<Region>) {
+fn cut(glyphs: &[&Glyph], depth: usize, horizontal_first: bool, out: &mut Vec<Region>) {
     if glyphs.is_empty() {
         return;
     }

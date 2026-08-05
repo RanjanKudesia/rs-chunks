@@ -20,6 +20,22 @@ use crate::options::{ChunkMode, ChunkOptions};
 use common::ChunkRecordInput;
 
 /// Map the internal record type onto the public [`Chunk`].
+/// Stream a markdown file's chunks. Markdown parses in one pass, so the whole
+/// document is chunked up front and drained lazily — the profile
+/// `streaming.mdx` records for it.
+pub fn stream(
+    file_path: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<impl Iterator<Item = Result<Chunk>>> {
+    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
+        .into_iter()
+        .map(Ok))
+}
+
 pub(crate) fn records_to_chunks(records: Vec<ChunkRecordInput>) -> Vec<Chunk> {
     records
         .into_iter()

@@ -23,9 +23,7 @@ pub fn render_pages(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
 
     let input = PdfInput::Bytes(bytes.to_vec());
     runtime.block_on(async move {
-        let mut config = LiteParseConfig::default();
-        config.ocr_enabled = false;
-        config.quiet = true;
+        let config = LiteParseConfig { ocr_enabled: false, quiet: true, ..Default::default() };
         let shots = LiteParse::new(config)
             .screenshot_input(input, None)
             .await

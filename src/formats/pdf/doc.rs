@@ -42,7 +42,7 @@ pub(crate) fn read_page(extractor: &mut Extractor, doc: &Document, page_id: Obje
     let mut content = PageContent::default();
     if let Ok(data) = doc.get_page_content(page_id) {
         let resources = resources_for(doc, page_id);
-        extractor.run(&data, &resources, base, &mut content);
+        extractor.run(doc, &data, &resources, base, &mut content);
     }
     apply_links(&mut content.glyphs, &links(doc, page_id, base));
     Page { content, width, height }

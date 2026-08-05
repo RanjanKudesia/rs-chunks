@@ -136,9 +136,10 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
 
     for g in glyphs.iter() {
         let gap = g.x - previous_end;
-        if previous_end.is_finite() && gap > CELL_GAP_EM * g.size {
-            segments.push(Segment { text: String::new(), left: g.x, right: g.x });
-        } else if segments.is_empty() {
+        // A cell-sized gap opens a new segment, and so does the first glyph.
+        let opens_segment = segments.is_empty()
+            || (previous_end.is_finite() && gap > CELL_GAP_EM * g.size);
+        if opens_segment {
             segments.push(Segment { text: String::new(), left: g.x, right: g.x });
         }
         let needs_space = previous_end.is_finite()

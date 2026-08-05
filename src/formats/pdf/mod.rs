@@ -26,6 +26,7 @@ pub(crate) mod lines;
 pub(crate) mod markdown;
 pub(crate) mod parse;
 pub(crate) mod regions;
+pub mod stream;
 pub(crate) mod type1;
 pub(crate) mod page_render;
 #[cfg(feature = "pdf-native")]
@@ -177,6 +178,9 @@ pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(
     Ok((loaded.markdown, loaded.images))
 }
 
+/// Stream a PDF's chunks. Reading the file happens here — so a missing or
+/// misnamed path still fails at construction — but parsing and chunking do not
+/// (see [`stream`](stream) for what streaming can and cannot do for PDF).
 pub fn stream(
     file_path: &str,
     mode: &str,
@@ -184,8 +188,18 @@ pub fn stream(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+) -> Result<stream::PdfChunkStream> {
+    Ok(stream_from_bytes(read(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page))
+}
+
+/// Stream a PDF's chunks from bytes.
+pub fn stream_from_bytes(
+    bytes: Vec<u8>,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> stream::PdfChunkStream {
+    stream::stream_from_bytes(bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
 }

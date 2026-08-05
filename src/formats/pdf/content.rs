@@ -94,32 +94,39 @@ impl Default for TextState {
     }
 }
 
-pub(crate) struct Extractor<'a> {
-    doc: &'a Document,
+/// Interprets content streams, carrying the font cache between pages.
+///
+/// It deliberately does **not** borrow the document: a streaming reader owns
+/// both, and a self-referential struct would be the price of the shortcut.
+#[derive(Default)]
+pub(crate) struct Extractor {
     /// Fonts are shared across pages and parsing one means parsing its ToUnicode
     /// CMap, so a 5,000-page document must not do it 5,000 times.
     fonts: HashMap<ObjectId, Rc<Font>>,
 }
 
-impl<'a> Extractor<'a> {
-    pub(crate) fn new(doc: &'a Document) -> Self {
-        Extractor { doc, fonts: HashMap::new() }
+impl Extractor {
+    pub(crate) fn new() -> Self {
+        Extractor::default()
     }
 
     /// Interpret one content stream against `resources`, appending to `out`.
     pub(crate) fn run(
         &mut self,
+        doc: &Document,
         data: &[u8],
         resources: &Dictionary,
         base_ctm: Matrix,
         out: &mut PageContent,
     ) {
         let mut visited = Vec::new();
-        self.run_inner(data, resources, base_ctm, out, &mut visited);
+        self.run_inner(doc, data, resources, base_ctm, out, &mut visited);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_inner(
         &mut self,
+        doc: &Document,
         data: &[u8],
         resources: &Dictionary,
         base_ctm: Matrix,
@@ -165,7 +172,7 @@ impl<'a> Extractor<'a> {
                 "Tf" => {
                     ts.font = a.first().and_then(|o| o.as_name().ok()).and_then(|n| {
                         let n = n.to_vec();
-                        self.font(resources, &n)
+                        self.font(doc, resources, &n)
                     });
                     ts.size = num(a.get(1)).unwrap_or(0.0);
                 }
@@ -228,7 +235,7 @@ impl<'a> Extractor<'a> {
                 }
                 "Do" => {
                     if let Some(name) = a.first().and_then(|o| o.as_name().ok()) {
-                        self.draw_xobject(resources, name, ctm, out, visited);
+                        self.draw_xobject(doc, resources, name, ctm, out, visited);
                     }
                 }
                 _ => {}
@@ -266,19 +273,21 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_xobject(
         &mut self,
+        doc: &Document,
         resources: &Dictionary,
         name: &[u8],
         ctm: Matrix,
         out: &mut PageContent,
         visited: &mut Vec<ObjectId>,
     ) {
-        let Ok(xobjects) = resources.get_deref(b"XObject", self.doc).and_then(Object::as_dict) else {
+        let Ok(xobjects) = resources.get_deref(b"XObject", doc).and_then(Object::as_dict) else {
             return;
         };
         let Ok(entry) = xobjects.get(name) else { return };
-        let Ok((id, object)) = self.doc.dereference(entry) else { return };
+        let Ok((id, object)) = doc.dereference(entry) else { return };
         let Ok(stream) = object.as_stream() else { return };
         let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"");
 
@@ -308,30 +317,30 @@ impl<'a> Extractor<'a> {
         // A form without its own /Resources inherits the caller's.
         let inner = stream
             .dict
-            .get_deref(b"Resources", self.doc)
+            .get_deref(b"Resources", doc)
             .and_then(Object::as_dict)
             .cloned()
             .unwrap_or_else(|_| resources.clone());
 
         visited.push(id);
-        self.run_inner(&data, &inner, form_ctm, out, visited);
+        self.run_inner(doc, &data, &inner, form_ctm, out, visited);
         visited.pop();
     }
 
-    fn font(&mut self, resources: &Dictionary, name: &[u8]) -> Option<Rc<Font>> {
-        let fonts = resources.get_deref(b"Font", self.doc).and_then(Object::as_dict).ok()?;
+    fn font(&mut self, doc: &Document, resources: &Dictionary, name: &[u8]) -> Option<Rc<Font>> {
+        let fonts = resources.get_deref(b"Font", doc).and_then(Object::as_dict).ok()?;
         let entry = fonts.get(name).ok()?;
         match entry {
             Object::Reference(id) => {
                 if let Some(font) = self.fonts.get(id) {
                     return Some(font.clone());
                 }
-                let dict = self.doc.get_dictionary(*id).ok()?;
-                let font = Rc::new(Font::from_dict(self.doc, dict));
+                let dict = doc.get_dictionary(*id).ok()?;
+                let font = Rc::new(Font::from_dict(doc, dict));
                 self.fonts.insert(*id, font.clone());
                 Some(font)
             }
-            Object::Dictionary(dict) => Some(Rc::new(Font::from_dict(self.doc, dict))),
+            Object::Dictionary(dict) => Some(Rc::new(Font::from_dict(doc, dict))),
             _ => None,
         }
     }

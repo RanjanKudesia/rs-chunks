@@ -306,7 +306,7 @@ fn join(lines: &[Line]) -> Vec<Span> {
 fn hyphen_join(previous: &str, next: &str) -> Option<bool> {
     let stem = previous.strip_suffix('-')?;
     let tail = stem.rsplit(char::is_whitespace).next().unwrap_or("");
-    let head = next.trim_start().split_whitespace().next().unwrap_or("");
+    let head = next.split_whitespace().next().unwrap_or("");
     if tail.is_empty() || head.is_empty() {
         return None;
     }

@@ -154,30 +154,6 @@ fn expand_ligatures(text: String) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ligatures_are_spelled_out_so_the_word_stays_searchable() {
-        assert_eq!(expand_ligatures("classi\u{FB01}cation".into()), "classification");
-        assert_eq!(expand_ligatures("su\u{FB03}x".into()), "suffix");
-        assert_eq!(expand_ligatures("plain".into()), "plain");
-    }
-
-    #[test]
-    fn algorithmic_glyph_names_resolve_and_notdef_does_not() {
-        assert_eq!(glyph_to_char("uni0041"), Some('A'));
-        assert_eq!(glyph_to_char("u00042"), Some('B'));
-        assert_eq!(glyph_to_char("alpha"), Some('α'));
-        // A TeX maths name plain AGL does not carry.
-        assert_eq!(glyph_to_char("summationdisplay"), Some('\u{2211}'));
-        assert_eq!(glyph_to_char(".notdef"), None);
-        // A suffixed variant falls back to its base glyph.
-        assert_eq!(glyph_to_char("one.oldstyle"), Some('1'));
-    }
-}
-
 fn descendant_font<'a>(doc: &'a Document, dict: &'a Dictionary) -> Option<&'a Dictionary> {
     let array = dict.get_deref(b"DescendantFonts", doc).and_then(Object::as_array).ok()?;
     let first = array.first()?;
@@ -414,5 +390,29 @@ fn name_of(object: Option<&Object>) -> Option<String> {
     match object? {
         Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ligatures_are_spelled_out_so_the_word_stays_searchable() {
+        assert_eq!(expand_ligatures("classi\u{FB01}cation".into()), "classification");
+        assert_eq!(expand_ligatures("su\u{FB03}x".into()), "suffix");
+        assert_eq!(expand_ligatures("plain".into()), "plain");
+    }
+
+    #[test]
+    fn algorithmic_glyph_names_resolve_and_notdef_does_not() {
+        assert_eq!(glyph_to_char("uni0041"), Some('A'));
+        assert_eq!(glyph_to_char("u00042"), Some('B'));
+        assert_eq!(glyph_to_char("alpha"), Some('α'));
+        // A TeX maths name plain AGL does not carry.
+        assert_eq!(glyph_to_char("summationdisplay"), Some('\u{2211}'));
+        assert_eq!(glyph_to_char(".notdef"), None);
+        // A suffixed variant falls back to its base glyph.
+        assert_eq!(glyph_to_char("one.oldstyle"), Some('1'));
     }
 }
