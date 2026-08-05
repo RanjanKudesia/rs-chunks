@@ -154,12 +154,11 @@ pub fn extract_paragraphs(stream: &[u8]) -> Vec<DocParagraph> {
             paragraph.page_index = Some(slide_index);
         }
         out.extend(slide);
-        out.push(DocParagraph {
-            content: String::new(),
-            paragraph_type: ParagraphType::PageBreak,
-            heading_level: None,
-            page_index: Some(slide_index),
-        });
+        out.push(DocParagraph::plain(
+            String::new(),
+            ParagraphType::PageBreak,
+            Some(slide_index),
+        ));
     }
     while matches!(
         out.last().map(|p| &p.paragraph_type),
@@ -188,23 +187,18 @@ fn build_slide_from_runs(runs: &[Run]) -> Vec<DocParagraph> {
         let bullet_run = !title_run && paras.len() > 1;
 
         for (idx, content) in paras.into_iter().enumerate() {
-            let (paragraph_type, heading_level) = if title_run && idx == 0 {
+            let paragraph_type = if title_run && idx == 0 {
                 slide_has_heading = true;
-                (ParagraphType::Heading(2), Some(2))
+                ParagraphType::Heading(2)
             } else if bullet_run {
-                (ParagraphType::ListItem, None)
+                ParagraphType::ListItem
             } else if !slide_has_heading && out.is_empty() && looks_like_title(&content) {
                 slide_has_heading = true;
-                (ParagraphType::Heading(2), Some(2))
+                ParagraphType::Heading(2)
             } else {
-                (ParagraphType::Normal, None)
+                ParagraphType::Normal
             };
-            out.push(DocParagraph {
-                content,
-                paragraph_type,
-                heading_level,
-                page_index: None,
-            });
+            out.push(DocParagraph::plain(content, paragraph_type, None));
         }
     }
     out
@@ -236,12 +230,7 @@ fn merge_freeform(slide: &mut Vec<DocParagraph>, escher_raw: &[String]) {
                 continue;
             }
             seen.insert(key);
-            slide.push(DocParagraph {
-                content: para,
-                paragraph_type: ParagraphType::Normal,
-                heading_level: None,
-                page_index: None,
-            });
+            slide.push(DocParagraph::plain(para, ParagraphType::Normal, None));
         }
     }
 }

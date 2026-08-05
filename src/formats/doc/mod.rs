@@ -1,13 +1,17 @@
 //! Legacy Word binary (`.doc`, OLE/CFB) chunking. All modes load the paragraph
 //! list from the WordDocument stream, then build chunks.
 
+pub mod builders;
 pub mod cfb_reader;
+pub mod context;
 pub mod fib;
 pub mod images;
+pub mod loader;
 pub mod paragraph_props;
 pub mod piece_table;
 pub mod structural;
 pub mod stylesheet;
+pub mod tables;
 pub mod text_extractor;
 pub mod to_markdown;
 
@@ -22,21 +26,47 @@ use structural::{
     ChunkRecord,
 };
 
+/// The metadata every `.doc` text chunk carries.
+///
+/// Both the plain and the `_with_images` paths go through this. Building the
+/// object twice is how [#78](TECH_DEBT.md)/[#79](TECH_DEBT.md) happened —
+/// a key added to one path and not the other is invisible to the golden
+/// snapshot until someone reads the output by hand.
+pub(crate) fn chunk_metadata(
+    source: &str,
+    record: &ChunkRecord,
+    chunk_index: usize,
+    total: usize,
+) -> serde_json::Value {
+    let ctx = &record.context;
+    json!({
+        "source": source,
+        "chunk_index": chunk_index,
+        "total_chunks": total,
+        "paragraph_type": record.paragraph_type,
+        "heading_level": record.heading_level,
+        // 1-based hard-page number, or null when the document declares
+        // no page breaks at all (TECH_DEBT #11).
+        "page_number": ctx.page_number,
+        // Section breadcrumbs, list depth and table shape — the DOCX depth
+        // `.doc` was missing (TECH_DEBT #12). Each is null when the chunk does
+        // not start on that kind of paragraph.
+        "section_heading": ctx.section_heading,
+        "section_heading_level": ctx.section_heading_level,
+        "heading_path": ctx.heading_path_string(),
+        "list_level": ctx.list_level,
+        "table_rows": ctx.table.map(|t| t.rows),
+        "table_columns": ctx.table.map(|t| t.columns),
+        "table_cells": ctx.table.map(|t| t.cells),
+    })
+}
+
 pub(crate) fn records_to_chunks(file_path: &str, records: Vec<ChunkRecord>) -> Vec<Chunk> {
     let total = records.len();
     records
         .into_iter()
         .map(|c| {
-            let metadata = json!({
-                "source": file_path,
-                "chunk_index": c.chunk_index,
-                "total_chunks": total,
-                "paragraph_type": c.paragraph_type,
-                "heading_level": c.heading_level,
-                // 1-based hard-page number, or null when the document declares
-                // no page breaks at all (TECH_DEBT #11).
-                "page_number": c.page_number,
-            });
+            let metadata = chunk_metadata(file_path, &c, c.chunk_index, total);
             Chunk::new(c.content, c.content_type, metadata)
         })
         .collect()

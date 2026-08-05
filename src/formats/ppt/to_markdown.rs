@@ -3,12 +3,7 @@ use crate::formats::doc::text_extractor::{DocParagraph, ParagraphType};
 
 
 fn image_paragraph(hash_name: &str) -> DocParagraph {
-    DocParagraph {
-        content: format!("![]({hash_name})"),
-        paragraph_type: ParagraphType::Normal,
-        heading_level: None,
-        page_index: None,
-    }
+    DocParagraph::plain(format!("![]({hash_name})"), ParagraphType::Normal, None)
 }
 
 
@@ -34,12 +29,11 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
             continue;
         }
         paragraphs.extend(slide_paras);
-        paragraphs.push(DocParagraph {
-            content: String::new(),
-            paragraph_type: ParagraphType::PageBreak,
-            heading_level: None,
-                page_index: None,
-        });
+        paragraphs.push(DocParagraph::plain(
+            String::new(),
+            ParagraphType::PageBreak,
+            None,
+        ));
     }
     for img in images.iter().filter(|i| i.slide_idx.is_none()) {
         paragraphs.push(image_paragraph(&img.hash_name));

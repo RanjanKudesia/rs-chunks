@@ -501,14 +501,7 @@ pub(super) fn chunk_with_images_impl_bytes(
         chunk_list.push(crate::chunk::Chunk::new(
             chunk.content.clone(),
             chunk.content_type,
-            serde_json::json!({
-                "source": file_path,
-                "chunk_index": chunk.chunk_index + offset,
-                "total_chunks": total,
-                "paragraph_type": chunk.paragraph_type,
-                "heading_level": chunk.heading_level,
-                "page_number": chunk.page_number,
-            }),
+            super::chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
         ));
     }
     Ok((chunk_list, image_out))

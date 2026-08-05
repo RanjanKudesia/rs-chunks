@@ -41,37 +41,71 @@ pub(super) fn slide_titles(stream_paragraphs: &[DocParagraph]) -> std::collectio
 /// no `slide_title`, no `document_metadata` — while `.pptx` had all three
 /// (TECH_DEBT #18). `page_number` is kept alongside `slide_number` because it
 /// is the shipped key and they mean the same thing for a deck.
+/// Slide titles by ordinal plus the deck's slide count — the document-level
+/// facts every `.ppt` chunk repeats.
+pub(super) struct DeckInfo {
+    titles: std::collections::HashMap<usize, String>,
+    total_slides: usize,
+}
+
+impl DeckInfo {
+    pub(super) fn of(paragraphs: &[DocParagraph]) -> Self {
+        DeckInfo {
+            titles: slide_titles(paragraphs),
+            total_slides: paragraphs
+                .iter()
+                .filter_map(|p| p.page_index)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(0),
+        }
+    }
+
+    /// The metadata every `.ppt` text chunk carries, on the plain path and the
+    /// `_with_images` path alike — building it twice is how the `.pptx` error
+    /// prefix in [#79](TECH_DEBT.md) survived on one path only.
+    pub(super) fn chunk_metadata(
+        &self,
+        source: &str,
+        record: &ChunkRecord,
+        chunk_index: usize,
+        total: usize,
+    ) -> serde_json::Value {
+        let ctx = &record.context;
+        let slide_number = ctx.page_number;
+        serde_json::json!({
+            "source": source,
+            "chunk_index": chunk_index,
+            "total_chunks": total,
+            "paragraph_type": record.paragraph_type,
+            "heading_level": record.heading_level,
+            "page_number": slide_number,
+            "slide_number": slide_number,
+            "slide_title": slide_number.and_then(|n| self.titles.get(&(n - 1)).cloned()),
+            // A deck's breadcrumb is its slide titles, which is what the shared
+            // builders' heading stack tracks (TECH_DEBT #12).
+            "section_heading": ctx.section_heading,
+            "section_heading_level": ctx.section_heading_level,
+            "heading_path": ctx.heading_path_string(),
+            "document_metadata": {
+                "source_type": "ppt",
+                "total_slides": self.total_slides,
+            },
+        })
+    }
+}
+
 fn ppt_records_to_chunks(
     source: &str,
     records: Vec<ChunkRecord>,
     paragraphs: &[DocParagraph],
 ) -> Vec<Chunk> {
-    let titles = slide_titles(paragraphs);
-    let total_slides = paragraphs
-        .iter()
-        .filter_map(|p| p.page_index)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+    let deck = DeckInfo::of(paragraphs);
     let total = records.len();
     records
         .into_iter()
         .map(|c| {
-            let slide_number = c.page_number;
-            let metadata = serde_json::json!({
-                "source": source,
-                "chunk_index": c.chunk_index,
-                "total_chunks": total,
-                "paragraph_type": c.paragraph_type,
-                "heading_level": c.heading_level,
-                "page_number": slide_number,
-                "slide_number": slide_number,
-                "slide_title": slide_number.and_then(|n| titles.get(&(n - 1)).cloned()),
-                "document_metadata": {
-                    "source_type": "ppt",
-                    "total_slides": total_slides,
-                },
-            });
+            let metadata = deck.chunk_metadata(source, &c, c.chunk_index, total);
             Chunk::new(c.content, c.content_type, metadata)
         })
         .collect()

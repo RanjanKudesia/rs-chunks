@@ -4,6 +4,23 @@ pub struct ReconstructedText {
     /// future character-position mapping (e.g. field/bookmark spans), not yet read.
     #[allow(dead_code)]
     pub cp_to_byte: Vec<usize>,
+    /// CP of the first character of each Word paragraph in this story, in
+    /// order, starting with the story's own first CP.
+    ///
+    /// A Word paragraph ends at `\r` **or** at a cell mark `\x07` — in the
+    /// binary format a cell mark *is* a paragraph mark ([MS-DOC] 2.4.3). The
+    /// PAPX FKPs are indexed in these units, so this is the array that turns a
+    /// paragraph property record back into the paragraph it describes.
+    pub paragraph_start_cps: Vec<u32>,
+}
+
+impl ReconstructedText {
+    /// 0-based ordinal of the Word paragraph containing `cp`, or `None` when
+    /// `cp` falls before this story.
+    pub fn paragraph_of_cp(&self, cp: u32) -> Option<usize> {
+        let idx = self.paragraph_start_cps.partition_point(|&s| s <= cp);
+        idx.checked_sub(1)
+    }
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Result<u16, String> {
@@ -263,6 +280,20 @@ pub fn parse_piece_table(
 pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> ReconstructedText {
     let mut text = String::new();
     let mut cp_to_byte = Vec::new();
+    // The story's first paragraph starts at its first CP. Every `\r` and every
+    // cell mark `\x07` ends a Word paragraph, so the next CP starts one — CPs
+    // are counted over *source* characters, including the ones
+    // `normalize_doc_char` drops, because that is the space the PAPX FKPs index.
+    let mut paragraph_start_cps: Vec<u32> = pieces.first().map(|p| vec![p.cp_start]).unwrap_or_default();
+    let mut push_char = |ch: char, cp: u32, text: &mut String, cp_to_byte: &mut Vec<usize>| {
+        if let Some(ch) = normalize_doc_char(ch) {
+            cp_to_byte.push(text.len());
+            text.push(ch);
+            if ch == '\r' || ch == '\x07' {
+                paragraph_start_cps.push(cp + 1);
+            }
+        }
+    };
 
     for piece in pieces {
         let char_count = (piece.cp_end - piece.cp_start) as usize;
@@ -281,11 +312,13 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
                 Some(b) => b,
                 None => continue,
             };
-            for b in bytes {
-                if let Some(ch) = normalize_doc_char(cp1252_to_char(*b)) {
-                    cp_to_byte.push(text.len());
-                    text.push(ch);
-                }
+            for (i, b) in bytes.iter().enumerate() {
+                push_char(
+                    cp1252_to_char(*b),
+                    piece.cp_start + i as u32,
+                    &mut text,
+                    &mut cp_to_byte,
+                );
             }
         } else {
             let Some(byte_count) = char_count.checked_mul(2) else {
@@ -308,15 +341,21 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
                 k += 2;
             }
 
-            for decoded in char::decode_utf16(units.into_iter()) {
+            for (i, decoded) in char::decode_utf16(units.into_iter()).enumerate() {
                 let ch = decoded.unwrap_or('\u{FFFD}');
-                if let Some(ch) = normalize_doc_char(ch) {
-                    cp_to_byte.push(text.len());
-                    text.push(ch);
-                }
+                push_char(
+                    ch,
+                    piece.cp_start + i as u32,
+                    &mut text,
+                    &mut cp_to_byte,
+                );
             }
         }
     }
 
-    ReconstructedText { text, cp_to_byte }
+    ReconstructedText {
+        text,
+        cp_to_byte,
+        paragraph_start_cps,
+    }
 }

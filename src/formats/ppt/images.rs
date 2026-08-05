@@ -286,33 +286,13 @@ pub(super) fn chunk_with_images_impl_bytes(
 
     // Text chunks carry the same slide metadata the plain `chunk` path emits,
     // so a caller does not lose provenance by asking for images (TECH_DEBT #18).
-    let titles = super::slide_titles(&paragraphs_for_meta);
-    let total_slides = paragraphs_for_meta
-        .iter()
-        .filter_map(|p| p.page_index)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+    let deck = super::DeckInfo::of(&paragraphs_for_meta);
     let offset = images.len();
     for chunk in &text_chunks {
-        let slide_number = chunk.page_number;
         chunk_list.push(crate::chunk::Chunk::new(
             chunk.content.clone(),
             chunk.content_type,
-            serde_json::json!({
-                "source": file_path,
-                "chunk_index": chunk.chunk_index + offset,
-                "total_chunks": total,
-                "paragraph_type": chunk.paragraph_type,
-                "heading_level": chunk.heading_level,
-                "page_number": slide_number,
-                "slide_number": slide_number,
-                "slide_title": slide_number.and_then(|n| titles.get(&(n - 1)).cloned()),
-                "document_metadata": {
-                    "source_type": "ppt",
-                    "total_slides": total_slides,
-                },
-            }),
+            deck.chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
         ));
     }
     Ok((chunk_list, image_out))

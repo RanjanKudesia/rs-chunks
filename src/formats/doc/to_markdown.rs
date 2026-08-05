@@ -1,18 +1,6 @@
 
 use super::text_extractor::{DocParagraph, ParagraphType};
 
-fn render_table_row(content: &str) -> String {
-    let cells: Vec<String> = content.split('|').map(|c| c.trim().to_string()).collect();
-
-    if cells.is_empty() {
-        return String::new();
-    }
-
-    let row = format!("| {} |", cells.join(" | "));
-    let sep = format!("| {} |", vec!["---"; cells.len()].join(" | "));
-    format!("{row}\n{sep}")
-}
-
 /// Render a paragraph list to Markdown. Shared by `.doc` and `.ppt`, both of
 /// which produce `Vec<DocParagraph>`.
 pub(crate) fn render_paragraphs_markdown(paragraphs: Vec<DocParagraph>) -> String {
@@ -38,17 +26,20 @@ pub(crate) fn render_paragraphs_markdown(paragraphs: Vec<DocParagraph>) -> Strin
                 if content.is_empty() {
                     continue;
                 }
-                rendered.push(format!("- {content}"));
+                // Two spaces per level is the Markdown convention the shared
+                // list parser reads back, so nesting survives a round trip
+                // (TECH_DEBT #12, and #27 for the same rule in the md engine).
+                let indent = "  ".repeat(p.list_level.unwrap_or(0) as usize);
+                rendered.push(format!("{indent}- {content}"));
             }
             ParagraphType::Table => {
+                // The content is already a Markdown pipe table — the extractor
+                // assembles it from the cell and row marks (TECH_DEBT #12).
                 let content = p.content.trim();
                 if content.is_empty() {
                     continue;
                 }
-                let table = render_table_row(content);
-                if !table.trim().is_empty() {
-                    rendered.push(table);
-                }
+                rendered.push(content.to_string());
             }
             ParagraphType::Normal => {
                 let content = p.content.trim();
@@ -90,11 +81,8 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
     anchored.sort_by_key(|(rp, _)| *rp);
     let mut anchored_iter = anchored.into_iter().peekable();
 
-    let image_paragraph = |hash_name: &str| DocParagraph {
-        content: format!("![]({hash_name})"),
-        paragraph_type: ParagraphType::Normal,
-        heading_level: None,
-        page_index: None,
+    let image_paragraph = |hash_name: &str| {
+        DocParagraph::plain(format!("![]({hash_name})"), ParagraphType::Normal, None)
     };
 
     let mut paragraphs: Vec<DocParagraph> = Vec::with_capacity(indexed.len() + images.len());
