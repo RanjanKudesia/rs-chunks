@@ -19,6 +19,22 @@ pub(crate) struct ChunkRecord {
     pub(crate) chunk_index: usize,
     pub(crate) heading_level: Option<u8>,
     pub(crate) paragraph_type: &'static str,
+    /// 1-based page (`.doc`) or slide (`.ppt`) this chunk starts on, from the
+    /// `page_index` of its first paragraph. `None` when the chunk's source
+    /// paragraphs carry no provenance (TECH_DEBT #11, #18).
+    pub(crate) page_number: Option<usize>,
+}
+
+/// 1-based page/slide of the first paragraph that carries provenance.
+///
+/// Uses the *first* rather than the minimum: a chunk that straddles a page
+/// break belongs to the page it starts on, which is what a reader looking it
+/// up would turn to.
+pub(crate) fn page_number_of(paragraphs: &[DocParagraph]) -> Option<usize> {
+    paragraphs
+        .iter()
+        .find_map(|p| p.page_index)
+        .map(|idx| idx + 1)
 }
 
 fn paragraph_type_str(t: &ParagraphType) -> &'static str {
@@ -106,6 +122,7 @@ fn append_side_stories(
             content: format!("[{label}]"),
             paragraph_type: text_extractor::ParagraphType::Heading(2),
             heading_level: Some(2),
+            page_index: None,
         });
         for line in text.split('\r') {
             let line = text_extractor::collapse_whitespace(
@@ -116,6 +133,7 @@ fn append_side_stories(
                     content: line,
                     paragraph_type: text_extractor::ParagraphType::Normal,
                     heading_level: None,
+                page_index: None,
                 });
             }
         }
@@ -224,6 +242,9 @@ fn split_oversized(text: &str, max_chars: usize) -> Vec<String> {
 pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRecord> {
     let mut out = Vec::new();
     let mut short_buf = String::new();
+    // Short paragraphs aggregate across page breaks, so the resulting chunk
+    // belongs to the page the *buffer* started on, not the one it flushed on.
+    let mut short_buf_page: Option<usize> = None;
 
     for p in paragraphs {
         if matches!(p.paragraph_type, ParagraphType::PageBreak) {
@@ -236,6 +257,7 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
                         chunk_index: 0,
                         heading_level: None,
                         paragraph_type: "normal",
+                        page_number: short_buf_page.map(|i| i + 1),
                     });
                 }
                 short_buf.clear();
@@ -250,7 +272,8 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
 
         let is_short_normal = matches!(p.paragraph_type, ParagraphType::Normal) && trimmed.len() < 80;
         if is_short_normal {
-            let candidate = if short_buf.is_empty() {
+            let buf_was_empty = short_buf.is_empty();
+            let candidate = if buf_was_empty {
                 trimmed.to_string()
             } else {
                 format!("{}\n{}", short_buf, trimmed)
@@ -262,9 +285,14 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
                     chunk_index: 0,
                     heading_level: None,
                     paragraph_type: "normal",
+                    page_number: short_buf_page.map(|i| i + 1),
                 });
                 short_buf = trimmed.to_string();
+                short_buf_page = p.page_index;
             } else {
+                if buf_was_empty {
+                    short_buf_page = p.page_index;
+                }
                 short_buf = candidate;
             }
             continue;
@@ -277,6 +305,7 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
                 chunk_index: 0,
                 heading_level: None,
                 paragraph_type: "normal",
+                page_number: short_buf_page.map(|i| i + 1),
             });
             short_buf.clear();
         }
@@ -293,6 +322,7 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
                 chunk_index: 0,
                 heading_level: p.heading_level,
                 paragraph_type,
+                page_number: p.page_index.map(|i| i + 1),
             });
         }
     }
@@ -304,6 +334,7 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
             chunk_index: 0,
             heading_level: None,
             paragraph_type: "normal",
+            page_number: short_buf_page.map(|i| i + 1),
         });
     }
 
@@ -319,7 +350,15 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
     let mut current_level: Option<u8> = None;
     let mut lines: Vec<String> = Vec::new();
 
-    let flush = |out: &mut Vec<ChunkRecord>, heading: &str, level: Option<u8>, lines: &mut Vec<String>| {
+    // The page a section *starts* on. `lines` is a flat Vec<String> with no
+    // provenance of its own, so the caller records it when the section opens.
+    let mut section_page: Option<usize> = None;
+
+    let flush = |out: &mut Vec<ChunkRecord>,
+                 heading: &str,
+                 level: Option<u8>,
+                 lines: &mut Vec<String>,
+                 page: Option<usize>| {
         if lines.is_empty() {
             return;
         }
@@ -336,6 +375,7 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
                 chunk_index: 0,
                 heading_level: level,
                 paragraph_type: if heading == "Preamble" { "normal" } else { "heading" },
+                page_number: page.map(|i| i + 1),
             });
             return;
         }
@@ -357,6 +397,7 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
                     chunk_index: 0,
                     heading_level: level,
                     paragraph_type: if heading == "Preamble" { "normal" } else { "heading" },
+                    page_number: page.map(|i| i + 1),
                 });
             }
             start = end;
@@ -365,7 +406,8 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
 
     for p in paragraphs {
         if matches!(p.paragraph_type, ParagraphType::PageBreak) {
-            flush(&mut out, &current_heading, current_level, &mut lines);
+            flush(&mut out, &current_heading, current_level, &mut lines, section_page);
+            section_page = None;
             continue;
         }
 
@@ -375,16 +417,20 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
         }
 
         if let ParagraphType::Heading(level) = p.paragraph_type {
-            flush(&mut out, &current_heading, current_level, &mut lines);
+            flush(&mut out, &current_heading, current_level, &mut lines, section_page);
             current_heading = content.to_string();
             current_level = Some(level);
+            section_page = p.page_index;
             lines.push(content.to_string());
         } else {
+            if lines.is_empty() {
+                section_page = p.page_index;
+            }
             lines.push(content.to_string());
         }
     }
 
-    flush(&mut out, &current_heading, current_level, &mut lines);
+    flush(&mut out, &current_heading, current_level, &mut lines, section_page);
 
     for (i, ch) in out.iter_mut().enumerate() {
         ch.chunk_index = i;
@@ -416,8 +462,14 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
     let mut current_keywords = std::collections::HashSet::new();
     let mut current_heading_level = None;
     let mut current_para_type = "normal";
+    // Page the accumulating chunk started on; `current` is a flat String.
+    let mut current_page: Option<usize> = None;
 
-    let flush = |out: &mut Vec<ChunkRecord>, content: &mut String, heading_level: Option<u8>, para_type: &'static str| {
+    let flush = |out: &mut Vec<ChunkRecord>,
+                 content: &mut String,
+                 heading_level: Option<u8>,
+                 para_type: &'static str,
+                 page: Option<usize>| {
         let val = content.trim().to_string();
         if val.is_empty() {
             return;
@@ -428,6 +480,7 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
             chunk_index: 0,
             heading_level,
             paragraph_type: para_type,
+            page_number: page.map(|i| i + 1),
         });
         content.clear();
     };
@@ -452,11 +505,13 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
                 && current.len() + 2 + text.len() > MAX_CHUNK_CHARS);
 
         if should_split {
-            flush(&mut out, &mut current, current_heading_level, current_para_type);
+            flush(&mut out, &mut current, current_heading_level, current_para_type, current_page);
             current_keywords.clear();
         }
 
-        if !current.is_empty() {
+        if current.is_empty() {
+            current_page = p.page_index;
+        } else {
             current.push_str("\n\n");
         }
         current.push_str(text);
@@ -465,7 +520,7 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
         current_para_type = paragraph_type_str(&p.paragraph_type);
     }
 
-    flush(&mut out, &mut current, current_heading_level, current_para_type);
+    flush(&mut out, &mut current, current_heading_level, current_para_type, current_page);
 
     for (i, ch) in out.iter_mut().enumerate() {
         ch.chunk_index = i;
@@ -509,6 +564,7 @@ pub(crate) fn build_sliding_window_chunks(
             chunk_index: 0,
             heading_level: window.iter().find_map(|p| p.heading_level),
             paragraph_type: paragraph_type_str(&window[0].paragraph_type),
+            page_number: page_number_of(window),
         });
 
         if end == items.len() {
@@ -531,7 +587,7 @@ pub(crate) fn build_sentence_chunks(
         return Vec::new();
     }
 
-    let mut indexed_sentences: Vec<(String, Option<u8>, &'static str)> = Vec::new();
+    let mut indexed_sentences: Vec<(String, Option<u8>, &'static str, Option<usize>)> = Vec::new();
     for p in paragraphs {
         if matches!(p.paragraph_type, ParagraphType::PageBreak) {
             continue;
@@ -545,7 +601,12 @@ pub(crate) fn build_sentence_chunks(
             sentences.push(text.to_string());
         }
         for s in sentences {
-            indexed_sentences.push((s, p.heading_level, paragraph_type_str(&p.paragraph_type)));
+            indexed_sentences.push((
+                s,
+                p.heading_level,
+                paragraph_type_str(&p.paragraph_type),
+                p.page_index,
+            ));
         }
     }
 
@@ -556,7 +617,7 @@ pub(crate) fn build_sentence_chunks(
         let window = &indexed_sentences[idx..end];
         let content = window
             .iter()
-            .map(|(s, _, _)| s.clone())
+            .map(|(s, _, _, _)| s.clone())
             .collect::<Vec<_>>()
             .join(" ");
         out.push(ChunkRecord {
@@ -565,6 +626,9 @@ pub(crate) fn build_sentence_chunks(
             chunk_index: 0,
             heading_level: window[0].1,
             paragraph_type: window[0].2,
+            // The sentence a chunk starts with fixes its page, the same rule
+            // `page_number_of` applies to paragraph-shaped builders.
+            page_number: window[0].3.map(|i| i + 1),
         });
         idx = end;
     }
@@ -603,6 +667,7 @@ pub(crate) fn build_page_aware_chunks(
                 chunk_index: 0,
                 heading_level: acc.iter().find_map(|p| p.heading_level),
                 paragraph_type: paragraph_type_str(&acc[0].paragraph_type),
+                page_number: page_number_of(acc),
             });
         }
         acc.clear();
@@ -633,3 +698,109 @@ pub(crate) fn build_page_aware_chunks(
     out
 }
 
+
+#[cfg(test)]
+mod page_provenance_tests {
+    use super::*;
+
+    /// A three-page document: two paragraphs per page, page breaks between.
+    fn paged_paragraphs() -> Vec<DocParagraph> {
+        let mut out = Vec::new();
+        for page in 0..3usize {
+            if page > 0 {
+                out.push(DocParagraph {
+                    content: String::new(),
+                    paragraph_type: ParagraphType::PageBreak,
+                    heading_level: None,
+                    page_index: Some(page - 1),
+                });
+            }
+            out.push(DocParagraph {
+                content: format!("Heading for page {}", page + 1),
+                paragraph_type: ParagraphType::Heading(1),
+                heading_level: Some(1),
+                page_index: Some(page),
+            });
+            out.push(DocParagraph {
+                // Long enough not to be swept into the short-paragraph buffer,
+                // which would move the chunk's page to where the buffer began.
+                content: format!(
+                    "Body text for page {} that is comfortably longer than the \
+                     eighty character threshold used to aggregate short paragraphs.",
+                    page + 1
+                ),
+                paragraph_type: ParagraphType::Normal,
+                heading_level: None,
+                page_index: Some(page),
+            });
+        }
+        out
+    }
+
+    fn pages_of(records: &[ChunkRecord]) -> Vec<Option<usize>> {
+        records.iter().map(|r| r.page_number).collect()
+    }
+
+    /// TECH_DEBT #11: every builder must carry page provenance through, not
+    /// just `page_aware`. `records_to_chunks` used to hardcode null for all of
+    /// them, so `.doc` and `.ppt` had no page or slide number anywhere.
+    #[test]
+    fn every_builder_reports_a_page_number() {
+        let cases: Vec<(&str, Vec<ChunkRecord>)> = vec![
+            ("structural", build_structural_chunks(paged_paragraphs())),
+            ("section", build_section_chunks(paged_paragraphs())),
+            ("semantic", build_semantic_chunks(paged_paragraphs())),
+            ("sentence", build_sentence_chunks(paged_paragraphs(), 2)),
+            ("page_aware", build_page_aware_chunks(paged_paragraphs(), 2)),
+            (
+                "sliding_window",
+                build_sliding_window_chunks(paged_paragraphs(), 2, 1),
+            ),
+        ];
+
+        for (mode, records) in cases {
+            assert!(!records.is_empty(), "{mode}: expected chunks");
+            let pages = pages_of(&records);
+            assert!(
+                pages.iter().all(Option::is_some),
+                "{mode}: a chunk lost its page number: {pages:?}"
+            );
+            assert!(
+                pages.iter().flatten().all(|p| (1..=3).contains(p)),
+                "{mode}: page numbers outside the document's 3 pages: {pages:?}"
+            );
+            // Chunks are emitted in reading order, so pages never go backwards.
+            let seq: Vec<usize> = pages.iter().flatten().copied().collect();
+            assert!(
+                seq.windows(2).all(|w| w[0] <= w[1]),
+                "{mode}: page numbers are not monotonic: {seq:?}"
+            );
+        }
+    }
+
+    /// `page_aware` splits on the page breaks themselves, so its chunks map
+    /// one-to-one onto the document's declared pages.
+    #[test]
+    fn page_aware_numbers_each_declared_page() {
+        let records = build_page_aware_chunks(paged_paragraphs(), 50);
+        assert_eq!(
+            pages_of(&records),
+            vec![Some(1), Some(2), Some(3)],
+            "one chunk per declared page, numbered in order"
+        );
+    }
+
+    /// A document with no provenance at all still produces chunks — the field
+    /// is optional, not required.
+    #[test]
+    fn absent_provenance_stays_absent() {
+        let paragraphs = vec![DocParagraph {
+            content: "A document that declares no page breaks at all.".to_string(),
+            paragraph_type: ParagraphType::Normal,
+            heading_level: None,
+            page_index: None,
+        }];
+        let records = build_structural_chunks(paragraphs);
+        assert_eq!(pages_of(&records), vec![None]);
+    }
+}

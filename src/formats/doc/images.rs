@@ -507,7 +507,7 @@ pub(super) fn chunk_with_images_impl_bytes(
                 "total_chunks": total,
                 "paragraph_type": chunk.paragraph_type,
                 "heading_level": chunk.heading_level,
-                "page_number": serde_json::Value::Null,
+                "page_number": chunk.page_number,
             }),
         ));
     }

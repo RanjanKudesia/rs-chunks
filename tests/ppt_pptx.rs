@@ -113,3 +113,68 @@ fn ppt_images_keep_their_slide_number() {
         );
     }
 }
+
+/// #18: a `.ppt` chunk describes itself in presentation vocabulary.
+///
+/// `.ppt` runs `.doc`'s builders, and borrowed `.doc`'s metadata shape with
+/// them — so a deck reported `paragraph_type` and a null `page_number` and
+/// nothing else, while `.pptx` carried `slide_number`, `slide_title` and
+/// `document_metadata`. The slide ordinal is the *true* one, counting the
+/// text-free slides that `extract_paragraphs` skips.
+#[test]
+fn ppt_chunks_carry_slide_metadata() {
+    for (name, expected_slides) in [("sample1.ppt", 19), ("sample2.ppt", 3), ("sample3.ppt", 17)] {
+        let f = fixture("ppt", name);
+        let chunks = ppt::chunk(f.to_str().unwrap(), "structural", 3, 1, 3, 15).unwrap();
+        assert!(!chunks.is_empty(), "{name}: expected chunks");
+
+        for c in &chunks {
+            let m = &c.metadata;
+            assert_eq!(
+                m.get("document_metadata").and_then(|d| d.get("source_type")),
+                Some(&serde_json::json!("ppt")),
+                "{name}: missing document_metadata.source_type"
+            );
+            assert_eq!(
+                m.get("document_metadata").and_then(|d| d.get("total_slides")),
+                Some(&serde_json::json!(expected_slides)),
+                "{name}: wrong total_slides"
+            );
+            let slide = m.get("slide_number").and_then(|v| v.as_u64());
+            assert!(slide.is_some(), "{name}: chunk has no slide_number");
+            let slide = slide.unwrap();
+            assert!(
+                (1..=expected_slides).contains(&slide),
+                "{name}: slide_number {slide} outside 1..={expected_slides}"
+            );
+            // page_number is the shipped key and must keep agreeing with it.
+            assert_eq!(
+                m.get("page_number").and_then(|v| v.as_u64()),
+                Some(slide),
+                "{name}: page_number and slide_number disagree"
+            );
+        }
+
+        // Slide numbers advance with the deck.
+        let seq: Vec<u64> = chunks
+            .iter()
+            .filter_map(|c| c.metadata.get("slide_number").and_then(|v| v.as_u64()))
+            .collect();
+        assert!(
+            seq.windows(2).all(|w| w[0] <= w[1]),
+            "{name}: slide numbers are not monotonic: {seq:?}"
+        );
+
+        // At least some slides name themselves.
+        let titled = chunks
+            .iter()
+            .filter(|c| {
+                c.metadata
+                    .get("slide_title")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false)
+            })
+            .count();
+        assert!(titled > 0, "{name}: no chunk carries a slide_title");
+    }
+}

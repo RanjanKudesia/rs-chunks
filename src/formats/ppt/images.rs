@@ -257,6 +257,7 @@ pub(super) fn chunk_with_images_impl_bytes(
 ) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
     let file_path = source;
     let paragraphs = super::structural::load_ppt_paragraphs_bytes(bytes)?;
+    let paragraphs_for_meta = paragraphs.clone();
     let images = extract_ppt_images_bytes(bytes).unwrap_or_default();
     let text_chunks = build(paragraphs);
 
@@ -283,8 +284,18 @@ pub(super) fn chunk_with_images_impl_bytes(
         ));
     }
 
+    // Text chunks carry the same slide metadata the plain `chunk` path emits,
+    // so a caller does not lose provenance by asking for images (TECH_DEBT #18).
+    let titles = super::slide_titles(&paragraphs_for_meta);
+    let total_slides = paragraphs_for_meta
+        .iter()
+        .filter_map(|p| p.page_index)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     let offset = images.len();
     for chunk in &text_chunks {
+        let slide_number = chunk.page_number;
         chunk_list.push(crate::chunk::Chunk::new(
             chunk.content.clone(),
             chunk.content_type,
@@ -294,7 +305,13 @@ pub(super) fn chunk_with_images_impl_bytes(
                 "total_chunks": total,
                 "paragraph_type": chunk.paragraph_type,
                 "heading_level": chunk.heading_level,
-                "page_number": serde_json::Value::Null,
+                "page_number": slide_number,
+                "slide_number": slide_number,
+                "slide_title": slide_number.and_then(|n| titles.get(&(n - 1)).cloned()),
+                "document_metadata": {
+                    "source_type": "ppt",
+                    "total_slides": total_slides,
+                },
             }),
         ));
     }

@@ -33,7 +33,9 @@ pub(crate) fn records_to_chunks(file_path: &str, records: Vec<ChunkRecord>) -> V
                 "total_chunks": total,
                 "paragraph_type": c.paragraph_type,
                 "heading_level": c.heading_level,
-                "page_number": serde_json::Value::Null,
+                // 1-based hard-page number, or null when the document declares
+                // no page breaks at all (TECH_DEBT #11).
+                "page_number": c.page_number,
             });
             Chunk::new(c.content, c.content_type, metadata)
         })

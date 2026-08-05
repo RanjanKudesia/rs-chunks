@@ -7,6 +7,7 @@ fn image_paragraph(hash_name: &str) -> DocParagraph {
         content: format!("![]({hash_name})"),
         paragraph_type: ParagraphType::Normal,
         heading_level: None,
+        page_index: None,
     }
 }
 
@@ -37,6 +38,7 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
             content: String::new(),
             paragraph_type: ParagraphType::PageBreak,
             heading_level: None,
+                page_index: None,
         });
     }
     for img in images.iter().filter(|i| i.slide_idx.is_none()) {

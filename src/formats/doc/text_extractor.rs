@@ -16,6 +16,15 @@ pub struct DocParagraph {
     pub content: String,
     pub paragraph_type: ParagraphType,
     pub heading_level: Option<u8>,
+    /// 0-based ordinal of the page (`.doc`) or slide (`.ppt`) this paragraph
+    /// belongs to, or `None` when the source carries no such structure.
+    ///
+    /// `.doc` counts hard page breaks (`\x0C`); Word does not store soft
+    /// pagination, so this is every page boundary the file actually declares.
+    /// `.ppt` uses the true slide ordinal — *not* a count of the emitted
+    /// separators, which skip text-free slides and would misnumber exactly the
+    /// way TECH_DEBT #19 did.
+    pub page_index: Option<usize>,
 }
 
 pub(super) fn collapse_whitespace(text: &str) -> String {
@@ -88,6 +97,16 @@ pub fn extract_paragraphs_indexed(
 ) -> Vec<(usize, DocParagraph)> {
     let raw_paragraphs: Vec<&str> = reconstructed.text.split('\r').collect();
     let mut out = Vec::new();
+    // Word stores hard page breaks only; soft pagination is recomputed by the
+    // renderer and is not in the file. So a document that declares no breaks
+    // carries no page information at all — and reporting "page 1" for every
+    // chunk of a 900-chunk document would claim pagination we do not have.
+    // In that case `page_index` stays `None` and `page_number` stays null,
+    // which is what shipped and is the honest answer (TECH_DEBT #11).
+    let declares_pages = raw_paragraphs
+        .iter()
+        .any(|raw| *raw == "\x0C" || raw.starts_with('\x0C'));
+    let mut page_index = 0usize;
 
     for (idx, raw) in raw_paragraphs.iter().enumerate() {
         let prop = props.get(idx);
@@ -99,8 +118,10 @@ pub fn extract_paragraphs_indexed(
                     content: String::new(),
                     paragraph_type: ParagraphType::PageBreak,
                     heading_level: None,
+                    page_index: Some(page_index),
                 },
             ));
+            page_index += 1;
             continue;
         }
 
@@ -165,6 +186,7 @@ pub fn extract_paragraphs_indexed(
                 content,
                 paragraph_type,
                 heading_level,
+                page_index: declares_pages.then_some(page_index),
             },
         ));
     }

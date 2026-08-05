@@ -94,6 +94,7 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
         content: format!("![]({hash_name})"),
         paragraph_type: ParagraphType::Normal,
         heading_level: None,
+        page_index: None,
     };
 
     let mut paragraphs: Vec<DocParagraph> = Vec::with_capacity(indexed.len() + images.len());
