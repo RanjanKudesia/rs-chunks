@@ -48,7 +48,7 @@ fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
         "title": doc.title,
         "author": doc.author,
     });
-    Ok(Loaded { markdown, images: Vec::new(), metadata })
+    Ok(Loaded { markdown, images: Vec::new(), metadata, records: None })
 }
 
 pub fn chunk(

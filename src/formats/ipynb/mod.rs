@@ -45,7 +45,7 @@ fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
         "code_cell_count": doc.code_cell_count,
         "markdown_cell_count": doc.markdown_cell_count,
     });
-    Ok(Loaded { markdown, images: doc.images, metadata })
+    Ok(Loaded { markdown, images: doc.images, metadata, records: None })
 }
 
 pub fn chunk(

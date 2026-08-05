@@ -17,8 +17,8 @@ use serde_json::json;
 
 use super::common::{
     current_section_level, extract_heading_text, heading_level, heading_path_strings,
-    parse_markdown_blocks, split_at_paragraph_boundary, strip_block_content, update_heading_stack,
-    ChunkRecordInput, ContentType, MdBlockType,
+    parse_markdown_blocks, split_at_paragraph_boundary_spanned, strip_block_content, update_heading_stack,
+    ChunkRecordInput, ContentType, MdBlockType, SpannedRecord,
 };
 
 const MAX_SECTION_CHARS: usize = 2000;
@@ -27,6 +27,8 @@ const MAX_SECTION_CHARS: usize = 2000;
 
 struct SectionBody {
     parts: Vec<(String, &'static str)>, // (content, block_type_str)
+    /// The source block of each entry in `parts`, positionally.
+    part_blocks: Vec<usize>,
     section_heading: Option<String>,
     section_level: u8,
     heading_path: Vec<String>,
@@ -67,7 +69,7 @@ impl SectionBody {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn flush_section(
-    result: &mut Vec<ChunkRecordInput>,
+    result: &mut Vec<SpannedRecord>,
     body: SectionBody,
     chunk_index: &mut usize,
     total_input_blocks: usize,
@@ -78,13 +80,22 @@ fn flush_section(
     }
     let block_types = body.block_types();
     let paragraph_count = body.paragraph_count();
-    let parts = split_at_paragraph_boundary(&joined, MAX_SECTION_CHARS);
+    // Each part of an oversized section reports the blocks *it* covers, not the
+    // whole section's: a chunk that claims records it does not contain is worse
+    // than one that claims none.
+    let tagged: Vec<(String, usize)> = body
+        .parts
+        .iter()
+        .zip(body.part_blocks.iter())
+        .map(|((content, _), block)| (content.clone(), *block))
+        .collect();
+    let parts = split_at_paragraph_boundary_spanned(&tagged, MAX_SECTION_CHARS);
     let part_count = parts.len();
-    for (i, content) in parts.into_iter().enumerate() {
+    for (i, (content, span)) in parts.into_iter().enumerate() {
         if content.is_empty() {
             continue;
         }
-        result.push(ChunkRecordInput {
+        result.push(SpannedRecord::spanning(ChunkRecordInput {
             content_type: ContentType::Section,
             content: content.clone(),
             metadata: json!({
@@ -102,14 +113,14 @@ fn flush_section(
                     "total_input_blocks":   total_input_blocks,
                 }
             }),
-        });
+        }, span));
         *chunk_index += 1;
     }
 }
 
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
-pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
+pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
     let text = std::str::from_utf8(bytes)
         .map(|s| s.to_string())
         .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
@@ -119,7 +130,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
 
     let blocks = parse_markdown_blocks(&text);
     let total_input_blocks = blocks.len();
-    let mut result: Vec<ChunkRecordInput> = Vec::new();
+    let mut result: Vec<SpannedRecord> = Vec::new();
     let mut heading_stack: Vec<(u8, String)> = Vec::new();
     let mut current: Option<SectionBody> = None;
     let mut chunk_index = 0usize;
@@ -137,7 +148,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
                 // Emit the heading itself.
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::HeadingSection,
                     content: text.clone(),
                     metadata: json!({
@@ -153,7 +164,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
 
                 // Open a fresh body for content that follows.
@@ -162,6 +173,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                     section_heading: Some(text),
                     section_level: level,
                     heading_path: heading_path_strings(&heading_stack),
+                        part_blocks: Vec::new(),
                 });
             }
 
@@ -185,9 +197,14 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                             section_heading: next_heading,
                             section_level: next_level,
                             heading_path: next_path,
+                            part_blocks: Vec::new(),
                         });
                     }
-                    current.as_mut().unwrap().parts.push((clean, "paragraph"));
+                    {
+                        let body = current.as_mut().unwrap();
+                        body.parts.push((clean, "paragraph"));
+                        body.part_blocks.push(block.index);
+                    }
                 } else {
                     // Content before any heading — preamble section.
                     current = Some(SectionBody {
@@ -195,6 +212,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                         section_heading: None,
                         section_level: current_section_level(&heading_stack),
                         heading_path: heading_path_strings(&heading_stack),
+                        part_blocks: vec![block.index],
                     });
                 }
             }
@@ -206,12 +224,14 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                 }
                 if let Some(ref mut body) = current {
                     body.parts.push((clean, "list"));
+                    body.part_blocks.push(block.index);
                 } else {
                     current = Some(SectionBody {
                         parts: vec![(clean, "list")],
                         section_heading: None,
                         section_level: current_section_level(&heading_stack),
                         heading_path: heading_path_strings(&heading_stack),
+                        part_blocks: vec![block.index],
                     });
                 }
             }
@@ -220,12 +240,14 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                 // Code blocks are inlined into the section body, not emitted standalone.
                 if let Some(ref mut body) = current {
                     body.parts.push((block.content, "code_block"));
+                    body.part_blocks.push(block.index);
                 } else {
                     current = Some(SectionBody {
                         parts: vec![(block.content, "code_block")],
                         section_heading: None,
                         section_level: current_section_level(&heading_stack),
                         heading_path: heading_path_strings(&heading_stack),
+                        part_blocks: vec![block.index],
                     });
                 }
             }
@@ -233,12 +255,14 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
             MdBlockType::Table => {
                 if let Some(ref mut body) = current {
                     body.parts.push((block.content, "table"));
+                    body.part_blocks.push(block.index);
                 } else {
                     current = Some(SectionBody {
                         parts: vec![(block.content, "table")],
                         section_heading: None,
                         section_level: current_section_level(&heading_stack),
                         heading_path: heading_path_strings(&heading_stack),
+                        part_blocks: vec![block.index],
                     });
                 }
             }

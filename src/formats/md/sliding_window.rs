@@ -17,7 +17,7 @@ use serde_json::json;
 use super::common::{
     current_section_heading, extract_heading_text, heading_level, heading_path_strings,
     parse_markdown_blocks, strip_block_content, update_heading_stack, ChunkRecordInput,
-    ContentType, MdBlockType,
+    ContentType, MdBlockType, SpannedRecord,
 };
 
 // ── Unit record ───────────────────────────────────────────────────────────────
@@ -26,6 +26,10 @@ struct BlockUnit {
     content: String,
     section_heading: Option<String>,
     heading_path: Vec<String>,
+    /// The source block this unit came from. Not the same as the unit's own
+    /// position: empty blocks are skipped, so `paragraph_range` counts units
+    /// while record provenance needs blocks.
+    block: usize,
 }
 
 // ── Core algorithm ────────────────────────────────────────────────────────────
@@ -34,7 +38,7 @@ pub fn build_sliding_window_chunks(
     bytes: &[u8],
     window_size: usize,
     overlap: usize,
-) -> Result<Vec<ChunkRecordInput>, String> {
+) -> Result<Vec<SpannedRecord>, String> {
     if window_size == 0 {
         return Err("window_size must be greater than 0".to_string());
     }
@@ -56,6 +60,7 @@ pub fn build_sliding_window_chunks(
     // Convert every block into a text unit, tracking heading context.
     let mut units: Vec<BlockUnit> = Vec::new();
     for block in blocks {
+        let index = block.index;
         let content = match block.block_type {
             MdBlockType::Heading => {
                 let level = heading_level(&block.content);
@@ -83,6 +88,7 @@ pub fn build_sliding_window_chunks(
             content,
             section_heading: current_section_heading(&heading_stack),
             heading_path: heading_path_strings(&heading_stack),
+            block: index,
         });
     }
 
@@ -91,7 +97,7 @@ pub fn build_sliding_window_chunks(
     }
 
     let step = window_size - overlap;
-    let mut result: Vec<ChunkRecordInput> = Vec::new();
+    let mut result: Vec<SpannedRecord> = Vec::new();
     let mut start = 0usize;
     let mut window_index = 0usize;
 
@@ -106,7 +112,8 @@ pub fn build_sliding_window_chunks(
             .join("\n\n");
 
         if !content.is_empty() {
-            result.push(ChunkRecordInput {
+            let span = Some((window[0].block, window[window.len() - 1].block));
+            result.push(SpannedRecord::spanning(ChunkRecordInput {
                 content_type: ContentType::SlidingWindow,
                 content,
                 metadata: json!({
@@ -123,7 +130,7 @@ pub fn build_sliding_window_chunks(
                         "total_input_blocks": total_input_blocks,
                     }
                 }),
-            });
+            }, span));
             window_index += 1;
         }
 

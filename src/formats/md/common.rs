@@ -48,6 +48,79 @@ pub fn split_at_paragraph_boundary(text: &str, max_chars: usize) -> Vec<String> 
     result
 }
 
+/// [`split_at_paragraph_boundary`], but each output part also reports the blocks
+/// it was built from.
+///
+/// The text is joined and split exactly as the untagged version does — the
+/// strings it returns are byte-for-byte the same — and attribution is done by
+/// *offset* into the joined text. Re-splitting each part separately would be
+/// simpler and wrong: a part ending in a newline joins to `"a\n\n\nb"`, which
+/// splits differently from the parts it came from.
+pub fn split_at_paragraph_boundary_spanned(
+    parts: &[(String, usize)],
+    max_chars: usize,
+) -> Vec<(String, Option<BlockSpan>)> {
+    let joined = parts.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join("\n\n");
+
+    // Where each source part sits in the joined text, so an offset can name it.
+    let mut sources: Vec<(std::ops::Range<usize>, usize)> = Vec::with_capacity(parts.len());
+    let mut at = 0usize;
+    for (content, block) in parts {
+        sources.push((at..at + content.len(), *block));
+        at += content.len() + 2; // the "\n\n" the join inserts
+    }
+    let span_of = |range: std::ops::Range<usize>| {
+        let mut span = None;
+        for (source, block) in &sources {
+            // Touching counts: a part that contributed any character to this
+            // output part is one of its sources.
+            if source.start < range.end && range.start < source.end.max(source.start + 1) {
+                extend_span(&mut span, *block);
+            }
+        }
+        span
+    };
+
+    if joined.len() <= max_chars {
+        return vec![(joined.trim().to_string(), span_of(0..joined.len().max(1)))];
+    }
+
+    let mut result: Vec<(String, Option<BlockSpan>)> = Vec::new();
+    let mut current = String::new();
+    let mut start = 0usize;
+    let mut end = 0usize;
+    let mut offset = 0usize;
+    for part in joined.split("\n\n") {
+        let here = offset..offset + part.len();
+        offset += part.len() + 2;
+        if current.is_empty() {
+            current.push_str(part);
+            start = here.start;
+            end = here.end;
+        } else if current.len() + 2 + part.len() <= max_chars {
+            current.push_str("\n\n");
+            current.push_str(part);
+            end = here.end;
+        } else {
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() {
+                result.push((trimmed, span_of(start..end)));
+            }
+            current = part.to_string();
+            start = here.start;
+            end = here.end;
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        result.push((trimmed, span_of(start..end)));
+    }
+    if result.is_empty() {
+        result.push((joined.trim().to_string(), span_of(0..joined.len().max(1))));
+    }
+    result
+}
+
 pub const MAX_CHUNK_CHARS: usize = 1200;
 pub const MIN_CHUNK_CHARS: usize = 350;
 
@@ -103,6 +176,11 @@ pub enum MdBlockType {
 pub struct MdBlock {
     pub block_type: MdBlockType,
     pub content: String,
+    /// Position in the document's block list, assigned once by
+    /// [`parse_markdown_blocks`]. Carrying it on the block means it travels
+    /// wherever the block does, including through the builders that buffer
+    /// blocks and flush them later.
+    pub index: usize,
 }
 
 // ── Chunk output ──────────────────────────────────────────────────────────────
@@ -112,6 +190,52 @@ pub struct ChunkRecordInput {
     pub content_type: ContentType,
     pub content: String,
     pub metadata: serde_json::Value,
+}
+
+/// The inclusive first and last markdown block a chunk was built from.
+pub type BlockSpan = (usize, usize);
+
+/// A chunk together with where it came from.
+///
+/// The span is **internal**: it never reaches a caller as itself.
+/// [`crate::formats::pipeline`] translates it into `record_range` for the
+/// formats that have records — `.json`, `.jsonl`, `.ndjson` — and drops it for
+/// everything else, which is why tracking it changes no other format's
+/// metadata. It rides here rather than on [`ChunkRecordInput`] because that
+/// struct is built at 89 sites across five format families, none of which have
+/// blocks to point at.
+#[derive(Debug, Clone)]
+pub struct SpannedRecord {
+    pub record: ChunkRecordInput,
+    pub blocks: Option<BlockSpan>,
+}
+
+impl SpannedRecord {
+    /// A chunk whose origin is a single block.
+    pub fn at(record: ChunkRecordInput, index: usize) -> SpannedRecord {
+        SpannedRecord { record, blocks: Some((index, index)) }
+    }
+
+    /// A chunk built from a span the caller accumulated.
+    pub fn spanning(record: ChunkRecordInput, blocks: Option<BlockSpan>) -> SpannedRecord {
+        SpannedRecord { record, blocks }
+    }
+}
+
+/// Grow a span to include one more block.
+pub fn extend_span(span: &mut Option<BlockSpan>, index: usize) {
+    *span = Some(match *span {
+        Some((first, last)) => (first.min(index), last.max(index)),
+        None => (index, index),
+    });
+}
+
+/// The smallest span covering both, for a builder that merges two chunks.
+pub fn union_span(left: Option<BlockSpan>, right: Option<BlockSpan>) -> Option<BlockSpan> {
+    match (left, right) {
+        (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+        (only, None) | (None, only) => only,
+    }
 }
 
 // ── Heading helpers ───────────────────────────────────────────────────────────
@@ -190,6 +314,7 @@ fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
             out.push(MdBlock {
                 block_type: block.block_type,
                 content: part,
+                index: 0,
             });
         }
     }
@@ -197,7 +322,13 @@ fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
 }
 
 pub fn parse_markdown_blocks(text: &str) -> Vec<MdBlock> {
-    bound_block_size(parse_markdown_blocks_unbounded(text))
+    let mut blocks = bound_block_size(parse_markdown_blocks_unbounded(text));
+    // Numbered after bounding, because bounding is what splits an oversized
+    // block into several and the builders see the result.
+    for (i, block) in blocks.iter_mut().enumerate() {
+        block.index = i;
+    }
+    blocks
 }
 
 fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
@@ -226,6 +357,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
                 blocks.push(MdBlock {
                     block_type: MdBlockType::Code,
                     content: code.join("\n").trim().to_string(),
+                index: 0,
                 });
                 code.clear();
                 in_code_fence = false;
@@ -260,6 +392,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
             blocks.push(MdBlock {
                 block_type: MdBlockType::Heading,
                 content: format!("{}\n{}", compact, lines[i + 1].trim()),
+                index: 0,
             });
             i += 2;
             continue;
@@ -270,6 +403,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
             blocks.push(MdBlock {
                 block_type: MdBlockType::Heading,
                 content: compact.to_string(),
+                index: 0,
             });
             i += 1;
             continue;
@@ -319,6 +453,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
         blocks.push(MdBlock {
             block_type: MdBlockType::Code,
             content: code.join("\n").trim().to_string(),
+                index: 0,
         });
     }
 
@@ -349,6 +484,7 @@ pub fn flush_paragraph(blocks: &mut Vec<MdBlock>, paragraph: &mut Vec<String>) {
         blocks.push(MdBlock {
             block_type: MdBlockType::Paragraph,
             content,
+                index: 0,
         });
     }
 }
@@ -360,6 +496,7 @@ pub fn flush_list(blocks: &mut Vec<MdBlock>, list: &mut Vec<String>) {
         blocks.push(MdBlock {
             block_type: MdBlockType::List,
             content,
+                index: 0,
         });
     }
 }
@@ -416,6 +553,7 @@ pub fn flush_table(blocks: &mut Vec<MdBlock>, table: &mut Vec<String>) {
             MdBlockType::Paragraph
         },
         content,
+        index: 0,
     });
 }
 

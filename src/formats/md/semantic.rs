@@ -18,7 +18,8 @@ use crate::shared::{
 use super::common::{
     current_section_heading, current_section_level, extract_heading_text, has_keyword_overlap,
     heading_level, heading_path_strings, parse_markdown_blocks, strip_block_content,
-    tokenize_keywords, update_heading_stack, ChunkRecordInput, ContentType, MdBlockType,
+    tokenize_keywords, update_heading_stack, extend_span, BlockSpan, ChunkRecordInput,
+    ContentType, MdBlockType, SpannedRecord,
 };
 
 // ── Signal word tables ────────────────────────────────────────────────────────
@@ -36,6 +37,8 @@ struct SemanticPart {
 
 struct SemanticAccum {
     parts: Vec<SemanticPart>,
+    /// The blocks this accumulator's parts came from.
+    span: Option<BlockSpan>,
     section_heading: Option<String>,
     heading_path: Vec<String>,
     section_level: u8,
@@ -58,6 +61,7 @@ impl SemanticAccum {
         heading_path: Vec<String>,
         section_level: u8,
         keywords: HashSet<String>,
+        block: usize,
     ) -> Self {
         let char_count = first_content.len();
         let ends_with_question = first_content.trim_end().ends_with('?');
@@ -69,6 +73,7 @@ impl SemanticAccum {
                 block_type: first_type,
                 merge_reason: "initial",
             }],
+            span: Some((block, block)),
             section_heading,
             heading_path,
             section_level,
@@ -79,7 +84,7 @@ impl SemanticAccum {
         }
     }
 
-    fn append(&mut self, content: String, block_type: MdBlockType, reason: &'static str) {
+    fn append(&mut self, content: String, block_type: MdBlockType, reason: &'static str, block: usize) {
         self.char_count += content.len() + 2;
         self.ends_with_question = content.trim_end().ends_with('?');
         self.ends_with_definition_label = content.len() <= 80 && content.trim_end().ends_with(':');
@@ -89,6 +94,7 @@ impl SemanticAccum {
             block_type,
             merge_reason: reason,
         });
+        extend_span(&mut self.span, block);
     }
 
     fn joined_content(&self) -> String {
@@ -197,7 +203,8 @@ fn finalize(
     accum: SemanticAccum,
     chunk_index: usize,
     total_input_blocks: usize,
-) -> ChunkRecordInput {
+) -> SpannedRecord {
+    let span = accum.span;
     let content = accum.joined_content();
 
     // Unique block types present in this chunk.
@@ -280,16 +287,15 @@ fn finalize(
         }
     });
 
-    ChunkRecordInput {
-        content_type: ContentType::Semantic,
-        content,
-        metadata,
-    }
+    SpannedRecord::spanning(
+        ChunkRecordInput { content_type: ContentType::Semantic, content, metadata },
+        span,
+    )
 }
 
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
-pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
+pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
     let text = std::str::from_utf8(bytes)
         .map(|v| v.to_string())
         .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
@@ -301,7 +307,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
     let blocks = parse_markdown_blocks(&text);
     let total_input_blocks = blocks.len();
 
-    let mut result: Vec<ChunkRecordInput> = Vec::new();
+    let mut result: Vec<SpannedRecord> = Vec::new();
     let mut heading_stack: Vec<(u8, String)> = Vec::new();
     let mut accum: Option<SemanticAccum> = None;
     let mut chunk_index = 0usize;
@@ -320,7 +326,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
                 // Emit the heading itself as a typed heading chunk.
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::HeadingSection,
                     content: text.clone(),
                     metadata: json!({
@@ -340,7 +346,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
             }
 
@@ -351,7 +357,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                     chunk_index += 1;
                 }
                 let content = block.content.clone();
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::CodeBlock,
                     content: content.clone(),
                     metadata: json!({
@@ -371,7 +377,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
             }
 
@@ -382,7 +388,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                     chunk_index += 1;
                 }
                 let content = block.content.clone();
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::Table,
                     content: content.clone(),
                     metadata: json!({
@@ -402,7 +408,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
             }
 
@@ -426,12 +432,13 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                             heading_path_strings(&heading_stack),
                             current_section_level(&heading_stack),
                             tokenize_keywords(&clean),
+                            block.index,
                         ));
                     }
                     Some(a) => {
                         match decide_merge(&clean, block.block_type, a, MAX_SEMANTIC_CHARS) {
                             Some(reason) => {
-                                a.append(clean, block.block_type, reason);
+                                a.append(clean, block.block_type, reason, block.index);
                             }
                             None => {
                                 // Flush current, start fresh.
@@ -445,6 +452,7 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
                                     heading_path_strings(&heading_stack),
                                     current_section_level(&heading_stack),
                                     tokenize_keywords(&clean),
+                                    block.index,
                                 ));
                             }
                         }

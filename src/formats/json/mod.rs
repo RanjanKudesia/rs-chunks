@@ -50,7 +50,12 @@ fn load_bytes(raw: &[u8], filename: &str) -> Result<Loaded> {
         "top_level": doc.top_level,
         "envelope_key": doc.envelope_key,
     });
-    Ok(Loaded { markdown: doc.markdown, images: Vec::new(), metadata })
+    Ok(Loaded {
+        markdown: doc.markdown,
+        images: Vec::new(),
+        metadata,
+        records: Some(doc.record_starts),
+    })
 }
 
 /// No-filesystem entry (wasm/browser + bytes callers). `filename` routes the

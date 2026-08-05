@@ -19,15 +19,16 @@ use serde_json::json;
 
 use super::common::{
     current_section_heading, current_section_level, extract_heading_text, heading_level,
-    heading_path_strings, parse_markdown_blocks, split_at_paragraph_boundary, strip_block_content,
+    heading_path_strings, parse_markdown_blocks, split_at_paragraph_boundary_spanned, strip_block_content,
     update_heading_stack, ChunkRecordInput, ContentType, MdBlockType,
+    SpannedRecord,
 };
 const MAX_PAGE_AWARE_CHUNK_CHARS: usize = 2000;
 
 // ── Internal accumulator ──────────────────────────────────────────────────────
 
 struct PageAccum {
-    parts: Vec<String>,
+    parts: Vec<(String, usize)>,
     section_heading: Option<String>,
     heading_path: Vec<String>,
     section_level: u8,
@@ -50,8 +51,8 @@ impl PageAccum {
         }
     }
 
-    fn push(&mut self, content: String) {
-        self.parts.push(content);
+    fn push(&mut self, content: String, block: usize) {
+        self.parts.push((content, block));
     }
 
     fn len(&self) -> usize {
@@ -62,8 +63,8 @@ impl PageAccum {
         self.parts.is_empty()
     }
 
-    fn into_content(self) -> String {
-        self.parts.join("\n\n")
+    fn into_parts(self) -> Vec<(String, usize)> {
+        self.parts
     }
 }
 
@@ -72,7 +73,7 @@ impl PageAccum {
 pub fn build_page_aware_chunks(
     bytes: &[u8],
     paragraphs_per_page: usize,
-) -> Result<Vec<ChunkRecordInput>, String> {
+) -> Result<Vec<SpannedRecord>, String> {
     if paragraphs_per_page == 0 {
         return Err("paragraphs_per_page must be greater than 0".to_string());
     }
@@ -87,12 +88,12 @@ pub fn build_page_aware_chunks(
     let blocks = parse_markdown_blocks(&text);
     let total_input_blocks = blocks.len();
     let mut heading_stack: Vec<(u8, String)> = Vec::new();
-    let mut result: Vec<ChunkRecordInput> = Vec::new();
+    let mut result: Vec<SpannedRecord> = Vec::new();
     let mut accum: Option<PageAccum> = None;
     let mut chunk_index = 0usize;
 
     let flush = |accum: &mut Option<PageAccum>,
-                 result: &mut Vec<ChunkRecordInput>,
+                 result: &mut Vec<SpannedRecord>,
                  chunk_index: &mut usize,
                  total: usize| {
         if let Some(a) = accum.take() {
@@ -102,9 +103,13 @@ pub fn build_page_aware_chunks(
                 let section_heading = a.section_heading.clone();
                 let heading_path = a.heading_path.clone();
                 let section_level = a.section_level;
-                let content = a.into_content();
-                for part in split_at_paragraph_boundary(&content, MAX_PAGE_AWARE_CHUNK_CHARS) {
-                    result.push(ChunkRecordInput {
+                // Each part of an oversized page reports the blocks it covers,
+                // not the whole page's.
+                let tagged = a.into_parts();
+                for (part, span) in
+                    split_at_paragraph_boundary_spanned(&tagged, MAX_PAGE_AWARE_CHUNK_CHARS)
+                {
+                    result.push(SpannedRecord::spanning(ChunkRecordInput {
                         content_type: ContentType::PageAware,
                         content: part,
                         metadata: json!({
@@ -119,7 +124,7 @@ pub fn build_page_aware_chunks(
                                 "total_input_blocks": total,
                             }
                         }),
-                    });
+                    }, span));
                     *chunk_index += 1;
                 }
             }
@@ -142,7 +147,7 @@ pub fn build_page_aware_chunks(
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
                 // Emit heading as its own chunk.
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::HeadingSection,
                     content: text.clone(),
                     metadata: json!({
@@ -157,7 +162,7 @@ pub fn build_page_aware_chunks(
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
 
                 // Start accumulator for content under this heading.
@@ -182,7 +187,7 @@ pub fn build_page_aware_chunks(
                         "estimated",
                     )
                 });
-                a.push(clean);
+                a.push(clean, block.index);
                 if a.len() >= paragraphs_per_page {
                     flush(
                         &mut accum,
@@ -206,7 +211,7 @@ pub fn build_page_aware_chunks(
                         "estimated",
                     )
                 });
-                a.push(clean);
+                a.push(clean, block.index);
                 if a.len() >= paragraphs_per_page {
                     flush(
                         &mut accum,
@@ -226,7 +231,7 @@ pub fn build_page_aware_chunks(
                         "estimated",
                     )
                 });
-                a.push(block.content);
+                a.push(block.content, block.index);
                 if a.len() >= paragraphs_per_page {
                     flush(
                         &mut accum,
@@ -246,7 +251,7 @@ pub fn build_page_aware_chunks(
                         "estimated",
                     )
                 });
-                a.push(block.content);
+                a.push(block.content, block.index);
                 if a.len() >= paragraphs_per_page {
                     flush(
                         &mut accum,

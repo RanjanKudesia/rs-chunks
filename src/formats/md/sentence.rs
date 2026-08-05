@@ -24,7 +24,7 @@ use serde_json::json;
 use super::common::{
     current_section_heading, current_section_level, extract_heading_text, heading_level,
     heading_path_strings, parse_markdown_blocks, strip_block_content, update_heading_stack,
-    ChunkRecordInput, ContentType, MdBlockType,
+    ChunkRecordInput, ContentType, MdBlockType, SpannedRecord,
 };
 
 // ── Sentence splitting ────────────────────────────────────────────────────────
@@ -132,6 +132,8 @@ fn split_into_sentences(text: &str) -> Vec<String> {
 
 struct IndexedSentence {
     text: String,
+    /// The markdown block this sentence was split out of.
+    block: usize,
     paragraph_index: usize,
     section_heading: Option<String>,
     heading_path: Vec<String>,
@@ -143,7 +145,7 @@ struct IndexedSentence {
 pub fn build_sentence_chunks(
     bytes: &[u8],
     sentences_per_chunk: usize,
-) -> Result<Vec<ChunkRecordInput>, String> {
+) -> Result<Vec<SpannedRecord>, String> {
     if sentences_per_chunk == 0 {
         return Err("sentences_per_chunk must be greater than 0".to_string());
     }
@@ -157,7 +159,7 @@ pub fn build_sentence_chunks(
 
     let blocks = parse_markdown_blocks(&text);
     let total_input_blocks = blocks.len();
-    let mut result: Vec<ChunkRecordInput> = Vec::new();
+    let mut result: Vec<SpannedRecord> = Vec::new();
     let mut heading_stack: Vec<(u8, String)> = Vec::new();
     let mut sentences: Vec<IndexedSentence> = Vec::new();
     let mut para_index = 0usize;
@@ -166,7 +168,7 @@ pub fn build_sentence_chunks(
     // Helper: flush accumulated sentence buffer as grouped sentence chunks.
     let flush_sentences =
         |sentences: &mut Vec<IndexedSentence>,
-         result: &mut Vec<ChunkRecordInput>,
+         result: &mut Vec<SpannedRecord>,
          chunk_index: &mut usize,
          spc: usize,
          total: usize| {
@@ -176,7 +178,8 @@ pub fn build_sentence_chunks(
                 let window = &sentences[i..end];
                 let content = window.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
                 if !content.is_empty() {
-                    result.push(ChunkRecordInput {
+                    let span = Some((window[0].block, window[window.len() - 1].block));
+                    result.push(SpannedRecord::spanning(ChunkRecordInput {
                         content_type: ContentType::Sentence,
                         content,
                         metadata: json!({
@@ -192,7 +195,7 @@ pub fn build_sentence_chunks(
                                 "total_input_blocks": total,
                             }
                         }),
-                    });
+                    }, span));
                     *chunk_index += 1;
                 }
                 i = end;
@@ -216,7 +219,7 @@ pub fn build_sentence_chunks(
                 let text = extract_heading_text(&block.content);
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::HeadingSection,
                     content: text.clone(),
                     metadata: json!({
@@ -229,7 +232,7 @@ pub fn build_sentence_chunks(
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
             }
 
@@ -242,7 +245,7 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::CodeBlock,
                     content: block.content.clone(),
                     metadata: json!({
@@ -255,7 +258,7 @@ pub fn build_sentence_chunks(
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
                 para_index += 1;
             }
@@ -268,7 +271,7 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::Table,
                     content: block.content.clone(),
                     metadata: json!({
@@ -281,7 +284,7 @@ pub fn build_sentence_chunks(
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
                 para_index += 1;
             }
@@ -298,6 +301,7 @@ pub fn build_sentence_chunks(
                 for s in split_into_sentences(&clean) {
                     sentences.push(IndexedSentence {
                         text: s,
+                        block: block.index,
                         paragraph_index: current_para_index,
                         section_heading: sh.clone(),
                         heading_path: hp.clone(),
@@ -322,7 +326,7 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(ChunkRecordInput {
+                result.push(SpannedRecord::at(ChunkRecordInput {
                     content_type: ContentType::BulletNumberedList,
                     content: clean,
                     metadata: json!({
@@ -338,7 +342,7 @@ pub fn build_sentence_chunks(
                             "total_input_blocks": total_input_blocks,
                         }
                     }),
-                });
+                }, block.index));
                 chunk_index += 1;
                 para_index += 1;
             }

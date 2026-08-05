@@ -17,9 +17,8 @@ use std::fs;
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 use crate::options::{ChunkMode, ChunkOptions};
-use common::ChunkRecordInput;
+use common::{ChunkRecordInput, SpannedRecord};
 
-/// Map the internal record type onto the public [`Chunk`].
 /// Stream a markdown file's chunks. Markdown parses in one pass, so the whole
 /// document is chunked up front and drained lazily — the profile
 /// `streaming.mdx` records for it.
@@ -36,6 +35,7 @@ pub fn stream(
         .map(Ok))
 }
 
+/// Map the internal record type onto the public [`Chunk`].
 pub(crate) fn records_to_chunks(records: Vec<ChunkRecordInput>) -> Vec<Chunk> {
     records
         .into_iter()
@@ -52,7 +52,7 @@ pub(crate) fn build_records_from_bytes(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<Vec<ChunkRecordInput>> {
+) -> Result<Vec<SpannedRecord>> {
     let res = match mode {
         "default" | "structural" => structural::build_chunks_from_md_bytes(bytes),
         "section" => section::build_section_chunks(bytes),
@@ -117,7 +117,8 @@ pub fn chunk_from_bytes(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    Ok(records_to_chunks(records))
+    // A `.md` file has no records to point at, so the spans are dropped here.
+    Ok(records_to_chunks(records.into_iter().map(|s| s.record).collect()))
 }
 
 /// No-filesystem Markdown passthrough (a `.md` document is already Markdown).

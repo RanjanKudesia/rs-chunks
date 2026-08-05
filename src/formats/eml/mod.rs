@@ -106,7 +106,7 @@ fn load_bytes(raw: &[u8], file_path: &str) -> Result<(Loaded, Vec<MboxMessageInf
     if file_path.to_ascii_lowercase().ends_with(".mbox") {
         let (markdown, images, count, infos) = mbox_to_markdown(raw);
         let metadata = serde_json::json!({ "source_type": "mbox", "message_count": count });
-        Ok((Loaded { markdown, images, metadata }, infos))
+        Ok((Loaded { markdown, images, metadata, records: None }, infos))
     } else {
         let doc = parse_message_bytes(raw);
         let markdown = document_to_markdown(&doc, 1);
@@ -124,7 +124,7 @@ fn load_bytes(raw: &[u8], file_path: &str) -> Result<(Loaded, Vec<MboxMessageInf
             "has_attachments": !doc.attachments.is_empty(),
             "attachment_count": doc.attachments.len(),
         });
-        Ok((Loaded { markdown, images: doc.images, metadata }, Vec::new()))
+        Ok((Loaded { markdown, images: doc.images, metadata, records: None }, Vec::new()))
     }
 }
 

@@ -158,7 +158,7 @@ fn load_bytes(bytes: &[u8], filename: &str) -> Result<Loaded> {
             "source_type": "odp", "title": title, "creator": creator, "slide_count": slide_count,
         }),
     };
-    Ok(Loaded { markdown, images: container.images, metadata })
+    Ok(Loaded { markdown, images: container.images, metadata, records: None })
 }
 
 pub fn chunk(

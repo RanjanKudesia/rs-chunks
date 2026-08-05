@@ -35,6 +35,26 @@ pub(crate) struct Loaded {
     pub images: Vec<(String, Vec<u8>)>,
     /// Document-level metadata injected as `document_metadata` on every chunk.
     pub metadata: serde_json::Value,
+    /// For a format whose source is a sequence of records — `.json`, `.jsonl`,
+    /// `.ndjson` — the markdown block each record starts at, in order. This is
+    /// what turns a chunk's block span into the records it was built from
+    /// ([#46](TECH_DEBT.md)). `None` for a format that has no records, and then
+    /// no chunk gains a `record_range`.
+    pub records: Option<Vec<usize>>,
+}
+
+/// The records a span of markdown blocks came from, as an inclusive 0-based
+/// range. `starts[i]` is the first block of record `i`, so the record covering
+/// a block is the last one that starts at or before it.
+fn records_for(starts: &[usize], span: (usize, usize)) -> Option<(usize, usize)> {
+    if starts.is_empty() {
+        return None;
+    }
+    // The last record that starts at or before the block. `partition_point`
+    // rather than `binary_search` because a record that renders to nothing
+    // shares its successor's start, and the owner is the later one.
+    let record_of = |block: usize| starts.partition_point(|start| *start <= block).saturating_sub(1);
+    Some((record_of(span.0), record_of(span.1)))
 }
 
 /// Deduplicate images by name, first occurrence winning — matching the Python
@@ -73,7 +93,7 @@ fn build_records(
     if loaded.markdown.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let mut records = md::build_records_from_bytes(
+    let records = md::build_records_from_bytes(
         loaded.markdown.as_bytes(),
         mode,
         window_size,
@@ -81,12 +101,27 @@ fn build_records(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    for rec in records.iter_mut() {
+    let mut out = Vec::with_capacity(records.len());
+    for spanned in records.into_iter() {
+        let mut rec = spanned.record;
         if let serde_json::Value::Object(map) = &mut rec.metadata {
             map.insert("document_metadata".to_string(), loaded.metadata.clone());
+            // The block span is internal. It only becomes visible metadata for a
+            // format that has records to name, which is why adding it changed
+            // nothing for `.md`, `.html`, `.txt`, `.pdf` and the rest.
+            if let (Some(starts), Some(span)) = (loaded.records.as_deref(), spanned.blocks) {
+                if let Some((first, last)) = records_for(starts, span) {
+                    // Range only. A sibling `record_count` was in the design,
+                    // but `document_metadata.record_count` already means the
+                    // *file's* total, and two different counts under one name
+                    // is a trap; the chunk's own count is `last - first + 1`.
+                    map.insert("record_range".to_string(), serde_json::json!([first, last]));
+                }
+            }
         }
+        out.push(rec);
     }
-    Ok(records)
+    Ok(out)
 }
 
 pub(crate) fn chunk(

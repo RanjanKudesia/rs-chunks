@@ -44,6 +44,7 @@ fn pdf_loaded(markdown: String, images: Vec<(String, Vec<u8>)>, total_pages: usi
         markdown: author_block::normalize(&markdown),
         images,
         metadata: serde_json::json!({ "source_type": "pdf", "total_pages": total_pages }),
+        records: None,
     }
 }
 

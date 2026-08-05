@@ -57,7 +57,7 @@ fn loaded_from_doc(doc: extract::MsgDocument) -> Result<Loaded> {
         "has_attachments": !doc.attachments.is_empty(),
         "attachment_count": doc.attachments.len(),
     });
-    Ok(Loaded { markdown, images: doc.images, metadata })
+    Ok(Loaded { markdown, images: doc.images, metadata, records: None })
 }
 
 pub fn chunk(
