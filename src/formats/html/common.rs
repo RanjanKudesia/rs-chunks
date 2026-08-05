@@ -441,30 +441,159 @@ pub fn extract_block_content(raw: &str, tag: &str, block_type: HtmlBlockType) ->
                 Some(items.join("\n"))
             }
         }
-        HtmlBlockType::Table => {
-            let mut rows = Vec::new();
-            for tr_raw in extract_tag_blocks(raw, "tr") {
-                let mut cells = Vec::new();
-                for cell_tag in ["th", "td"] {
-                    for cell_raw in extract_tag_blocks(tr_raw, cell_tag) {
-                        if let Some(inner) = extract_inner_html(cell_raw, cell_tag) {
-                            let cell = normalize_inline_text(&strip_tags(&inner, true));
-                            if !cell.is_empty() {
-                                cells.push(cell);
-                            }
-                        }
-                    }
+        HtmlBlockType::Table => render_table(raw),
+    }
+}
+
+
+/// Blocks of `tag` that are *direct* content of `html` — occurrences inside a
+/// nested `container` are skipped, along with the container itself.
+///
+/// `extract_tag_blocks` scans at any depth, which is right for a flat document
+/// and wrong inside a table: a nested table's `<tr>`s were collected as extra
+/// rows of the parent (TECH_DEBT #24).
+fn find_block_end_skipping(html: &str, from: usize, tag: &str, container: &str) -> usize {
+    let bytes = html.as_bytes();
+    let mut i = from;
+    let mut depth = 1usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let Some(parsed) = parse_tag_at(html, i) else {
+            i += 1;
+            continue;
+        };
+        if tag != container
+            && !parsed.is_closing
+            && !parsed.is_self_closing
+            && parsed.name == container
+        {
+            let end = find_block_end_skipping(html, parsed.end, container, container);
+            i = if end > i { end } else { parsed.end };
+            continue;
+        }
+        // `<td/>` opens and closes at once, so it must not raise the depth.
+        // Missing this merged Moby Dick's `<td/><td>word</td><td>lang</td>`
+        // rows into single cells — real XHTML uses empty self-closing cells for
+        // layout indentation all the time.
+        if parsed.name == tag && !parsed.is_self_closing {
+            if parsed.is_closing {
+                depth -= 1;
+                if depth == 0 {
+                    return parsed.end;
                 }
-                if !cells.is_empty() {
-                    rows.push(cells.join(" | "));
-                }
-            }
-            if rows.is_empty() {
-                None
             } else {
-                Some(rows.join("\n"))
+                depth += 1;
             }
         }
+        i = parsed.end;
+    }
+    html.len()
+}
+
+fn extract_blocks_skipping_nested<'a>(
+    html: &'a str,
+    tag: &str,
+    container: &str,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let bytes = html.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let Some(parsed) = parse_tag_at(html, i) else {
+            i += 1;
+            continue;
+        };
+        if tag != container
+            && !parsed.is_closing
+            && !parsed.is_self_closing
+            && parsed.name == container
+        {
+            // Jump the whole nested container; nothing inside belongs to us.
+            let end = find_block_end_skipping(html, parsed.end, container, container);
+            i = if end > i { end } else { parsed.end };
+            continue;
+        }
+        // A self-closing `<td/>` is an empty cell: it has no block to extract,
+        // and treating it as an opening tag swallows the cells that follow.
+        if parsed.is_closing || parsed.is_self_closing || parsed.name != tag {
+            i = parsed.end;
+            continue;
+        }
+        // A `</tag>` belonging to a nested container must not close this block:
+        // the outer `<tr>` used to end at the inner table's first `</tr>`.
+        let end = find_block_end_skipping(html, parsed.end, tag, container);
+        if end <= i {
+            i = parsed.end;
+            continue;
+        }
+        out.push(&html[i..end]);
+        i = end;
+    }
+    out
+}
+
+/// Render one `<table>` as `cell | cell` rows, one row per line.
+///
+/// Nested tables are rendered in place, inside the cell that holds them,
+/// instead of leaking their rows into the parent and losing their cell
+/// separators (TECH_DEBT #24).
+fn render_table(raw: &str) -> Option<String> {
+    render_table_with(raw, "\n")
+}
+
+/// `row_sep` is `"\n"` at the top level, so one row reads as one line. A table
+/// nested inside a cell uses `" / "` instead: its rows must stay on the parent
+/// row's line, or a single outer row looks like several.
+fn render_table_with(raw: &str, row_sep: &str) -> Option<String> {
+    let inner = extract_inner_html(raw, "table").unwrap_or_else(|| raw.to_string());
+    let mut rows = Vec::new();
+    for tr_raw in extract_blocks_skipping_nested(&inner, "tr", "table") {
+        let mut cells = Vec::new();
+        for cell_tag in ["th", "td"] {
+            for cell_raw in extract_blocks_skipping_nested(tr_raw, cell_tag, "table") {
+                let Some(cell_inner) = extract_inner_html(cell_raw, cell_tag) else {
+                    continue;
+                };
+                // A cell may hold its own table; render it rather than letting
+                // strip_tags run its cells together.
+                let mut parts: Vec<String> = Vec::new();
+                let nested_tables = extract_tag_blocks(&cell_inner, "table");
+                // The cell's own text excludes its nested tables — otherwise
+                // their cells appear twice: once run together by strip_tags,
+                // once rendered properly below.
+                let mut own_text = cell_inner.clone();
+                for nested in &nested_tables {
+                    own_text = own_text.replace(*nested, " ");
+                }
+                let text = normalize_inline_text(&strip_tags(&own_text, true));
+                if !text.is_empty() {
+                    parts.push(text);
+                }
+                for nested in &nested_tables {
+                    if let Some(rendered) = render_table_with(nested, " / ") {
+                        parts.push(rendered);
+                    }
+                }
+                if !parts.is_empty() {
+                    cells.push(parts.join(" "));
+                }
+            }
+        }
+        if !cells.is_empty() {
+            rows.push(cells.join(" | "));
+        }
+    }
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows.join(row_sep))
     }
 }
 

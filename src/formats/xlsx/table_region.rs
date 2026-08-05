@@ -224,9 +224,22 @@ fn read_named_tables_for_sheet(
     archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
     sheet_index_1based: usize,
 ) -> Result<Vec<TableInfo>, String> {
-    let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
-    let Some(rels_xml) = read_zip_entry(archive, &rels_path)? else {
-        return Ok(Vec::new());
+    // `.xlsx`/`.xlsm`/`.xltx`/`.xltm` name the part `sheetN.xml.rels`; `.xlsb`
+    // names it `sheetN.bin.rels`. The referenced table parts are XML either way.
+    //
+    // This lookup is a second implementation of the one in
+    // `common.rs::get_named_table_names_for_sheet`, and it had drifted: only
+    // that one knew about `.bin.rels`, so a `.xlsb` workbook with real tables
+    // would have `sheet` mode list them while `table` mode reported every
+    // region unnamed (TECH_DEBT #20).
+    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
+    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
+    let rels_xml = match read_zip_entry(archive, &xml_rels)? {
+        Some(x) => x,
+        None => match read_zip_entry(archive, &bin_rels)? {
+            Some(x) => x,
+            None => return Ok(Vec::new()),
+        },
     };
 
     let targets = parse_table_relationship_targets(&rels_xml)?;
