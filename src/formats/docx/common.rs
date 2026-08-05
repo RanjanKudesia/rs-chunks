@@ -650,6 +650,25 @@ pub(super) fn image_placeholder(alt: Option<&str>) -> String {
     }
 }
 
+/// A paragraph's chunk text, keeping **both** its words and its image marker.
+///
+/// `get_markdown` emits the text and then the placeholder ([#2](TECH_DEBT.md)).
+/// `get_chunks` did the opposite of what markdown used to do — it kept the text
+/// and dropped the marker — so a paragraph holding both lost its alt text from
+/// the chunks entirely, while a paragraph holding *only* an image did get
+/// `[Image: …]`. Chunks disagreed with markdown and with themselves
+/// ([#83](TECH_DEBT.md)).
+pub(super) fn text_with_image_marker(text: String, has_drawing: bool, alt: Option<&str>) -> String {
+    if !has_drawing {
+        return text;
+    }
+    let placeholder = image_placeholder(alt);
+    if text.trim().is_empty() {
+        return placeholder;
+    }
+    format!("{text}\n{placeholder}")
+}
+
 /// Parse `word/_rels/document.xml.rels` and return a map of `rId → zip path`
 /// for image relationships (Type ending in `/image`).
 pub(super) fn parse_rels_xml_images(xml: &str) -> HashMap<String, String> {

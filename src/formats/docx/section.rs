@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 
 use super::common::{
-    image_hash_name, image_placeholder, parse_docx_blocks, DocxBlock,
+    image_hash_name, parse_docx_blocks, DocxBlock,
     DocxBlockKind,
 };
 use std::collections::HashMap;
@@ -122,11 +122,11 @@ fn lower_blocks(raw: Vec<DocxBlock>) -> Vec<DocumentBlock> {
                 let heading_level =
                     parse_heading_level(block.heading_style.as_deref(), block.outline_level);
 
-                let normalized = if has_text {
-                    text
-                } else {
-                    image_placeholder(block.image_alt.as_deref())
-                };
+                let normalized = super::common::text_with_image_marker(
+                    text,
+                    block.has_drawing,
+                    block.image_alt.as_deref(),
+                );
 
                 let block_type = if heading_level.is_some() {
                     BlockType::Paragraph

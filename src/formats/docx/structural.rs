@@ -243,11 +243,11 @@ fn lower_blocks_to_elements(raw: Vec<DocxBlock>) -> Vec<DocumentElement> {
                 );
 
                 if has_text || matches!(content_type, ContentType::Image) {
-                    let normalized = if has_text {
-                        text
-                    } else {
-                        image_placeholder(block.image_alt.as_deref())
-                    };
+                    let normalized = super::common::text_with_image_marker(
+                        text,
+                        block.has_drawing,
+                        block.image_alt.as_deref(),
+                    );
                     out.push(DocumentElement {
                         content_type,
                         text: normalized,

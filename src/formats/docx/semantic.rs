@@ -131,11 +131,17 @@ fn lower_blocks_to_paragraphs(raw: Vec<DocxBlock>) -> Vec<SemanticParagraph> {
                 let is_heading = heading_level.is_some();
                 let text = block.text.trim().to_string();
                 if !text.is_empty() {
-                    let normalized = if block.is_list {
+                    let listed = if block.is_list {
                         format!("- {text}")
                     } else {
                         text
                     };
+                    // A paragraph holding text *and* an image keeps both (#83).
+                    let normalized = super::common::text_with_image_marker(
+                        listed,
+                        block.has_drawing,
+                        block.image_alt.as_deref(),
+                    );
                     out.push(SemanticParagraph {
                         text: normalized,
                         is_heading,
