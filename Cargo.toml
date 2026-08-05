@@ -46,3 +46,6 @@ liteparse = { version = "=2.9.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 rtf-parser = "0.4"
 mail-parser = { version = "0.11", default-features = false, features = ["full_encoding"] }
+lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
+weezl = "0.2.1"
+flate2 = "1.1.9"

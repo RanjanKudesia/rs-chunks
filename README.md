@@ -71,13 +71,17 @@ let (chunks, images) = pptx::chunk_with_images("deck.pptx", "default", 3, 1, 3, 
 
 ## Features
 
-Native PDF (via the `liteparse` crate / PDFium) is enabled by default through the
-**`pdf-native`** feature. Disable default features for `wasm32` targets, where
-PDF markdown is produced host-side and fed to `pdf::chunk_pdf_markdown`:
+PDF parsing is always compiled in — it is pure Rust and builds for `wasm32`.
+The default **`pdf-native`** feature adds only page *rasterisation* (via the
+`liteparse` crate / PDFium), the fallback used when a scanned PDF has no
+embedded page image to return. Disable default features for `wasm32`:
 
 ```toml
 rs-chunks = { version = "0.1", default-features = false }
 ```
+
+PDFs still parse without it; a text-less one reports that it has no text rather
+than returning page renders.
 
 ## Parity
 

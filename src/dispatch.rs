@@ -50,6 +50,7 @@ pub fn get_chunks_from_bytes(
         "msg" => formats::msg::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "doc" => formats::doc::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "ppt" => formats::ppt::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
+        "pdf" => formats::pdf::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         _ => bytes_fallback_chunks(data, &ext, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
     }
 }
@@ -75,6 +76,7 @@ pub fn get_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
         "msg" => formats::msg::to_markdown_from_bytes(data),
         "doc" => formats::doc::to_markdown_from_bytes(data),
         "ppt" => formats::ppt::to_markdown_from_bytes(data),
+        "pdf" => formats::pdf::to_markdown_from_bytes(data),
         _ => bytes_fallback_markdown(data, &ext),
     }
 }
@@ -109,6 +111,7 @@ pub fn get_chunks_with_images_from_bytes(
         "epub" => formats::epub::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "doc" => formats::doc::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "ppt" => formats::ppt::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
+        "pdf" => formats::pdf::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         // No embedded-image support: chunks only, empty image list.
         _ => Ok((get_chunks_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?, Vec::new())),
     }
@@ -129,6 +132,7 @@ pub fn get_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Resul
         "epub" => formats::epub::to_markdown_with_images_from_bytes(data),
         "doc" => formats::doc::to_markdown_with_images_from_bytes(data),
         "ppt" => formats::ppt::to_markdown_with_images_from_bytes(data),
+        "pdf" => formats::pdf::to_markdown_with_images_from_bytes(data),
         _ => Ok((get_markdown_from_bytes(data, filename)?, Vec::new())),
     }
 }
@@ -275,7 +279,6 @@ pub fn get_chunks(
         "msg" => formats::msg::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "ipynb" => formats::ipynb::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "rtf" => formats::rtf::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        #[cfg(feature = "pdf-native")]
         "pdf" => formats::pdf::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "epub" => formats::epub::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         other => Err(ChunkError::Unsupported(format!("Unsupported file type '.{other}'"))),
@@ -304,7 +307,6 @@ pub fn get_markdown(file_path: &str) -> Result<String> {
         "msg" => formats::msg::to_markdown(file_path),
         "ipynb" => formats::ipynb::to_markdown(file_path),
         "rtf" => formats::rtf::to_markdown(file_path),
-        #[cfg(feature = "pdf-native")]
         "pdf" => formats::pdf::to_markdown(file_path),
         "epub" => formats::epub::to_markdown(file_path),
         other => Err(ChunkError::Unsupported(format!("get_markdown does not support '.{other}'"))),
