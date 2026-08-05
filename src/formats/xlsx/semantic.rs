@@ -155,7 +155,11 @@ pub fn build_semantic_chunks(
 
         let header_row_index = detect_header_row(&rows);
         let headers = build_headers(&rows, header_row_index, col_count);
-        let data_start_row = header_row_index.map_or(0, |idx| idx + 1);
+        let data_start_row = super::common::data_start_with_header_fallback(
+            &rows,
+            header_row_index,
+            skip_empty_rows,
+        );
 
         let mut data_rows: Vec<(usize, Vec<Data>)> = Vec::new();
         for (row_index, row) in rows.iter().enumerate().skip(data_start_row) {

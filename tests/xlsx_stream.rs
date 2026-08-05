@@ -71,42 +71,6 @@ fn signature(chunks: &[Chunk]) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// TECH_DEBT #80: `build_sliding_window_chunks` lacks the header-row fallback
-/// that `build_row_chunks` and the stream state machine both have, so a sheet
-/// whose only row is its header is dropped by batch `sliding_window` and
-/// emitted when streamed. 16 fixture/mode pairs in the corpus hit it.
-///
-/// The divergence predates this port — it reproduces in the shipped py_chunks
-/// binding — so the migration preserves it rather than smuggling a behaviour
-/// change into a refactor.
-///
-/// The exception is deliberately narrow: ignoring `chunk_index` (which shifts
-/// downstream of any extra chunk, since the stream counts globally), the batch
-/// output must be an order-preserving **subsequence** of the stream output. So
-/// the stream may only ever emit *additional* chunks — any change to the
-/// content or metadata of a shared chunk still fails the test.
-fn is_known_sliding_window_header_only_gap(mode: &str, batch: &[Chunk], streamed: &[Chunk]) -> bool {
-    if mode != "sliding_window" || streamed.len() <= batch.len() {
-        return false;
-    }
-    let key = |c: &Chunk| {
-        let mut meta = c.metadata.clone();
-        if let Some(obj) = meta.as_object_mut() {
-            obj.remove("chunk_index");
-        }
-        (c.content.clone(), c.content_type.clone(), meta.to_string())
-    };
-    let stream_keys: Vec<_> = streamed.iter().map(key).collect();
-    let mut cursor = 0usize;
-    for b in batch.iter().map(key) {
-        match stream_keys[cursor..].iter().position(|s| *s == b) {
-            Some(offset) => cursor += offset + 1,
-            None => return false,
-        }
-    }
-    true
-}
-
 /// The core guarantee. Content, `content_type` and **every metadata value** must
 /// match — `skipped_sheets` and `chunk_index` are exactly the fields a
 /// hand-written state machine gets wrong (#66 was a `skipped_sheets` mismatch).
@@ -120,7 +84,6 @@ fn stream_matches_batch_for_every_mode() {
     );
 
     let mut compared = 0usize;
-    let mut known_gaps = 0usize;
     for f in &files {
         let path = f.to_str().unwrap();
         for mode in MODES {
@@ -130,10 +93,6 @@ fn stream_matches_batch_for_every_mode() {
 
             match (batch, streamed) {
                 (Ok(b), Ok(Ok(s))) => {
-                    if is_known_sliding_window_header_only_gap(mode, &b, &s) {
-                        known_gaps += 1;
-                        continue;
-                    }
                     assert_eq!(
                         signature(&b),
                         signature(&s),
@@ -168,14 +127,6 @@ fn stream_matches_batch_for_every_mode() {
         }
     }
     assert!(compared > 0, "no fixture/mode pair compared successfully");
-    // Pin the count. If #80 is fixed this drops to 0 and the assert fires,
-    // which is the reminder to delete the exception rather than leave it
-    // quietly permitting mismatches forever.
-    assert_eq!(
-        known_gaps, 16,
-        "TECH_DEBT #80 affected 16 fixture/mode pairs; got {known_gaps}. \
-         If the batch sliding_window header fallback landed, remove the exception."
-    );
 }
 
 /// `row` and `sliding_window` must not build the whole result up front. Taking
@@ -338,6 +289,49 @@ fn password_protected_workbooks_report_the_real_reason() {
             msg.contains("password protected"),
             "{}: expected a password-protected diagnostic, got {msg}",
             f.display()
+        );
+    }
+}
+
+/// A sheet whose only row is taken as its header still holds that row's
+/// content, and **every** mode must surface it.
+///
+/// Header detection is a heuristic; when it claims the whole sheet, starting
+/// after the header yields nothing. `row` and `sheet` had a fallback for this
+/// from the start. `semantic`, `page_aware`, `sliding_window` and `table` never
+/// got one and silently returned zero chunks for ~14 fixtures each — including
+/// templates, whose whole content is column names (TECH_DEBT #80).
+///
+/// `calamine_issue3.xlsm` is one sheet holding exactly `1 | a`. `get_markdown`
+/// shows the content is there, so a mode returning nothing is losing it.
+#[test]
+fn a_header_only_sheet_is_not_silently_dropped() {
+    let f = fixtures()
+        .into_iter()
+        .find(|f| f.file_name().and_then(|n| n.to_str()) == Some("calamine_issue3.xlsm"))
+        .expect("calamine_issue3.xlsm");
+    let path = f.to_str().unwrap();
+
+    for mode in MODES {
+        let batch = xlsx::chunk(path, mode, 1, 3, 1, true, Vec::new(), true, 2000)
+            .unwrap_or_else(|e| panic!("batch {mode}: {e:?}"));
+        assert!(
+            !batch.is_empty(),
+            "batch {mode} dropped a sheet whose only row is its header"
+        );
+        assert!(
+            batch.iter().any(|c| c.content.contains('a')),
+            "batch {mode} emitted chunks but lost the cell content: {:?}",
+            batch.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+
+        let streamed: Vec<_> = xlsx::stream(path, mode, 1, 3, 1, true, Vec::new(), true, 2000)
+            .unwrap_or_else(|e| panic!("stream {mode}: {e:?}"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|e| panic!("stream {mode}: {e:?}"));
+        assert!(
+            !streamed.is_empty(),
+            "stream {mode} dropped a sheet whose only row is its header"
         );
     }
 }

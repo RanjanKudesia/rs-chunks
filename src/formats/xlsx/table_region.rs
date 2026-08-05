@@ -388,22 +388,37 @@ pub fn build_table_chunks(
             } else {
                 header_row_abs + 1
             };
-            if data_start_row > table.end_row {
-                continue;
-            }
 
             let mut row_lines: Vec<(usize, String)> = Vec::new();
-            for abs_row in data_start_row..=table.end_row {
-                let local_row = abs_row.saturating_sub(base_row_index);
-                let Some(row) = rows.get(local_row) else {
-                    continue;
-                };
-                let values = get_row_values(row, table.start_col, table.end_col);
-                if skip_empty_rows && row_is_empty_public(&values) {
-                    continue;
+            // `data_start_row > end_row` means the header consumed the region;
+            // fall through to the fallback below rather than dropping it here.
+            if data_start_row <= table.end_row {
+                for abs_row in data_start_row..=table.end_row {
+                    let local_row = abs_row.saturating_sub(base_row_index);
+                    let Some(row) = rows.get(local_row) else {
+                        continue;
+                    };
+                    let values = get_row_values(row, table.start_col, table.end_col);
+                    if skip_empty_rows && row_is_empty_public(&values) {
+                        continue;
+                    }
+                    let line = serialize_table_row(&values, &table.headers, include_headers);
+                    row_lines.push((abs_row, line));
                 }
-                let line = serialize_table_row(&values, &table.headers, include_headers);
-                row_lines.push((abs_row, line));
+            }
+
+            // Header fallback, same rule the row-consuming modes apply via
+            // `data_start_with_header_fallback`: a region whose only content was
+            // taken as its header still holds that content (TECH_DEBT #80).
+            if row_lines.is_empty() {
+                let local_header = header_row_abs.saturating_sub(base_row_index);
+                if let Some(header_row) = rows.get(local_header) {
+                    let values = get_row_values(header_row, table.start_col, table.end_col);
+                    if !row_is_empty_public(&values) {
+                        let line = serialize_table_row(&values, &table.headers, include_headers);
+                        row_lines.push((header_row_abs, line));
+                    }
+                }
             }
 
             if row_lines.is_empty() {

@@ -24,9 +24,9 @@ use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 
 use super::common::{
-    cell_to_string, detect_header_row, open_spreadsheet_from_bytes, read_worksheet_range,
-    row_is_empty_public, serialize_row_kv, serialize_row_values_public, XlsxChunkRecord, CT_ROW,
-    CT_SLIDING_WINDOW,
+    cell_to_string, data_start_with_header_fallback, detect_header_row, open_spreadsheet_from_bytes,
+    read_worksheet_range, row_is_empty_public, serialize_row_kv, serialize_row_values_public,
+    XlsxChunkRecord, CT_ROW, CT_SLIDING_WINDOW,
 };
 
 // ── Pre-parsed sheet data (row / sliding_window state machines) ───────────────
@@ -128,20 +128,10 @@ fn parse_sheets_for_streaming(
 
         let header_row_index = detect_header_row(&rows);
         let headers = build_headers_from_rows(&rows, header_row_index, col_count);
-        let mut data_start = header_row_index.map_or(0, |i| i + 1);
-
-        // F2 guard (parity with batch build_row_chunks): if every row was consumed
-        // as the header (no data rows follow), fall back to emitting the header row
-        // as content rather than silently dropping the sheet.
-        let has_data_rows = rows
-            .iter()
-            .skip(data_start)
-            .any(|row| !(skip_empty_rows && row_is_empty_public(&row_slice_owned(row, col_count))));
-        if !has_data_rows {
-            if let Some(hidx) = header_row_index {
-                data_start = hidx;
-            }
-        }
+        // Shared with every batch builder, so the two paths cannot drift — they
+        // did, and that was TECH_DEBT #80.
+        let data_start =
+            data_start_with_header_fallback(&rows, header_row_index, skip_empty_rows);
 
         let mut data_rows: Vec<(usize, Vec<Data>)> = Vec::new();
         for (row_index, row) in rows.iter().enumerate().skip(data_start) {

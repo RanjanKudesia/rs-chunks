@@ -616,6 +616,40 @@ pub fn row_is_empty_public(row: &[Data]) -> bool {
     row_is_empty(row)
 }
 
+/// Index of the first data row, honouring the header fallback.
+///
+/// Header detection is a heuristic. When it decides that a sheet's *only*
+/// rows are headers, starting after them yields nothing and the sheet is
+/// dropped without a word — losing a single-cell sheet, a merged title, or a
+/// template that carries just its column names. In that case fall back to the
+/// header row itself so its content is emitted.
+///
+/// This lives here because it applies to **every** row-consuming mode. It used
+/// to be written out per mode, and only `row` and `sheet` ever got it:
+/// `semantic`, `page_aware`, `sliding_window` and `table` each silently dropped
+/// content on ~14 fixtures in the corpus, and batch `sliding_window` disagreed
+/// with its own streaming path as a result (TECH_DEBT #80). One definition, one
+/// behaviour.
+///
+/// Callers may pass raw or column-padded rows: padding adds `Data::Empty`,
+/// which cannot change whether a row is empty.
+pub fn data_start_with_header_fallback(
+    rows: &[&[Data]],
+    header_row_index: Option<usize>,
+    skip_empty_rows: bool,
+) -> usize {
+    let data_start = header_row_index.map_or(0, |idx| idx + 1);
+    let has_data_rows = rows
+        .iter()
+        .skip(data_start)
+        .any(|row| !(skip_empty_rows && row_is_empty(row)));
+    if has_data_rows {
+        data_start
+    } else {
+        header_row_index.unwrap_or(data_start)
+    }
+}
+
 fn build_headers(
     rows: &[&[Data]],
     header_row_index: Option<usize>,
@@ -735,23 +769,12 @@ pub fn build_row_chunks(
         }
 
         let header_row_index = detect_header_row(&rows);
-        let mut start_row_index = header_row_index.map_or(0, |idx| idx + 1);
         let col_count = rows.iter().map(|row| row.len()).max().unwrap_or(0);
         if col_count == 0 {
             continue;
         }
-        // F2 guard: if every row was consumed as the header (no data rows follow,
-        // e.g. a single merged title cell), fall back to emitting the header row
-        // as content rather than silently dropping the whole sheet.
-        let has_data_rows = rows
-            .iter()
-            .skip(start_row_index)
-            .any(|row| !(skip_empty_rows && row_is_empty(row)));
-        if !has_data_rows {
-            if let Some(hidx) = header_row_index {
-                start_row_index = hidx;
-            }
-        }
+        let start_row_index =
+            data_start_with_header_fallback(&rows, header_row_index, skip_empty_rows);
         let headers = build_headers(&rows, header_row_index, col_count);
 
         let mut pending_rows: Vec<(usize, &[Data])> = Vec::new();
