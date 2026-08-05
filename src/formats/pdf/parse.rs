@@ -44,12 +44,26 @@ struct PageLayout {
     images: Vec<PlacedImage>,
 }
 
+/// How heading levels are decided, which is the whole difference between the
+/// `default` and `structural` modes.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Headings {
+    /// Rank type sizes across the whole document. Every page must be read
+    /// before any can be rendered, so this holds the document in memory.
+    Ranked,
+    /// Rank within each page as it is read — "minimal font analysis", the
+    /// documented `default`. No document-wide pass, so a page is parsed,
+    /// rendered and dropped.
+    PerPage,
+}
+
 /// Reads a PDF a page at a time, rendering each to markdown.
 pub(crate) struct Reader {
     document: Document,
     extractor: Extractor,
     page_ids: Vec<ObjectId>,
-    style: Style,
+    /// The document-wide ranking, or `None` when each page ranks its own.
+    style: Option<Style>,
     /// Pages parsed while sampling the style, waiting to be rendered.
     sampled: VecDeque<PageLayout>,
     /// Index of the next page to *parse*; the sampled ones are already done.
@@ -62,26 +76,31 @@ pub(crate) struct Reader {
 }
 
 impl Reader {
-    pub fn open(bytes: &[u8]) -> Result<Reader, String> {
+    pub fn open(bytes: &[u8], headings: Headings) -> Result<Reader, String> {
         let document = doc::open(bytes)?;
         let page_ids: Vec<ObjectId> = document.get_pages().into_values().collect();
         let mut extractor = Extractor::new();
 
-        // Every page is read before any is rendered, because the ranking is a
-        // property of the whole document. Sampling a prefix instead was tried
-        // and measured: it reclassified `pdfjs_freeculture`'s licence page as
-        // headings and moved `arxiv_2005.14165_gpt3` too, so the memory it
-        // saved cost correctness. See the module note.
-        let mut sampled = VecDeque::with_capacity(page_ids.len());
-        let mut lines: Vec<Line> = Vec::new();
-        for id in &page_ids {
-            let page = doc::read_page(&mut extractor, &document, *id);
-            let regions = regions::split(&page.content.glyphs);
-            lines.extend(regions.iter().flatten().cloned());
-            sampled.push_back(PageLayout { regions, images: page.content.images });
+        // Ranked: every page is read before any is rendered, because the
+        // ranking is a property of the whole document. Sampling a prefix
+        // instead was tried and measured — it reclassified
+        // `pdfjs_freeculture`'s licence page as headings — so the memory it
+        // saved cost correctness.
+        let mut sampled = VecDeque::new();
+        let mut style = None;
+        let mut parsed = 0;
+        if headings == Headings::Ranked {
+            sampled.reserve(page_ids.len());
+            let mut lines: Vec<Line> = Vec::new();
+            for id in &page_ids {
+                let page = doc::read_page(&mut extractor, &document, *id);
+                let regions = regions::split(&page.content.glyphs);
+                lines.extend(regions.iter().flatten().cloned());
+                sampled.push_back(PageLayout { regions, images: page.content.images });
+            }
+            style = Some(Style::of(&lines));
+            parsed = page_ids.len();
         }
-        let style = Style::of(&lines);
-        let parsed = page_ids.len();
 
         Ok(Reader {
             document,
@@ -124,10 +143,22 @@ impl Reader {
         let page_number = self.next_to_render + 1;
         self.next_to_render += 1;
 
+        // Without a document-wide ranking, the page ranks its own sizes. That
+        // is what makes `default` cheap: no pass over the document, and each
+        // page is dropped as soon as it is rendered.
+        let page_style = match self.style {
+            Some(_) => None,
+            None => {
+                let lines: Vec<Line> = layout.regions.iter().flatten().cloned().collect();
+                Some(Style::of(&lines))
+            }
+        };
+        let style = self.style.as_ref().or(page_style.as_ref()).expect("a ranking");
+
         let mut items: Vec<(f32, Item)> = Vec::new();
         for region in &layout.regions {
             let top = region.first().map(|l| l.baseline).unwrap_or(0.0);
-            for block in blocks::build(region, &self.style) {
+            for block in blocks::build(region, style) {
                 self.has_text = true;
                 items.push((top, Item::Block(block)));
             }
@@ -164,8 +195,8 @@ impl Reader {
     }
 }
 
-pub(crate) fn parse(bytes: &[u8], want_images: bool) -> Result<Parsed, String> {
-    let mut reader = Reader::open(bytes)?;
+pub(crate) fn parse(bytes: &[u8], want_images: bool, headings: Headings) -> Result<Parsed, String> {
+    let mut reader = Reader::open(bytes, headings)?;
     let total_pages = reader.total_pages();
 
     let mut markdown = String::new();

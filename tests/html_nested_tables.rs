@@ -9,9 +9,15 @@
 use chunks_rs::formats::html;
 
 fn chunk_html(body: &str) -> Vec<String> {
+    // A counter, not the body's length: two of these tests chunk the same
+    // `NESTED` constant, so keying on length gave them one shared path that
+    // they raced to write and read — an intermittent "HTML file is empty
+    // after decoding" that had nothing to do with nested tables.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
-        "chunks_rs_nested_{}.html",
-        body.len() // distinct per case, no clock needed
+        "chunks_rs_nested_{}_{}.html",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&path, format!("<html><body>{body}</body></html>")).unwrap();
     html::chunk(path.to_str().unwrap(), "structural", 3, 1, 3, 15)

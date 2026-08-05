@@ -132,6 +132,7 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
     let mut text = String::new();
     let mut segments: Vec<Segment> = Vec::new();
     let mut previous_end = f32::NEG_INFINITY;
+    let mut previous_size = 0.0f32;
     let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
 
     for g in glyphs.iter() {
@@ -142,8 +143,13 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
         if opens_segment {
             segments.push(Segment { text: String::new(), left: g.x, right: g.x });
         }
+        // Judge the gap against the *larger* of the two ems. A small-caps title
+        // sets `VERY` as a 12 pt `V` and 9 pt `ERY`; measuring the gap after
+        // the `V` against the 9 pt em made an ordinary letter fit look like a
+        // word break, and the title came out as `V ERY D EEP`.
+        let em = g.size.max(previous_size);
         let needs_space = previous_end.is_finite()
-            && gap > WORD_GAP_EM * g.size
+            && gap > WORD_GAP_EM * em
             && !text.ends_with(char::is_whitespace)
             && !g.text.starts_with(char::is_whitespace);
         if needs_space {
@@ -162,6 +168,7 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
         left = left.min(g.x);
         right = right.max(g.x + g.width);
         previous_end = g.x + g.width;
+        previous_size = g.size;
     }
 
     segments.retain(|s| !s.text.trim().is_empty());

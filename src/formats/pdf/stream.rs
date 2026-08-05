@@ -60,7 +60,7 @@ struct Deferred {
 
 impl Deferred {
     fn run(&self) -> Result<Vec<Chunk>> {
-        let loaded = super::load(&self.bytes, false)?;
+        let loaded = super::load(&self.bytes, false, super::headings_for(&self.mode))?;
         pipeline::chunk(
             &loaded,
             &self.mode,

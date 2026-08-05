@@ -135,6 +135,79 @@ fn an_undecodable_subset_font_degrades_to_silence_not_to_noise() {
     assert_eq!(replacement, 0, "replacement characters leaked into the output");
 }
 
+/// [#54]: `default` and `structural` were byte-identical while the docs said
+/// they differ. They now do — and the difference is heading classification and
+/// nothing else, which is the only defensible shape for a "lighter" mode.
+#[test]
+fn default_and_structural_differ_only_in_heading_classification() {
+    let mut differed = 0;
+    for name in [
+        "arxiv_1409.1556_vgg.pdf",
+        "arxiv_1512.00567_inception.pdf",
+        "arxiv_1706.03762_attention.pdf",
+        "sample-pdf.pdf",
+    ] {
+        let fast = pdf::chunk(&fixture(name), "default", 3, 1, 3, 15).expect("default");
+        let full = pdf::chunk(&fixture(name), "structural", 3, 1, 3, 15).expect("structural");
+        if fast.len() != full.len() {
+            differed += 1;
+        }
+        // The words are the same either way; only what is called a heading moves.
+        let words = |chunks: &[chunks_rs::Chunk]| {
+            chunks
+                .iter()
+                .flat_map(|c| c.content.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+                .filter(|w| w.chars().any(char::is_alphanumeric))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(&fast), words(&full), "{name}: the two modes disagree about the text");
+    }
+    assert!(differed > 0, "the modes are still identical — the fast path is not wired up");
+}
+
+/// The fast path must find the document's title, which is exactly what ranking
+/// sizes across a long document loses: a title's size covers 60 characters of
+/// 200,000 and falls under the "used often enough to be structure" floor.
+#[test]
+fn the_fast_path_recovers_a_title_the_ranked_one_misses() {
+    let headings = |mode: &str| -> Vec<String> {
+        pdf::chunk(&fixture("arxiv_1409.1556_vgg.pdf"), mode, 3, 1, 3, 15)
+            .expect("chunk")
+            .into_iter()
+            .filter(|c| c.content_type == "heading")
+            .map(|c| c.content)
+            .collect()
+    };
+    let fast = headings("default");
+    // Compared without spaces: this title is set in small caps, and the gap
+    // after each large capital still reads as a word break (TECH_DEBT #88).
+    let squashed = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_uppercase();
+    assert!(
+        fast.iter().any(|h| squashed(h).contains("DEEPCONVOLUTIONALNETWORKS")),
+        "the title is not a heading in default mode: {fast:?}"
+    );
+    assert!(fast.len() > headings("structural").len());
+}
+
+/// A margin stamp runs up the side of every arXiv paper and is the most
+/// prominent thing in its own reading frame. It is not a heading — in either
+/// mode — but its text must still survive as prose.
+#[test]
+fn sideways_text_is_never_a_heading() {
+    for mode in ["default", "structural"] {
+        let chunks =
+            pdf::chunk(&fixture("arxiv_1706.03762_attention.pdf"), mode, 3, 1, 3, 15).expect("chunk");
+        assert!(
+            !chunks.iter().any(|c| c.content_type == "heading" && c.content.contains("arXiv:")),
+            "{mode}: the margin stamp was classified as a heading"
+        );
+        assert!(
+            chunks.iter().any(|c| c.content.contains("arXiv:1706.03762")),
+            "{mode}: the margin stamp's text was lost"
+        );
+    }
+}
+
 /// Every fixture must parse or fail cleanly — never panic.
 #[test]
 fn the_whole_corpus_parses_without_panicking() {

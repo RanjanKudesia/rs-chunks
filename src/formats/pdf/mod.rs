@@ -79,8 +79,19 @@ pub fn chunk_pdf_markdown_with_images(
 
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
-fn load(bytes: &[u8], want_images: bool) -> Result<Loaded> {
-    let parsed = parse::parse(bytes, want_images).map_err(ChunkError::Parse)?;
+/// `default` is documented as a fast path with minimal font analysis, and
+/// `structural` as the full font-size-weighted one. This is where that
+/// distinction lives: everything else about the two modes is identical.
+pub(crate) fn headings_for(mode: &str) -> parse::Headings {
+    if mode == "default" {
+        parse::Headings::PerPage
+    } else {
+        parse::Headings::Ranked
+    }
+}
+
+fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Loaded> {
+    let parsed = parse::parse(bytes, want_images, headings).map_err(ChunkError::Parse)?;
     let mut images = parsed.images;
     // A document with pictures and no prose renders as nothing but `![](…)`
     // references. That is not text, and reporting it as such would hide a
@@ -132,11 +143,14 @@ pub fn chunk_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load(bytes, false)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(&load(bytes, false, headings_for(mode))?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
-    pipeline::chunk_opts(&load(&read(file_path)?, false)?, opts)
+    {
+        let mode = crate::formats::pipeline::mode_str(opts.mode)?;
+        pipeline::chunk_opts(&load(&read(file_path)?, false, headings_for(mode))?, opts)
+    }
 }
 
 pub fn chunk_with_images(
@@ -158,7 +172,7 @@ pub fn chunk_with_images_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load(bytes, true)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk_with_images(&load(bytes, true, headings_for(mode))?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
 }
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
@@ -166,7 +180,7 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
 }
 
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    Ok(load(bytes, false)?.markdown)
+    Ok(load(bytes, false, parse::Headings::Ranked)?.markdown)
 }
 
 pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
@@ -174,7 +188,7 @@ pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, 
 }
 
 pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
-    let loaded = load(bytes, true)?;
+    let loaded = load(bytes, true, parse::Headings::Ranked)?;
     Ok((loaded.markdown, loaded.images))
 }
 

@@ -223,7 +223,14 @@ fn prose_end(lines: &[Line], start: usize, style: &Style, measure: f32) -> usize
 }
 
 fn prose(lines: &[Line], style: &Style, measure: f32) -> Block {
-    let level = style.level(lines[0].size).or_else(|| bold_heading_level(lines, style, measure));
+    // Text set sideways is a margin stamp, a watermark or a rotated table
+    // label — never a document heading. `arxiv_1409.1556_vgg`'s
+    // `arXiv:1409.1556v6 [cs.CV]` runs up the margin and is the most prominent
+    // thing in its own reading frame, so without this it outranks the paper.
+    let upright = lines[0].turn == 0;
+    let level = upright
+        .then(|| style.level(lines[0].size).or_else(|| bold_heading_level(lines, style, measure)))
+        .flatten();
     let mut spans = join(lines);
     if let Some(level) = level {
         return Block::Heading { level, spans };
