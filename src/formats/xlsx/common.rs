@@ -122,7 +122,31 @@ pub fn open_spreadsheet(file_path: &str) -> Result<Workbook, String> {
 /// from content; `.ods` files missing their `mimetype` entry are repaired
 /// in-memory first. calamine can panic on some malformed inputs — caught here.
 pub fn open_spreadsheet_from_bytes(data: &[u8], ext: &str) -> Result<Workbook, String> {
-    let owned: Vec<u8> = if ext == "ods" {
+    let result = catch_calamine_panic({
+        let owned = repaired_bytes(data, ext);
+        move || {
+            calamine::open_workbook_auto_from_rs(std::io::Cursor::new(owned))
+                .map_err(|e| format!("Failed to open workbook: {e}"))
+        }
+    });
+    match result {
+        Ok(Ok(wb)) => Ok(wb),
+        // Recomputed rather than cloned up front: the repair is pure, and the
+        // success path must not pay a full copy of the workbook for a fallback
+        // that only ever runs when the open already failed.
+        Ok(Err(generic)) => {
+            Err(specific_open_error(&repaired_bytes(data, ext), ext).unwrap_or(generic))
+        }
+        Err(_) => Err(
+            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)".to_string(),
+        ),
+    }
+}
+
+/// Apply the format-specific in-memory repairs calamine needs before it will
+/// open the package. Pure: same input, same output.
+fn repaired_bytes(data: &[u8], ext: &str) -> Vec<u8> {
+    if ext == "ods" {
         repair_ods_bytes(data).unwrap_or_else(|| data.to_vec())
     } else {
         // An XLM macro sheet or a <sheet> with an empty r:id makes calamine
@@ -130,17 +154,36 @@ pub fn open_spreadsheet_from_bytes(data: &[u8], ext: &str) -> Result<Workbook, S
         // so the per-sheet isolation below never gets a chance. Drop those
         // entries from the sheet list and the ordinary worksheets load. (#21)
         super::repair::repair_ooxml_workbook_bytes(data).unwrap_or_else(|| data.to_vec())
-    };
-    let result = catch_calamine_panic(move || {
-        calamine::open_workbook_auto_from_rs(std::io::Cursor::new(owned))
-            .map_err(|e| format!("Failed to open workbook: {e}"))
-    });
-    match result {
-        Ok(inner) => inner,
-        Err(_) => Err(
-            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)".to_string(),
-        ),
     }
+}
+
+/// Recover the *reason* a workbook would not open, when content sniffing could
+/// not even classify it.
+///
+/// An encrypted OOXML package is an OLE container with none of the parts
+/// `open_workbook_auto_from_rs` looks for, so it reports the useless "Cannot
+/// detect file format" instead of "Workbook is password protected". Opening
+/// from a *path* never had this problem — calamine dispatched on the file
+/// extension and the format's own reader produced the real message. We know the
+/// extension here too, so ask that reader directly and keep the message.
+///
+/// Only ever called on the failure path, and only to improve the text: a format
+/// that opens fine never reaches it.
+fn specific_open_error(data: &[u8], ext: &str) -> Option<String> {
+    use calamine::{Ods, Xls, Xlsb, Xlsx};
+    let cursor = || std::io::Cursor::new(data.to_vec());
+    // Wrap in calamine's own `Error` so the text matches what the path-based
+    // `open_workbook_auto` produced ("Xlsx error: …", not bare "…").
+    let err = match ext {
+        "xlsx" | "xlsm" | "xltx" | "xltm" => {
+            Xlsx::new(cursor()).err().map(calamine::Error::Xlsx)
+        }
+        "xlsb" => Xlsb::new(cursor()).err().map(calamine::Error::Xlsb),
+        "ods" => Ods::new(cursor()).err().map(calamine::Error::Ods),
+        "xls" => Xls::new(cursor()).err().map(calamine::Error::Xls),
+        _ => None,
+    }?;
+    Some(format!("Failed to open workbook: {err}"))
 }
 
 /// Read a single worksheet range, converting both errors and calamine panics

@@ -9,8 +9,11 @@ mod page_aware;
 mod semantic;
 mod sheet;
 mod sliding_window;
+pub mod stream;
 mod table_region;
 mod to_markdown;
+
+pub use stream::{stream_from_bytes, XlsxChunkStream};
 
 use calamine::Reader;
 
@@ -24,6 +27,16 @@ fn to_chunks(records: Vec<XlsxChunkRecord>) -> Vec<Chunk> {
         .into_iter()
         .map(|c| Chunk::new(c.content, c.content_type, c.metadata))
         .collect()
+}
+
+/// Classify a builder error. `Sheet '…' not found` is the caller naming a sheet
+/// that is not in the workbook — an argument error, not a parse failure — and
+/// the distinction is observable: py_chunks raises `ValueError` for it and
+/// `RuntimeError` for everything else, and `sheet_names` is passed through from
+/// Python unvalidated. Shared with [`stream`](self::stream), which classified it
+/// this way first.
+pub(super) fn build_err(err: String) -> ChunkError {
+    stream::build_err(err)
 }
 
 fn ensure_spreadsheet(file_path: &str) -> Result<()> {
@@ -104,7 +117,7 @@ pub fn chunk_from_bytes(
             "mode must be one of [page_aware, row, semantic, sheet, sliding_window, table] for XLSX, got: '{other}'"
         ))),
     };
-    res.map(to_chunks).map_err(ChunkError::Parse)
+    res.map(to_chunks).map_err(build_err)
 }
 
 /// Dispatch entry mirroring Python `get_chunks` spreadsheet routing.
@@ -199,7 +212,7 @@ pub fn chunk_with_images_from_bytes(
         }
         other => return Err(ChunkError::InvalidArg(format!("Unknown XLSX mode: {other}"))),
     }
-    .map_err(ChunkError::Parse)?;
+    .map_err(build_err)?;
 
     let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
     let image_infos = images::collect_spreadsheet_images(data, ext, &all_sheet_names, &mut image_out);
@@ -242,14 +255,40 @@ pub fn to_markdown_with_images_from_bytes(data: &[u8], ext: &str) -> Result<(Str
     to_markdown::to_markdown_with_images(data, ext).map_err(ChunkError::Parse)
 }
 
+/// Lazily stream chunks from a spreadsheet.
+///
+/// Unlike every other format's `stream`, this is genuinely incremental for
+/// `row` and `sliding_window`: the workbook is parsed once and one chunk is
+/// built per `next()`. The remaining modes need whole-sheet analysis and
+/// batch-drain. See [`stream`](self::stream) for the details.
+///
+/// Takes the full option set — an earlier version hardcoded `include_headers`,
+/// `sheet_names`, `skip_empty_rows` and `max_chunk_chars`, so it could not
+/// express four of the parameters [`chunk`] accepts.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     file_path: &str,
     mode: &str,
     rows_per_chunk: usize,
     window_size: usize,
     overlap: usize,
-) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000)?
-        .into_iter()
-        .map(Ok))
+    include_headers: bool,
+    sheet_names: Vec<String>,
+    skip_empty_rows: bool,
+    max_chunk_chars: usize,
+) -> Result<XlsxChunkStream> {
+    ensure_spreadsheet(file_path)?;
+    let data = std::fs::read(file_path).map_err(ChunkError::Io)?;
+    stream_from_bytes(
+        &data,
+        &ext_of(file_path),
+        mode,
+        rows_per_chunk,
+        window_size,
+        overlap,
+        include_headers,
+        sheet_names,
+        skip_empty_rows,
+        max_chunk_chars,
+    )
 }
