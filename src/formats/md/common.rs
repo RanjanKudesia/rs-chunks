@@ -309,8 +309,26 @@ pub fn heading_path_strings(stack: &[(u8, String)]) -> Vec<String> {
 fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     for block in blocks {
-        let repeat_prefix = if block.block_type == MdBlockType::Table { 2 } else { 0 };
-        for part in crate::shared::split_block_on_lines(&block.content, MAX_CHUNK_CHARS, repeat_prefix) {
+        // Prose is divisible, so a line still over the cap after the line
+        // split is cut at its sentences rather than emitted whole (#68).
+        // A rendered JSON record arrives as a `List` of one enormous line —
+        // `elastic_rag_dataset.ndjson` record 284 is 140,079 characters — and
+        // the #45 precedent is that a bounded chunk beats an intact one.
+        //
+        // `Table` and `Code` are excluded: a table's rows carry its structure
+        // and it is documented as "kept whole", and a code block's lines are
+        // its meaning.
+        let divisible = matches!(
+            block.block_type,
+            MdBlockType::Paragraph | MdBlockType::List | MdBlockType::Heading
+        );
+        let parts = if divisible {
+            crate::shared::split_block_on_lines_and_sentences(&block.content, MAX_CHUNK_CHARS)
+        } else {
+            let repeat_prefix = if block.block_type == MdBlockType::Table { 2 } else { 0 };
+            crate::shared::split_block_on_lines(&block.content, MAX_CHUNK_CHARS, repeat_prefix)
+        };
+        for part in parts {
             out.push(MdBlock {
                 block_type: block.block_type,
                 content: part,

@@ -71,9 +71,28 @@ pub struct ChunkRecordInput {
 pub fn parse_txt_blocks(text: &str) -> Vec<TxtBlock> {
     split_blocks(text)
         .into_iter()
-        .map(|b| {
+        .flat_map(|b| {
             let ct = classify_block(&b);
-            TxtBlock { content: b, content_type: ct }
+            // Bound the block before it becomes a chunk (#68). A table's rows
+            // carry its structure and a code block's lines are its meaning, so
+            // both are left whole — `table` is documented as "kept whole".
+            // Everything else is prose, and prose is divisible.
+            let divisible = !matches!(ct, ContentType::Table | ContentType::CodeBlock);
+            let parts = if divisible {
+                crate::shared::split_block_on_lines_and_sentences(&b, MAX_CHUNK_CHARS)
+            } else {
+                vec![b]
+            };
+            parts
+                .into_iter()
+                .map(|content| TxtBlock {
+                    // Re-classify: a piece of a split block is not necessarily
+                    // the same kind as the whole, and its length certainly is
+                    // not (`long_single_paragraph` is length-derived).
+                    content_type: classify_block(&content),
+                    content,
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }

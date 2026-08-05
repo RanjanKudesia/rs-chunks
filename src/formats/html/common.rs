@@ -400,7 +400,36 @@ pub fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
         }
         i = end;
     }
-    blocks
+    bound_block_size(blocks)
+}
+
+/// Split any block still over the cap so a chunk cannot be unbounded (#68).
+///
+/// `Table` and `Code` are left whole: a table's rows carry its structure and it
+/// is documented as "kept whole", and a code block's lines are its meaning.
+/// Everything else is prose. `.epub` reuses these builders, so this bounds
+/// EPUB too — `gutenberg_moby_dick.epub` had 112 chunks over the cap.
+fn bound_block_size(blocks: Vec<HtmlBlock>) -> Vec<HtmlBlock> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        if matches!(block.block_type, HtmlBlockType::Table | HtmlBlockType::Code)
+            || block.content.chars().count() <= MAX_CHUNK_CHARS
+        {
+            out.push(block);
+            continue;
+        }
+        for part in
+            crate::shared::split_block_on_lines_and_sentences(&block.content, MAX_CHUNK_CHARS)
+        {
+            out.push(HtmlBlock {
+                block_type: block.block_type,
+                content: part,
+                heading_level: block.heading_level,
+                is_ordered: block.is_ordered,
+            });
+        }
+    }
+    out
 }
 
 // ── Block content extraction ──────────────────────────────────────────────────

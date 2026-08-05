@@ -210,6 +210,81 @@ pub fn split_sentences(text: &str) -> Vec<String> {
 /// single line longer than `max_chars` is emitted alone rather than mangled.
 /// `repeat_prefix` re-emits the leading lines (a table's header and separator)
 /// at the top of every part, so each part stays readable on its own.
+/// Split a block on line boundaries, then split any single line that is still
+/// over the cap at its sentence boundaries.
+///
+/// `split_block_on_lines` deliberately never breaks a line, so one very long
+/// line came out alone and over the cap ([#45](TECH_DEBT.md) bounded the block,
+/// [#68](TECH_DEBT.md) is the residue). Prose can be cut at a sentence without
+/// losing meaning, so it is — and a line with no sentence boundary at all is
+/// hard-split at a UTF-8 boundary, because the alternative is an unbounded
+/// chunk.
+///
+/// Only the caller knows whether a line is divisible: a table row, a CSV
+/// record and a rendered JSON object are single units whose halves mean
+/// nothing, and `table` is documented as "kept whole". So this is a separate
+/// function rather than a change to `split_block_on_lines`.
+pub fn split_block_on_lines_and_sentences(content: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in split_block_on_lines(content, max_chars, 0) {
+        if part.chars().count() <= max_chars {
+            out.push(part);
+            continue;
+        }
+        for piece in split_at_sentences(&part, max_chars) {
+            if piece.chars().count() <= max_chars {
+                if !piece.trim().is_empty() {
+                    out.push(piece);
+                }
+                continue;
+            }
+            out.extend(hard_split(&piece, max_chars));
+        }
+    }
+    if out.is_empty() {
+        out.push(content.to_string());
+    }
+    out
+}
+
+/// Last resort for text with no sentence boundary at all — a minified JSON
+/// line, a base64 blob, a run of hyphenated tokens.
+///
+/// Breaks at the last word boundary in the window rather than at the character
+/// the cap happens to land on, so `banana` does not come out as `bana` + `na`.
+/// Falls back to a character cut only when the window holds no whitespace at
+/// all, which is the genuinely indivisible case. Cuts are always on UTF-8 char
+/// boundaries, so a multi-byte character is never halved.
+fn hard_split(text: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while rest.chars().count() > max_chars {
+        // Byte index one past the `max_chars`-th character.
+        let cut = rest
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
+        let window = &rest[..cut];
+        let split_at = window
+            .rfind(char::is_whitespace)
+            .filter(|i| *i > 0)
+            .unwrap_or(cut);
+        let (head, tail) = rest.split_at(split_at);
+        if !head.trim().is_empty() {
+            out.push(head.trim_end().to_string());
+        }
+        rest = tail.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+    }
+    if !rest.trim().is_empty() {
+        out.push(rest.to_string());
+    }
+    out
+}
+
 pub fn split_block_on_lines(content: &str, max_chars: usize, repeat_prefix: usize) -> Vec<String> {
     if content.chars().count() <= max_chars {
         return vec![content.to_string()];
@@ -416,5 +491,62 @@ mod tests {
         let text = "First sentence. Second sentence. Third sentence.";
         let r = split_at_sentences(text, 25);
         assert!(r.iter().all(|c| !c.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod oversized_line_tests {
+    use super::*;
+
+    const CAP: usize = 40;
+
+    /// TECH_DEBT #68. A single line over the cap used to be emitted whole.
+    #[test]
+    fn an_oversized_line_is_split_at_its_sentences() {
+        let text = "First sentence here. Second sentence here. Third sentence here. Fourth one.";
+        let parts = split_block_on_lines_and_sentences(text, CAP);
+        assert!(parts.len() > 1, "expected a split, got {parts:?}");
+        assert!(parts.iter().all(|p| p.chars().count() <= CAP), "{parts:?}");
+        assert!(parts.join(" ").contains("Fourth one."));
+    }
+
+    /// Text with no sentence boundary still has to be bounded — but it must
+    /// break between words, not through one.
+    #[test]
+    fn a_line_without_sentences_breaks_on_word_boundaries() {
+        let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu";
+        let parts = split_block_on_lines_and_sentences(text, CAP);
+        assert!(parts.iter().all(|p| p.chars().count() <= CAP), "{parts:?}");
+        for word in ["alpha", "epsilon", "lambda", "theta"] {
+            assert!(
+                parts.iter().any(|p| p.split_whitespace().any(|w| w == word)),
+                "{word} was cut in half: {parts:?}"
+            );
+        }
+    }
+
+    /// A run with no whitespace anywhere — base64, a minified array — is the
+    /// genuinely indivisible case and falls back to a character cut.
+    #[test]
+    fn a_run_with_no_whitespace_still_gets_bounded() {
+        let text = "x".repeat(CAP * 3 + 7);
+        let parts = split_block_on_lines_and_sentences(&text, CAP);
+        assert!(parts.iter().all(|p| p.chars().count() <= CAP), "{parts:?}");
+        assert_eq!(parts.concat().len(), text.len(), "no character was dropped");
+    }
+
+    /// Multi-byte text must never be cut through a character.
+    #[test]
+    fn multibyte_text_is_never_halved() {
+        let text = "日本語の段落です。".repeat(20);
+        let parts = split_block_on_lines_and_sentences(&text, CAP);
+        assert!(parts.iter().all(|p| p.chars().count() <= CAP), "{parts:?}");
+        assert!(!parts.concat().contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn a_block_already_within_the_cap_is_untouched() {
+        let text = "short enough";
+        assert_eq!(split_block_on_lines_and_sentences(text, CAP), vec![text]);
     }
 }
