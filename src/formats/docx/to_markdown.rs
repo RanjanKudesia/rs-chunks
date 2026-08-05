@@ -369,6 +369,14 @@ fn blocks_to_markdown(
                         out.push('\n');
                     }
                     list_counters.clear();
+                    // A paragraph can carry both text and an inline image. This
+                    // arm used to emit only the placeholder and discard the
+                    // text — while `get_chunks` kept the text and dropped the
+                    // marker, so the two paths disagreed about the same
+                    // paragraph and each lost something (TECH_DEBT #2).
+                    if !text.is_empty() {
+                        out.push_str(&format!("{}\n\n", text));
+                    }
                     let placeholder = image_placeholder(block.image_alt.as_deref());
                     out.push_str(&format!("{}\n\n", placeholder));
                     prev_was_list = false;
@@ -530,6 +538,11 @@ fn blocks_to_markdown_with_images(
                         out.push('\n');
                     }
                     list_counters.clear();
+                    // Same as the text-only renderer above: keep the paragraph's
+                    // text as well as its image (TECH_DEBT #2).
+                    if !text.is_empty() {
+                        out.push_str(&format!("{}\n\n", text));
+                    }
 
                     let mut emitted = false;
                     if let Some(rid) = block.image_rid.as_deref() {

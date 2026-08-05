@@ -32,6 +32,14 @@ struct SectionState {
     level: u32,
     path: Vec<String>,
     lines: Vec<String>,
+    /// Position of this section's heading in the document.
+    ///
+    /// Sections are *closed* in the reverse of the order they open — a nested
+    /// subsection pops before its parent, and the outermost section not until
+    /// EOF. Emitting at close time therefore returns chunks in an order that
+    /// has nothing to do with reading order. Recording where each section began
+    /// lets the emission be sorted back (TECH_DEBT #1).
+    order: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +195,10 @@ fn build_section_chunks(blocks: Vec<DocumentBlock>) -> Vec<ChunkRecordInput> {
     let mut preamble_lines: Vec<String> = Vec::new();
     let mut sections: Vec<SectionState> = Vec::new();
     let mut seen_heading = false;
+    // Sections are collected as they close and sorted back into document order
+    // before emission — see `SectionState::order`.
+    let mut closed: Vec<SectionState> = Vec::new();
+    let mut next_order = 0usize;
 
     for block in blocks {
         if let Some(level) = block.heading_level {
@@ -194,14 +206,7 @@ fn build_section_chunks(blocks: Vec<DocumentBlock>) -> Vec<ChunkRecordInput> {
 
             while let Some(last) = sections.last() {
                 if last.level >= level {
-                    let closing = sections.pop().expect("section stack not empty");
-                    emit_section_chunks(
-                        &mut chunks,
-                        &closing.heading,
-                        closing.level,
-                        &closing.path,
-                        &closing.lines,
-                    );
+                    closed.push(sections.pop().expect("section stack not empty"));
                 } else {
                     break;
                 }
@@ -220,7 +225,9 @@ fn build_section_chunks(blocks: Vec<DocumentBlock>) -> Vec<ChunkRecordInput> {
                 level,
                 path,
                 lines: vec![heading],
+                order: next_order,
             });
+            next_order += 1;
             continue;
         }
 
@@ -236,12 +243,19 @@ fn build_section_chunks(blocks: Vec<DocumentBlock>) -> Vec<ChunkRecordInput> {
         }
     }
 
+    // Anything still open at EOF closes now; it is already ordered by `order`.
+    closed.extend(sections);
+    closed.sort_by_key(|section| section.order);
+
+    // The preamble precedes every heading in the document, so it is emitted
+    // first — previously it was emitted after every section that had closed
+    // during the loop, which put the document's opening text near the end.
     if !preamble_lines.is_empty() {
         let preamble_path = vec!["Preamble".to_string()];
         emit_section_chunks(&mut chunks, "Preamble", 0, &preamble_path, &preamble_lines);
     }
 
-    for section in sections {
+    for section in closed {
         emit_section_chunks(
             &mut chunks,
             &section.heading,

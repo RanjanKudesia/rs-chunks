@@ -39,6 +39,12 @@ struct SemanticParagraph {
     heading_level: Option<u32>,
     is_image: bool,
     image_rid: Option<String>,
+    /// Word marked this paragraph as a list item (`<w:numPr>`).
+    ///
+    /// Kept because a run of list items is **one** semantic unit. Without it
+    /// the short-paragraph rules below cap a chunk at three bullets and a
+    /// six-item outline comes back as three 30-character chunks (TECH_DEBT #3).
+    is_list: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +121,7 @@ fn lower_blocks_to_paragraphs(raw: Vec<DocxBlock>) -> Vec<SemanticParagraph> {
                         heading_level: None,
                         is_image: false,
                         image_rid: None,
+                        is_list: false,
                     });
                 }
             }
@@ -135,6 +142,7 @@ fn lower_blocks_to_paragraphs(raw: Vec<DocxBlock>) -> Vec<SemanticParagraph> {
                         heading_level,
                         is_image: block.has_drawing,
                         image_rid: block.image_rid.clone(),
+                        is_list: block.is_list,
                     });
                 } else if block.has_drawing {
                     out.push(SemanticParagraph {
@@ -143,6 +151,7 @@ fn lower_blocks_to_paragraphs(raw: Vec<DocxBlock>) -> Vec<SemanticParagraph> {
                         heading_level: None,
                         is_image: true,
                         image_rid: block.image_rid.clone(),
+                        is_list: false,
                     });
                 }
             }
@@ -161,6 +170,7 @@ fn build_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<ChunkRecordI
             heading_level: p.heading_level,
             is_image: p.is_image,
             image_rid: p.image_rid,
+            is_list: p.is_list,
         })
         .filter(|p| !p.text.is_empty())
         .collect();
@@ -306,9 +316,18 @@ fn group_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<SemanticChun
     };
 
     let mut force_merge_next = false;
+    // Whether the paragraph most recently added to `current` was a list item,
+    // so a run of them can be held together (see the list_continuation rule).
+    let mut current_ends_in_list = paragraphs[0].is_list;
 
     for sp in paragraphs.iter().skip(1) {
         let para = &sp.text;
+        // By the end of this iteration `current` always ends with `sp` —
+        // every branch below either appends it or starts a new chunk from it —
+        // so the flag can be updated up front, keeping the previous value for
+        // the list-continuation test.
+        let prev_ends_in_list = current_ends_in_list;
+        current_ends_in_list = sp.is_list;
         // Real DOCX heading paragraph always breaks and becomes its own
         // singleton chunk so `merge_heading_singletons` can attach it to the
         // following body content.
@@ -329,7 +348,15 @@ fn group_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<SemanticChun
         let mut merge_reason = current.merge_reason;
         let mut pending_break_reason: Option<&'static str> = None;
 
-        if starts_with_reference_pronoun(para) {
+        // A run of list items is one semantic unit. This is checked before the
+        // short-paragraph rules because those cap a chunk at three consecutive
+        // short paragraphs — correct for prose, but it chops a bulleted list
+        // into arbitrary thirds (TECH_DEBT #3). `MAX_CHUNK_CHARS` still applies
+        // below, so a genuinely huge list is still split on size.
+        if sp.is_list && prev_ends_in_list {
+            merge = true;
+            merge_reason = "list_continuation";
+        } else if starts_with_reference_pronoun(para) {
             merge = true;
             merge_reason = "reference_continuity";
         } else if starts_with_transition_keyword(para) {
