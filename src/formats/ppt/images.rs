@@ -7,10 +7,9 @@
 //! Shapes on a slide reference images through the `Pib` shape property — a
 //! 1-based index into the blip store.
 //!
-//! Slide attribution follows the same rule the text extractor uses for
-//! freeform text: SlideContainer drawings are matched positionally to the
-//! extracted slide list only when the counts agree; otherwise images are
-//! emitted without a slide number rather than risking misattribution.
+//! Slide attribution is positional: SlideContainer records appear in document
+//! order, so the nth one is slide n. Notes and masters are skipped, so the
+//! ordinal is the slide number a reader would count.
 
 
 use crate::formats::doc::text_extractor::DocParagraph;
@@ -22,11 +21,10 @@ use crate::formats::odraw::{
 use super::cfb_reader;
 use super::records::{parse_header, RT_MAIN_MASTER, RT_NOTES_CONTAINER, RT_SLIDE_CONTAINER,
     REC_VER_CONTAINER};
-use super::text_extractor;
 
-/// One image occurrence in the presentation. `slide_idx` is a 0-based index
-/// into the slide list returned by `text_extractor::extract_slides`, or
-/// `None` when the image could not be attributed to a slide.
+/// One image occurrence in the presentation. `slide_idx` is the 0-based
+/// SlideContainer ordinal, or `None` for images recovered from the Pictures
+/// stream fallback, where no slide association exists at all.
 #[derive(Debug, Clone)]
 pub struct PptImage {
     pub hash_name: String,
@@ -130,20 +128,25 @@ pub fn extract_ppt_images_bytes(bytes: &[u8]) -> Result<Vec<PptImage>, String> {
     let mut slide_pibs: Vec<Vec<u32>> = Vec::new();
     collect_slide_pibs(&doc_stream, 0, doc_stream.len(), &mut slide_pibs);
 
-    // Drawing order maps 1:1 onto the extracted slide list only when the
-    // counts agree (the rule the text extractor uses for freeform merge).
-    let slide_count = text_extractor::extract_slides(&doc_stream).len();
-    let aligned = slide_pibs.len() == slide_count;
-
+    // `collect_slide_pibs` pushes one entry per `RT_SLIDE_CONTAINER` in
+    // document order, skipping notes and masters — so `drawing_idx` *is* the
+    // slide ordinal, and needs no corroboration.
+    //
+    // It used to be cross-checked against `extract_slides().len()` and every
+    // image dropped to `page_number: null` unless the two agreed. That compared
+    // two different things: `extract_slides` is built from the SlideListWithText,
+    // which omits a slide carrying no text placeholders. `sample1.ppt` has 20
+    // slide containers and 19 SLWT entries, so one text-free slide cost all six
+    // of its images their attribution (TECH_DEBT #19).
     let mut out: Vec<PptImage> = Vec::new();
-    for (drawing_idx, pibs) in slide_pibs.iter().enumerate() {
+    for (slide_idx, pibs) in slide_pibs.iter().enumerate() {
         for pib in pibs {
             let idx = (*pib as usize).wrapping_sub(1);
             if let Some(Some(decoded)) = bstore.get(idx) {
                 out.push(PptImage {
                     hash_name: blip_hash_name(&decoded.bytes, decoded.ext),
                     bytes: decoded.bytes.clone(),
-                    slide_idx: if aligned { Some(drawing_idx) } else { None },
+                    slide_idx: Some(slide_idx),
                 });
             }
         }

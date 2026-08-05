@@ -291,9 +291,8 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
         }
     }
     flush(&mut accum, &mut result, &mut chunk_index, total_slides);
-    if result.is_empty() {
-        return Err("No semantic chunks generated".to_string());
-    }
+    // Empty is a valid answer for a text-free deck; see the note in
+    // `section.rs` (TECH_DEBT #16).
     Ok(result)
 }
 

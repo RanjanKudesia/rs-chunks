@@ -942,6 +942,19 @@ fn extract_attr(chunk: &str, attr: &str) -> Option<String> {
 /// Returns `Vec<(rId, alt_text)>` — one entry per picture found.
 /// `rId` comes from `<a:blip r:embed="rIdN"/>`.
 /// `alt_text` comes from `<p:cNvPr descr="..."/>` (or `name=` as fallback).
+/// `r:embed` of an `<a:blip>`, i.e. the relationship id of the image it draws.
+fn blip_embed_rid(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
+    for attr in e.attributes().flatten() {
+        let ak = attr.key.as_ref().to_vec();
+        let al: &[u8] = ak.rsplit(|b| *b == b':').next().unwrap_or(&ak);
+        if al == b"embed" {
+            let rid = String::from_utf8_lossy(attr.value.as_ref()).trim().to_string();
+            return if rid.is_empty() { None } else { Some(rid) };
+        }
+    }
+    None
+}
+
 pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<String>)> {
     let mut reader = Reader::from_reader(std::io::BufReader::new(xml_bytes));
     let mut buf = Vec::new();
@@ -949,6 +962,8 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
     let mut in_pic = false;
     let mut pic_rid: Option<String> = None;
     let mut pic_alt: Option<String> = None;
+    let mut in_bg = false;
+    let mut bg_rid: Option<String> = None;
 
     loop {
         // Entity references arrive as their own event; fold them back into text.
@@ -963,6 +978,10 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
                         in_pic = true;
                         pic_rid = None;
                         pic_alt = None;
+                    }
+                    b"bg" => {
+                        in_bg = true;
+                        bg_rid = None;
                     }
                     b"cNvPr" if in_pic && pic_alt.is_none() => {
                         let mut descr: Option<String> = None;
@@ -995,18 +1014,18 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
                         }
                     }
                     b"blip" if in_pic => {
-                        for attr in e.attributes().flatten() {
-                            let ak = attr.key.as_ref().to_vec();
-                            let al: &[u8] = ak.rsplit(|b| *b == b':').next().unwrap_or(&ak);
-                            if al == b"embed" {
-                                let rid = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !rid.is_empty() {
-                                    pic_rid = Some(rid);
-                                }
-                                break;
-                            }
+                        if let Some(rid) = blip_embed_rid(e) {
+                            pic_rid = Some(rid);
+                        }
+                    }
+                    // A slide background is drawn by <p:bg><p:bgPr><a:blipFill>
+                    // — never inside a <p:pic>, so the `in_pic` gate above
+                    // skipped it and background-only slides yielded no images
+                    // at all (TECH_DEBT #17). There is no <p:cNvPr> here, so
+                    // there is no alt text to carry.
+                    b"blip" if in_bg => {
+                        if let Some(rid) = blip_embed_rid(e) {
+                            bg_rid = Some(rid);
                         }
                     }
                     _ => {}
@@ -1051,18 +1070,18 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
                         }
                     }
                     b"blip" if in_pic => {
-                        for attr in e.attributes().flatten() {
-                            let ak = attr.key.as_ref().to_vec();
-                            let al: &[u8] = ak.rsplit(|b| *b == b':').next().unwrap_or(&ak);
-                            if al == b"embed" {
-                                let rid = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !rid.is_empty() {
-                                    pic_rid = Some(rid);
-                                }
-                                break;
-                            }
+                        if let Some(rid) = blip_embed_rid(e) {
+                            pic_rid = Some(rid);
+                        }
+                    }
+                    // A slide background is drawn by <p:bg><p:bgPr><a:blipFill>
+                    // — never inside a <p:pic>, so the `in_pic` gate above
+                    // skipped it and background-only slides yielded no images
+                    // at all (TECH_DEBT #17). There is no <p:cNvPr> here, so
+                    // there is no alt text to carry.
+                    b"blip" if in_bg => {
+                        if let Some(rid) = blip_embed_rid(e) {
+                            bg_rid = Some(rid);
                         }
                     }
                     _ => {}
@@ -1074,6 +1093,11 @@ pub fn extract_slide_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<S
                 if local == b"pic" && in_pic {
                     in_pic = false;
                     result.push((pic_rid.take(), pic_alt.take()));
+                } else if local == b"bg" && in_bg {
+                    in_bg = false;
+                    if let Some(rid) = bg_rid.take() {
+                        result.push((Some(rid), None));
+                    }
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

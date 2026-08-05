@@ -177,6 +177,12 @@ fn parse_slide_for_markdown(
     let mut sp_is_title = false;
     let mut sp_ph_checked = false;
     let mut in_pic = false;
+    // Slide-background fill: <p:bg><p:bgPr><a:blipFill><a:blip r:embed>. It is
+    // never inside a <p:pic>, so the `in_pic` gate below skipped it and a
+    // background-only slide rendered with no image at all — while the chunk
+    // path now extracts it, leaving the two disagreeing (TECH_DEBT #17).
+    let mut in_bg = false;
+    let mut bg_rid: Option<String> = None;
     let mut pic_alt: Option<String> = None;
     let mut pic_rid: Option<String> = None;
 
@@ -341,6 +347,10 @@ fn parse_slide_for_markdown(
                         pic_alt = None;
                         pic_rid = None;
                     }
+                    b"bg" => {
+                        in_bg = true;
+                        bg_rid = None;
+                    }
                     b"cNvPr" if in_pic => {
                         let mut descr: Option<String> = None;
                         let mut name: Option<String> = None;
@@ -382,6 +392,20 @@ fn parse_slide_for_markdown(
                                     .to_string();
                                 if !rid.is_empty() {
                                     pic_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"blip" if in_bg => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    bg_rid = Some(rid);
                                 }
                                 break;
                             }
@@ -573,6 +597,20 @@ fn parse_slide_for_markdown(
                             }
                         }
                     }
+                    b"blip" if in_bg => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    bg_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
                     b"tblPr" if in_tbl => {
                         for attr in e.attributes().flatten() {
                             if attr_local_name(attr.key.as_ref()) == b"firstRow" {
@@ -707,6 +745,12 @@ fn parse_slide_for_markdown(
                         slide
                             .blocks
                             .push(SlideBlock::image(pic_alt.take(), pic_rid.take()));
+                    }
+                    b"bg" if in_bg => {
+                        in_bg = false;
+                        if let Some(rid) = bg_rid.take() {
+                            slide.blocks.push(SlideBlock::image(None, Some(rid)));
+                        }
                     }
                     b"p" if in_tc_para => {
                         in_tc_para = false;

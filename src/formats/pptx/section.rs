@@ -40,9 +40,11 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
         build_from_divider_heuristic(slides, total_slides)
     };
 
-    if result.is_empty() {
-        return Err("No section chunks generated from PPTX".to_string());
-    }
+    // A deck with no body text is empty, not broken — a SmartArt-only or
+    // background-only slide genuinely has nothing to chunk. The other five
+    // modes return an empty list for exactly these files; raising here made the
+    // error contract depend on which mode the caller picked (TECH_DEBT #16).
+    // A file that cannot be *parsed* still errors, from open_pptx above.
     Ok(result)
 }
 
