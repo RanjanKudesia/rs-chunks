@@ -12,6 +12,7 @@
 //! stays behind the native-only `pdf-native` feature.
 
 pub mod author_block;
+pub(crate) mod base14;
 pub(crate) mod blocks;
 pub(crate) mod cmap;
 pub(crate) mod content;

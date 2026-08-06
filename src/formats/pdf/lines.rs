@@ -12,12 +12,6 @@
 
 use super::content::Glyph;
 
-/// Whether the text built so far ends in a letter — a small-caps step is a
-/// transition *inside a word*, so punctuation or a space ends the run.
-fn ends_with_letter(text: &str) -> bool {
-    text.chars().next_back().is_some_and(char::is_alphabetic)
-}
-
 /// A gap this wide, relative to the em size around it, reads as a word break.
 /// Below it lies ordinary letter spacing and the rounding producers introduce
 /// when they position glyphs individually.
@@ -27,18 +21,6 @@ const WORD_GAP_EM: f32 = 0.2;
 /// whitespace between two cells of a table row.
 const CELL_GAP_EM: f32 = 1.3;
 
-/// The gap a *small-capital* transition must exceed to read as a word break.
-///
-/// A small-caps title sets `VERY` as a full-size `V` followed by reduced-size
-/// `ERY`. The advance after the full-size capital is genuinely wider than
-/// [`WORD_GAP_EM`] of its own em — measuring against the larger em fixed the
-/// milder cases (`L ARGE`, `m̂ t`) but not `V ERY D EEP` (#88). A size *drop*
-/// between two letters is the signal that distinguishes the two: within a
-/// small-capped word the letters shrink, and between words they do not.
-const SMALL_CAPS_GAP_EM: f32 = 0.42;
-
-/// A size ratio below this counts as a deliberate drop rather than rounding.
-const SMALL_CAPS_DROP: f32 = 0.95;
 
 /// How far a baseline may sit from its line's, in ems, and still belong to it.
 const BASELINE_TOLERANCE_EM: f32 = 0.5;
@@ -162,23 +144,20 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
         if opens_segment {
             segments.push(Segment { text: String::new(), left: g.x, right: g.x });
         }
-        // Judge the gap against the *larger* of the two ems. A small-caps title
-        // sets `VERY` as a 12 pt `V` and 9 pt `ERY`; measuring the gap after
-        // the `V` against the 9 pt em made an ordinary letter fit look like a
-        // word break, and the title came out as `V ERY D EEP`.
+        // Judge the gap against the *larger* of the two ems, so a size change
+        // mid-word does not shrink the threshold and invent a word break.
+        //
+        // This once had a second rule beside it, raising the threshold on a
+        // size *drop*, to stop `VERY DEEP` coming out as `V ERY D EEP`. That
+        // was a workaround: the real cause was that the base-14 fonts carried
+        // no widths, so every glyph advanced half an em and opened phantom gaps
+        // (see `base14.rs`, TECH_DEBT #92/#93). With real metrics the gap after
+        // the `V` is 1.0 pt against a 3.4 pt threshold, and the rule never
+        // fired again — so it was removed rather than left to imply that
+        // small caps need special handling.
         let em = g.size.max(previous_size);
-        // Within a small-capped word the letters shrink; between words they do
-        // not. So a drop in size between two letters raises the bar the gap has
-        // to clear (#88). The reverse — `Y` to the next word's full-size `D` —
-        // is a size *rise* and keeps the ordinary threshold, which is what
-        // preserves the space between the words.
-        let small_caps_step = previous_size > 0.0
-            && g.size < previous_size * SMALL_CAPS_DROP
-            && ends_with_letter(&text)
-            && g.text.starts_with(char::is_alphabetic);
-        let threshold = if small_caps_step { SMALL_CAPS_GAP_EM } else { WORD_GAP_EM };
         let needs_space = previous_end.is_finite()
-            && gap > threshold * em
+            && gap > WORD_GAP_EM * em
             && !text.ends_with(char::is_whitespace)
             && !g.text.starts_with(char::is_whitespace);
         if needs_space {

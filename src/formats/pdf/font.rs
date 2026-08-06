@@ -78,7 +78,16 @@ impl Font {
             widths: if composite {
                 cid_widths(doc, metrics_dict)
             } else {
-                simple_widths(doc, dict)
+                let declared = simple_widths(doc, dict);
+                if declared.is_empty() {
+                    // A base-14 font may omit /Widths entirely — the viewer is
+                    // expected to know the metrics. Without them every glyph
+                    // advanced FALLBACK_WIDTH, which drifts far enough to
+                    // interleave adjacent text runs (TECH_DEBT #92, #93).
+                    base14_widths(&base_font, &simple_encoding(doc, dict, &base_font, descriptor))
+                } else {
+                    declared
+                }
             },
             default_width: default_width(doc, composite, metrics_dict, descriptor),
             bold: is_bold(&base_font, descriptor),
@@ -277,6 +286,25 @@ pub(crate) fn glyph_to_char(name: &str) -> Option<char> {
         (Some(c), None) => Some(c),
         _ => None,
     }
+}
+
+/// Widths for a simple font that declares none, from the base-14 metrics.
+///
+/// Resolved through the font's own encoding array, so a `/Differences` that
+/// remaps codes is honoured — the width follows the character actually drawn,
+/// not the code point. Returns an empty map for a font that is not one of the
+/// standard 14, which leaves `default_width` in charge exactly as before.
+fn base14_widths(base_font: &str, encoding: &[Option<char>; 256]) -> HashMap<u32, f32> {
+    let Some(metrics) = super::base14::widths_for(base_font) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (code, ch) in encoding.iter().enumerate() {
+        if let Some(width) = ch.and_then(|c| metrics.width(c)) {
+            out.insert(code as u32, width);
+        }
+    }
+    out
 }
 
 fn simple_widths(doc: &Document, dict: &Dictionary) -> HashMap<u32, f32> {
