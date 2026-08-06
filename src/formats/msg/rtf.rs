@@ -1,9 +1,11 @@
 //! RTF handling for the `.msg` body fallback.
 //!
 //! `PidTagRtfCompressed` (0x1009) stores the body as LZFu-compressed RTF
-//! (MS-OXRTFCP). We decompress it here, then convert RTF → text with the
-//! `rtf-parser` crate (which, usefully, also yields readable text from Outlook's
-//! `\fromhtml` encapsulated-HTML RTF by skipping the `\*\htmltag` destinations).
+//! (MS-OXRTFCP). We decompress it here, then hand the RTF to the engine's own
+//! reader in [`crate::formats::rtf`] — which already skips Outlook's
+//! `\*\htmltag` destinations for `\fromhtml` encapsulated HTML, *and* decodes
+//! `\'xx` escapes against the document's codepage, which the `rtf-parser` crate
+//! did not (TECH_DEBT #49).
 
 /// The 207-byte preset dictionary every LZFu stream starts from (MS-OXRTFCP).
 const LZFU_INIT_DICT: &[u8] = b"{\\rtf1\\ansi\\mac\\deff0\\deftab720{\\fonttbl;}{\\f0\\fnil \\froman \\fswiss \\fmodern \\fscript \\fdecor MS Sans SerifSymbolArialTimes New RomanCourier{\\colortbl\\red0\\green0\\blue0\r\n\\par \\pard\\plain\\f0\\fs20\\b\\i\\u\\tab\\tx";
@@ -83,14 +85,19 @@ pub fn decompress_rtf(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Convert RTF bytes to plain text via `rtf-parser`. Returns empty on parse
-/// failure so the caller can fall through to another body source.
+/// Convert RTF bytes to plain text, using the engine's own RTF reader.
+///
+/// This used to hand the bytes to the `rtf-parser` crate, which does not decode
+/// `\'xx` escapes against the document's codepage. A `\ansicpg950` message body
+/// is 751 such escapes and came back **empty** — `.msg` silently lost every
+/// non-Latin RTF body it had (TECH_DEBT #49).
+///
+/// `formats::rtf` already does this properly: it reads `\ansicpg` and each
+/// font's `\fcharset`, and batches `\'xx` bytes so a double-byte pair decodes
+/// together. Keeping a second, weaker RTF reader inside `msg` was the drift the
+/// one-engine rule exists to prevent.
 pub fn rtf_to_text(rtf_bytes: &[u8]) -> String {
-    let rtf = String::from_utf8_lossy(rtf_bytes);
-    match rtf_parser::RtfDocument::try_from(rtf.as_ref()) {
-        Ok(doc) => doc.get_text(),
-        Err(_) => String::new(),
-    }
+    crate::formats::rtf::to_markdown_from_bytes(rtf_bytes).unwrap_or_default()
 }
 
 /// Collapse the whitespace runs that Outlook's encapsulated-HTML RTF leaves

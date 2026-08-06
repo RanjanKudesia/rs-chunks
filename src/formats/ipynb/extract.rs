@@ -37,17 +37,24 @@ fn join_source(v: &Value) -> String {
     }
 }
 
-/// Strip ANSI SGR escape sequences (error tracebacks are colourised).
+/// Strip ANSI escape sequences (error tracebacks are colourised).
+///
+/// A CSI sequence is `ESC [`, parameter and intermediate bytes, then **any**
+/// final byte in `0x40..=0x7E` (ECMA-48). Scanning for `m` alone terminates on
+/// the colour sequences and nothing else: a cursor or erase sequence such as
+/// `ESC[2K` has no `m`, so the scan ran on to the *next* colour sequence and ate
+/// every character in between. `ESC[2KProgress cleared\n…` lost
+/// "Progress cleared" entirely — real traceback text, deleted silently
+/// (TECH_DEBT #44).
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == 0x1b {
-            // ESC [ ... m
             if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
                 let mut j = i + 2;
-                while j < bytes.len() && bytes[j] != b'm' {
+                while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
                     j += 1;
                 }
                 i = (j + 1).min(bytes.len());
@@ -298,4 +305,62 @@ fn render_outputs(
 
 pub fn to_markdown(doc: &IpynbDoc) -> String {
     doc.markdown.clone()
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::*;
+
+    const ESC: char = '\x1b';
+
+    fn sgr(code: &str, text: &str) -> String {
+        format!("{ESC}[{code}m{text}{ESC}[0m")
+    }
+
+    #[test]
+    fn colour_sequences_are_removed() {
+        assert_eq!(strip_ansi(&sgr("0;31", "RuntimeError")), "RuntimeError");
+        assert_eq!(strip_ansi("plain text"), "plain text");
+    }
+
+    /// TECH_DEBT #44. A non-SGR CSI sequence has no `m`, so scanning for one ran
+    /// past it into the next colour sequence and deleted everything between.
+    #[test]
+    fn a_non_sgr_sequence_does_not_swallow_the_text_after_it() {
+        let input = format!("{ESC}[2KProgress cleared\n{}", sgr("0;31", "ValueError"));
+        let stripped = strip_ansi(&input);
+        assert!(
+            stripped.contains("Progress cleared"),
+            "text after ESC[2K was eaten: {stripped:?}"
+        );
+        assert_eq!(stripped, "Progress cleared\nValueError");
+    }
+
+    #[test]
+    fn every_csi_final_byte_terminates_the_sequence() {
+        // Cursor up (A), erase display (J), set mode (h), and colour (m).
+        for final_byte in ['A', 'J', 'h', 'm'] {
+            let input = format!("{ESC}[1{final_byte}kept");
+            assert_eq!(strip_ansi(&input), "kept", "ESC[1{final_byte} was mishandled");
+        }
+    }
+
+    #[test]
+    fn a_lone_escape_is_not_treated_as_a_sequence() {
+        // No '[' follows, so it is data, not a control sequence.
+        let input = format!("a{ESC}b");
+        assert_eq!(strip_ansi(&input).len(), 3);
+    }
+
+    #[test]
+    fn an_unterminated_sequence_does_not_run_off_the_end() {
+        let input = format!("before{ESC}[38;5");
+        assert_eq!(strip_ansi(&input), "before");
+    }
+
+    #[test]
+    fn multibyte_text_survives_stripping() {
+        let input = format!("{}{}", sgr("0;31", "错误"), "：boom");
+        assert_eq!(strip_ansi(&input), "错误：boom");
+    }
 }

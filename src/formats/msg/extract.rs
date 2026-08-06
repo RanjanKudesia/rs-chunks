@@ -479,7 +479,7 @@ fn read_body(cfb: &mut Cfb, prefix: &str, codepage: u32) -> Option<String> {
             return Some(text);
         }
     }
-    // 3) Compressed RTF → text (LZFu + rtf-parser).
+    // 3) Compressed RTF → text (LZFu, then the engine's own RTF reader).
     if let Some(bytes) = read_binary(cfb, prefix, PID_RTF_COMPRESSED) {
         if let Some(text) = compressed_rtf_to_text(&bytes) {
             return Some(text);
