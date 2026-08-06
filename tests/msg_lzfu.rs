@@ -149,3 +149,50 @@ fn malformed_streams_fail_cleanly() {
         "a bogus rawSize must not be trusted"
     );
 }
+
+/// The other half, which #49 could not close and [#95](TECH_DEBT.md) split out:
+/// `read_body`'s **fallthrough** to the RTF branch, reached only when a message
+/// has compressed RTF and no usable plain or HTML body.
+///
+/// `derived_rtf_only.msg` is `tika_testMSG.msg` with its `PidTagBody` stream
+/// overwritten with spaces — see `test_files/msg/_make_derived_rtf_only.py` for
+/// why it is blanked in place rather than deleted. It is the only fixture in
+/// the corpus that reaches this branch; all 13 carrying RTF also carry a
+/// non-blank plain body.
+#[test]
+fn a_message_whose_only_body_is_compressed_rtf_still_reads() {
+    let path: std::path::PathBuf =
+        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "msg", "derived_rtf_only.msg"]
+            .iter()
+            .collect();
+    if !path.exists() {
+        return;
+    }
+    let name = path.to_string_lossy().to_string();
+    let text = chunks_rs::formats::msg::to_markdown(&name).expect("markdown");
+
+    // The headers come from properties, so they prove nothing about the body.
+    // These sentences exist only inside the compressed RTF.
+    assert!(
+        text.contains("making the type detection code more modular and extensible"),
+        "the RTF fallthrough did not produce the body: {text}"
+    );
+    assert!(text.contains("Otherwise I might end up breaking your application."));
+
+    // And it is the *same message*: against the unmodified fixture, which reads
+    // its plain body, the word sequence is identical. Only the sender's hard
+    // line wrapping differs, because RTF encodes paragraphs rather than lines —
+    // so comparing characters would report a difference that is not one.
+    let base: std::path::PathBuf =
+        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "msg", "tika_testMSG.msg"]
+            .iter()
+            .collect();
+    let plain = chunks_rs::formats::msg::to_markdown(&base.to_string_lossy()).expect("markdown");
+    let words = |s: &str| {
+        s.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(words(&plain), words(&text), "the two body sources disagree about the text");
+}
