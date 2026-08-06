@@ -17,48 +17,87 @@
 //! fills its measure: body columns are set to a common right edge, while cells
 //! and a byline's stacked affiliations are ragged. A rejected cut leaves the
 //! rows whole, which is what the table and byline passes downstream need.
+//!
+//! **Whitespace is measured exactly.** `empty_runs` merges the glyph extents and
+//! reports the gaps between them, so a 9.76 pt gutter reads as 9.76 pt. It used
+//! to mark 1 pt bins `floor(start) ..= ceil(end)` inclusively — one bin too far
+//! on the right, and up to one more lost to flooring on the left — which
+//! under-read every gap on every page by 1–2 pt and left the thresholds below
+//! meaning nothing that could be checked against the page
+//! ([#96](TECH_DEBT.md)). The exact form also drops a `1_000_000`-bin refusal
+//! branch, because it no longer allocates anything proportional to page size.
 
 use super::content::Glyph;
 use super::lines::{self, Line};
-
-/// Bin width for the whitespace profiles, in points.
-const BIN: f32 = 1.0;
 
 /// A gutter must be at least this wide, and at least [`GUTTER_EMS`] of an em.
 ///
 /// These were 9.0 / 1.1, which rejected `arxiv_1502.03167_batchnorm.pdf`'s real
 /// two-column gutter and welded its columns into single lines (TECH_DEBT #94).
 ///
-/// Two things about the measurement are worth writing down, because both are
-/// counter-intuitive:
+/// **These numbers now mean what they say.** They used to be tuned against a
+/// profiler that under-reported every gap by 1–2 pt ([#96](TECH_DEBT.md)), so
+/// `0.77` was never a claim about the page — `arxiv_1502.03167_batchnorm`'s
+/// 9.76 pt gutter was only ever *seen* as 8.0 pt. `empty_runs` measures exactly
+/// now, and the threshold sits where a ruler would put it: batchnorm's gutter
+/// is 9.76 pt against a 9.96 pt em, **0.98 em**, and the measured value at
+/// which its cut is lost is between 0.96 and 0.98. The agreement is the point —
+/// it is what says the profiler and the page are talking about the same thing.
 ///
-/// 1. **`empty_runs` under-reports every gap.** It marks bins
-///    `floor(start) ..= ceil(end)` inclusively, expanding each glyph outward by
-///    up to two bins, so batchnorm's 9.76 pt gutter is only ever *seen* as
-///    8.0 pt (0.80 em). The constants therefore have to be tuned to what the
-///    profiler measures, not to what a ruler would say. Fixing the binning
-///    would let these numbers mean what they claim, but it perturbs every gap
-///    on every page — a much larger change than this one ([#96](TECH_DEBT.md)).
-/// 2. **Lowering `GUTTER_EMS` alone does nothing**, because `MIN_GUTTER` then
-///    becomes the binding constraint: `max(9.0, 0.9 × 9.96)` is still 9.0 > 8.0.
-///    Both had to move, which the tracker entry did not say.
+/// Measured window on the corpus, with the engine rather than a replica:
 ///
-/// Measured window on the corpus: a cut fires for batchnorm at `GUTTER_EMS
-/// ≤ 0.803`, and at `≤ 0.72` `pdfjs_issue1905` starts *losing* a correct cut
-/// while at `≤ 0.62` `arxiv_1409.1556_vgg`'s Table 2 splits down the middle —
-/// the table damage a looser threshold is supposed to risk. 0.77 is the centre
-/// of `[0.73, 0.803]`, leaving 0.03 em of headroom on each side.
+/// | `GUTTER_EMS` | batchnorm phantom tables | vgg Table 2 |
+/// |---|---|---|
+/// | ≤ 0.88 | 10 | **loses its `E` column** |
+/// | 0.89 – 0.93 | **10** | intact |
+/// | 0.94 – 0.96 | 12 | intact |
+/// | ≥ 0.98 | 24 — the column cut is gone | intact |
 ///
-/// `MIN_GUTTER` must sit below `0.77 × em` or it re-binds; 6.0 is inert across
-/// the whole corpus (identical output for 0, 5, 6, 7 and 8) and is kept only as
-/// a floor for very small type, which this corpus cannot calibrate.
+/// So both ends are pinned by real damage: below 0.89 a genuine table splits
+/// down the middle, and from 0.98 a genuine two-column page welds back into
+/// rows the table pass then reads as a grid. **0.91** is the centre of
+/// `[0.89, 0.93]`, where batchnorm is also at its best, with 0.02–0.03 em of
+/// headroom either side.
+///
+/// `MIN_GUTTER` must stay below `0.91 × em` for body type or it re-binds and
+/// `GUTTER_EMS` stops mattering — the trap [#94](TECH_DEBT.md) fell into, where
+/// lowering `GUTTER_EMS` alone did nothing because `MIN_GUTTER` was 9.0.
+///
+/// **It is no longer inert, and the previous comment here saying so is wrong.**
+/// That was measured against the binned profiler; with exact gaps, 0, 5, 7 and
+/// 8 each move 2–4 fixtures. What moves is figure annotation — yolo's layer
+/// dimensions, `pdfjs_comments`' callout labels — set small enough that
+/// `0.91 × em` falls under the floor, and the direction is not monotonic,
+/// because a *rejected* cut hands the region to the table pass instead. No
+/// corpus fixture can say which reading of a figure label is right, so this
+/// keeps the value it already had rather than being re-tuned on a preference.
+/// Body text is untouched by it at any of those values.
 const MIN_GUTTER: f32 = 6.0;
-const GUTTER_EMS: f32 = 0.77;
+const GUTTER_EMS: f32 = 0.91;
 
 /// Vertical whitespace beyond this fraction of an em separates blocks. Ordinary
 /// leading leaves about a fifth of an em between one line's descenders and the
 /// next line's ascenders.
-const BAND_GAP_EMS: f32 = 0.5;
+///
+/// **Raised from 0.50 with [#96](TECH_DEBT.md), and it had to be.** This is fed
+/// by the same `empty_runs` as [`GUTTER_EMS`], so it was calibrated against the
+/// same 1–2 pt under-measurement; once gaps read true, 0.50 split bands that
+/// were never meant to split. Correcting only the gutter and leaving this alone
+/// cost `pdfjs_comments` **half its headings** — `## 3.1 Traces` demoted to
+/// bold, `3.3 Blacklisting` welding the word `Guard` out of a neighbouring
+/// figure, and a paragraph of body prose pulled into a two-column table with a
+/// figure legend. No value of `GUTTER_EMS` recovered it, which is what says the
+/// fault was here.
+///
+/// Measured window, with the engine: `pdfjs_comments` holds its 30 headings and
+/// 16 tables and batchnorm its 9 tables on `[0.70, 0.90]`; at 0.65 comments is
+/// one heading short, at 0.55 it has 16 of 30, and from 1.00 bands stop
+/// splitting that should (comments 28, batchnorm 8). **0.80** is the centre.
+///
+/// The correction is +0.20 em on a ~10 pt em — the 2 pt the old profiler lost.
+/// That both constants moved by almost exactly the measurement error is the
+/// strongest evidence the profiler is now reading the page correctly.
+const BAND_GAP_EMS: f32 = 0.80;
 
 /// A column needs this many lines before the split is believed.
 const MIN_LINES_PER_COLUMN: usize = 2;
@@ -182,42 +221,23 @@ fn reads_as_a_column(glyphs: &[&Glyph]) -> bool {
 
 /// The midpoints of every interior run of empty bins at least `min_width` wide.
 fn empty_runs(extents: &[(f32, f32)], min_width: f32) -> Vec<f32> {
-    let low = extents.iter().map(|e| e.0).fold(f32::INFINITY, f32::min);
-    let high = extents.iter().map(|e| e.1).fold(f32::NEG_INFINITY, f32::max);
-    let span = high - low;
-    if !span.is_finite() || span <= min_width {
+    let mut spans: Vec<(f32, f32)> =
+        extents.iter().copied().filter(|(start, end)| start.is_finite() && end >= start).collect();
+    if spans.is_empty() {
         return Vec::new();
     }
-    let count = (span / BIN).ceil() as usize + 1;
-    // A page big enough to blow this budget is malformed; refuse to profile it
-    // rather than allocate from its numbers.
-    if count > 1_000_000 {
-        return Vec::new();
-    }
-    let mut covered = vec![false; count];
-    for (start, end) in extents {
-        let from = ((start - low) / BIN).floor().max(0.0) as usize;
-        let to = (((end - low) / BIN).ceil() as usize).min(count - 1);
-        for slot in covered.iter_mut().take(to + 1).skip(from) {
-            *slot = true;
-        }
-    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut out = Vec::new();
-    let mut run: Option<usize> = None;
-    for (i, filled) in covered.iter().enumerate() {
-        match (filled, run) {
-            (false, None) => run = Some(i),
-            (true, Some(start)) => {
-                // `start == 0` is the outer margin, not an interior gap; the
-                // loop never reaches the far margin because the last bin is set.
-                if start > 0 && (i - start) as f32 * BIN >= min_width {
-                    out.push(low + (start + i) as f32 / 2.0 * BIN);
-                }
-                run = None;
-            }
-            _ => {}
+    // Sweeping from the first glyph's end to the last glyph's start reports
+    // interior gaps only — the outer margins are never between two glyphs, and
+    // the binned version needed an explicit `start > 0` test to say so.
+    let mut reach = spans[0].1;
+    for &(start, end) in &spans[1..] {
+        if start - reach >= min_width {
+            out.push((reach + start) / 2.0);
         }
+        reach = reach.max(end);
     }
     out
 }
