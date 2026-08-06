@@ -29,6 +29,15 @@ const SHORT_PARAGRAPH_THRESHOLD: usize = 80;
 /// 20 characters, and measuring bytes instead only moves the cliff rather than
 /// removing it. Ending on sentence-final punctuation is the script-neutral
 /// signal — `Figure 3` and `Screen Reader` do not, in any language.
+/// Cap on an assembled heading section (TECH_DEBT #91).
+///
+/// Matches `MAX_CHUNK_CHARS` in `txt`, `html` and `md`, so a docx section is
+/// bounded the same way every other prose format is. Named separately from
+/// `docx::section::MAX_SECTION_CHARS`, which caps a different thing in a
+/// different mode — one constant serving two bounds would imply they must move
+/// together, and they need not.
+const MAX_SECTION_CHARS: usize = 1200;
+
 fn is_complete_sentence(text: &str) -> bool {
     const SENTENCE_END: [char; 8] = ['.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}'];
     let t = text.trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}', ' ']);
@@ -996,18 +1005,32 @@ fn flush_section(
             ContentType::HeadingSection
         };
 
-        chunks.push(ChunkRecordInput {
-            content_type,
-            content: combined,
-            metadata: base_chunk_metadata(
-                heading,
-                heading_level,
-                &fns,
-                &ens,
-                doc_metadata,
-                section_page,
-            ),
-        });
+        // A section is every element between one heading and the next, so it
+        // grows without limit — `poi_bug59058.docx` produced an 18,546-character
+        // chunk. #68 bounded the md pipeline, txt and html; docx was left out
+        // because this is an assembled section rather than a block, and that is
+        // the only reason. Splitting here keeps the section model intact: the
+        // heading association is metadata, not position, so every part carries
+        // the same heading, level, page and notes (TECH_DEBT #91).
+        //
+        // Tables are not affected — they never enter `section_parts`; the table
+        // arm flushes the pending section and pushes its own chunk. `table` is
+        // documented as "kept whole", the same rule that protects CSV rows.
+        for part in crate::shared::split_block_on_lines_and_sentences(&combined, MAX_SECTION_CHARS)
+        {
+            chunks.push(ChunkRecordInput {
+                content_type,
+                content: part,
+                metadata: base_chunk_metadata(
+                    heading.clone(),
+                    heading_level,
+                    &fns,
+                    &ens,
+                    doc_metadata,
+                    section_page,
+                ),
+            });
+        }
     }
 
     section_parts.clear();

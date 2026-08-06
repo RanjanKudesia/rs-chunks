@@ -25,8 +25,35 @@ use super::lines::{self, Line};
 const BIN: f32 = 1.0;
 
 /// A gutter must be at least this wide, and at least [`GUTTER_EMS`] of an em.
-const MIN_GUTTER: f32 = 9.0;
-const GUTTER_EMS: f32 = 1.1;
+///
+/// These were 9.0 / 1.1, which rejected `arxiv_1502.03167_batchnorm.pdf`'s real
+/// two-column gutter and welded its columns into single lines (TECH_DEBT #94).
+///
+/// Two things about the measurement are worth writing down, because both are
+/// counter-intuitive:
+///
+/// 1. **`empty_runs` under-reports every gap.** It marks bins
+///    `floor(start) ..= ceil(end)` inclusively, expanding each glyph outward by
+///    up to two bins, so batchnorm's 9.76 pt gutter is only ever *seen* as
+///    8.0 pt (0.80 em). The constants therefore have to be tuned to what the
+///    profiler measures, not to what a ruler would say. Fixing the binning
+///    would let these numbers mean what they claim, but it perturbs every gap
+///    on every page — a much larger change than this one ([#96](TECH_DEBT.md)).
+/// 2. **Lowering `GUTTER_EMS` alone does nothing**, because `MIN_GUTTER` then
+///    becomes the binding constraint: `max(9.0, 0.9 × 9.96)` is still 9.0 > 8.0.
+///    Both had to move, which the tracker entry did not say.
+///
+/// Measured window on the corpus: a cut fires for batchnorm at `GUTTER_EMS
+/// ≤ 0.803`, and at `≤ 0.72` `pdfjs_issue1905` starts *losing* a correct cut
+/// while at `≤ 0.62` `arxiv_1409.1556_vgg`'s Table 2 splits down the middle —
+/// the table damage a looser threshold is supposed to risk. 0.77 is the centre
+/// of `[0.73, 0.803]`, leaving 0.03 em of headroom on each side.
+///
+/// `MIN_GUTTER` must sit below `0.77 × em` or it re-binds; 6.0 is inert across
+/// the whole corpus (identical output for 0, 5, 6, 7 and 8) and is kept only as
+/// a floor for very small type, which this corpus cannot calibrate.
+const MIN_GUTTER: f32 = 6.0;
+const GUTTER_EMS: f32 = 0.77;
 
 /// Vertical whitespace beyond this fraction of an em separates blocks. Ordinary
 /// leading leaves about a fifth of an em between one line's descenders and the
