@@ -123,16 +123,45 @@ fn reading_from_bytes_matches_reading_from_a_path() {
     );
 }
 
-/// Not a defect, but a limit worth pinning: a CFF subset whose glyph names are
-/// bare indices (`/g18`) and which carries no `/ToUnicode` cannot be decoded
-/// without the original font. The parser drops those glyphs rather than
-/// emitting mojibake, so what it *does* return is still correct prose.
+/// [#84]: a CFF subset whose glyph names are bare indices (`/g18`) and which
+/// carries no `/ToUnicode` says nothing about what its glyphs are. The font's
+/// own `/Widths` array identifies it, and `cambria.rs` decodes the 24-page body
+/// that used to come out empty — 7,921 alphabetic characters became 46,990.
+///
+/// The silence half of this test is kept, because it is still the contract for
+/// every glyph the table does not cover: the two GIDs no context could identify
+/// are dropped, not guessed at.
 #[test]
-fn an_undecodable_subset_font_degrades_to_silence_not_to_noise() {
+fn a_subset_font_naming_glyphs_by_index_decodes_and_never_invents_letters() {
     let text = markdown("pdfjs_TAMReview.pdf");
     assert!(text.contains("Overview of the Technology Acceptance Model"), "decodable text missing");
+    assert!(
+        text.contains("predicting system use became an area of interest for many researchers"),
+        "the Cambria subset's body text did not decode"
+    );
+    // Punctuation, digits and the smart apostrophe all come from the table.
+    assert!(text.contains("(Davis, 1985, p. 10)"), "punctuation did not decode");
+    assert!(text.contains("the 1970\u{2019}s"), "the quoteright did not decode");
+    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+    assert!(letters > 45_000, "expected the body to decode, got {letters} letters");
     let replacement = text.chars().filter(|c| *c == '\u{FFFD}').count();
     assert_eq!(replacement, 0, "replacement characters leaked into the output");
+}
+
+/// The other half of [#84], and a different defect despite sharing the number:
+/// a dvips Type 3 font names every glyph after the code it sits at (`/a65` at
+/// code 65). That name states nothing, so overwriting the base encoding with it
+/// deleted the text. No reference table is involved.
+#[test]
+fn a_type3_font_naming_glyphs_after_their_own_code_decodes() {
+    let text = markdown("arxiv_2005.14165_gpt3.pdf");
+    assert!(
+        text.contains("After two days of intense debate, the United Methodist Church"),
+        "the Type 3 bitmap font's text is still being discarded"
+    );
+    // A real ZapfDingbats `/a84` sits at code 116, so it must be untouched.
+    let dingbats = markdown("pdfjs_freeculture.pdf");
+    assert!(dingbats.contains("Free Culture"), "the dingbats fixture stopped decoding");
 }
 
 /// [#54]: `default` and `structural` were byte-identical while the docs said

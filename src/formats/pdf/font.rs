@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use lopdf::{Dictionary, Document, Object};
 
+use super::cambria;
 use super::cmap;
 use super::encoding_tables::{
     CodeToUnicode, MAC_ROMAN_ENCODING, STANDARD_ENCODING, SYMBOL_ENCODING, WIN_ANSI_ENCODING,
@@ -61,6 +62,16 @@ impl Font {
         let base_font = name_of(dict.get(b"BaseFont").ok()).unwrap_or_default();
         let descriptor = metrics_dict.get_deref(b"FontDescriptor", doc).and_then(Object::as_dict).ok();
 
+        // The declared widths are read before the encoding because the encoding
+        // may need them: a subset that names its glyphs by index is decodable
+        // only if its own widths vouch for the reference table (`cambria`).
+        let declared = if composite { HashMap::new() } else { simple_widths(doc, dict) };
+        let simple = if composite {
+            [None; 256]
+        } else {
+            simple_encoding(doc, dict, &base_font, descriptor, &declared)
+        };
+
         Font {
             two_byte: composite,
             to_unicode: dict
@@ -70,25 +81,18 @@ impl Font {
                 .and_then(|s| s.decompressed_content().ok())
                 .map(|bytes| cmap::parse_to_unicode(&bytes))
                 .unwrap_or_default(),
-            simple: Box::new(if composite {
-                [None; 256]
-            } else {
-                simple_encoding(doc, dict, &base_font, descriptor)
-            }),
             widths: if composite {
                 cid_widths(doc, metrics_dict)
+            } else if declared.is_empty() {
+                // A base-14 font may omit /Widths entirely — the viewer is
+                // expected to know the metrics. Without them every glyph
+                // advanced FALLBACK_WIDTH, which drifts far enough to
+                // interleave adjacent text runs (TECH_DEBT #92, #93).
+                base14_widths(&base_font, &simple)
             } else {
-                let declared = simple_widths(doc, dict);
-                if declared.is_empty() {
-                    // A base-14 font may omit /Widths entirely — the viewer is
-                    // expected to know the metrics. Without them every glyph
-                    // advanced FALLBACK_WIDTH, which drifts far enough to
-                    // interleave adjacent text runs (TECH_DEBT #92, #93).
-                    base14_widths(&base_font, &simple_encoding(doc, dict, &base_font, descriptor))
-                } else {
-                    declared
-                }
+                declared
             },
+            simple: Box::new(simple),
             default_width: default_width(doc, composite, metrics_dict, descriptor),
             bold: is_bold(&base_font, descriptor),
             italic: is_italic(&base_font, descriptor),
@@ -176,6 +180,7 @@ fn simple_encoding(
     dict: &Dictionary,
     base_font: &str,
     descriptor: Option<&Dictionary>,
+    declared: &HashMap<u32, f32>,
 ) -> CodeToChar {
     let encoding = dict.get_deref(b"Encoding", doc).ok();
     let named = match &encoding {
@@ -214,7 +219,14 @@ fn simple_encoding(
         },
     }
     if let Some(Object::Dictionary(d)) = &encoding {
-        apply_differences(doc, d, &mut table);
+        let bare = apply_differences(doc, d, &mut table);
+        // A subset that names glyphs `/g18` has said nothing about them. The
+        // reference table can, but only if the font's widths vouch for it.
+        if let Some(resolved) = cambria::resolve(base_font, &bare, declared) {
+            for (code, ch) in resolved {
+                table[code] = Some(ch);
+            }
+        }
     }
     table
 }
@@ -235,9 +247,17 @@ fn builtin_program(doc: &Document, descriptor: Option<&Dictionary>) -> Option<Ve
 
 /// `/Differences` is a flat array of `code name name … code name …`: each number
 /// resets the code counter, each name assigns and advances it.
-fn apply_differences(doc: &Document, encoding: &Dictionary, table: &mut CodeToChar) {
+///
+/// Returns the `(code, index)` pairs whose names were bare glyph indices that
+/// resolved to nothing — the raw material [`cambria::resolve`] works from.
+fn apply_differences(
+    doc: &Document,
+    encoding: &Dictionary,
+    table: &mut CodeToChar,
+) -> Vec<(usize, u16)> {
+    let mut bare = Vec::new();
     let Ok(items) = encoding.get_deref(b"Differences", doc).and_then(Object::as_array) else {
-        return;
+        return bare;
     };
     let mut code = 0usize;
     for item in items {
@@ -245,14 +265,50 @@ fn apply_differences(doc: &Document, encoding: &Dictionary, table: &mut CodeToCh
             Object::Integer(n) => code = (*n).max(0) as usize,
             Object::Real(n) => code = (*n).max(0.0) as usize,
             Object::Name(n) => {
-                if code < 256 {
-                    table[code] = glyph_to_char(&String::from_utf8_lossy(n));
+                let name = String::from_utf8_lossy(n);
+                if code < 256 && !names_its_own_code(&name, code) {
+                    table[code] = glyph_to_char(&name);
+                    if table[code].is_none() {
+                        if let Some(index) = bare_index(&name) {
+                            bare.push((code, index));
+                        }
+                    }
                 }
                 code += 1;
             }
             _ => {}
         }
     }
+    bare
+}
+
+/// A `/Differences` name that only restates the code it sits at — `/a65` at
+/// code 65 — carries no information, so it must not overwrite the base encoding
+/// with nothing.
+///
+/// dvips-produced Type 3 fonts name **every** glyph that way, which is why
+/// `arxiv_2005.14165_gpt3.pdf`'s two bitmap fonts and `arxiv_1506.02640_yolo`'s
+/// decoded to silence. Ignoring the name lets StandardEncoding speak for the
+/// code, and the page comes out as English.
+///
+/// The self-reference *is* the test, and it is what makes this safe: a real
+/// glyph called `a84` exists — it is a ZapfDingbats name, used by
+/// `pdfjs_freeculture.pdf` — but it sits at code 116, so it is untouched. Across
+/// the whole PDF corpus the only fonts where the index equals the code are the
+/// four Type 3 ones. Leading zeros are rejected so `uni0041`-style names, which
+/// do carry information, can never be read as self-referential.
+fn names_its_own_code(name: &str, code: usize) -> bool {
+    bare_index(name).is_some_and(|index| usize::from(index) == code)
+}
+
+/// `/g18` → 18. Only `g` and `a` are treated as index prefixes, and only
+/// without a leading zero — those are the conventions the corpus actually uses.
+fn bare_index(name: &str) -> Option<u16> {
+    let digits = name.strip_prefix('g').or_else(|| name.strip_prefix('a'))?;
+    if digits.starts_with('0') && digits.len() > 1 {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Resolve a glyph name to a character.
