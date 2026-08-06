@@ -340,11 +340,21 @@ fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
 }
 
 pub fn parse_markdown_blocks(text: &str) -> Vec<MdBlock> {
+    parse_blocks_from(text, 0)
+}
+
+/// Parse a *span* of a document, numbering its blocks from `first_index`.
+///
+/// The whole-document entry point is this with `first_index` of 0. It is
+/// separate because block numbering used to be `enumerate()` over the finished
+/// `Vec`, which is a whole-document operation and one of the three things that
+/// stopped a builder resuming mid-document ([#87](TECH_DEBT.md)).
+pub(crate) fn parse_blocks_from(text: &str, first_index: usize) -> Vec<MdBlock> {
     let mut blocks = bound_block_size(parse_markdown_blocks_unbounded(text));
     // Numbered after bounding, because bounding is what splits an oversized
     // block into several and the builders see the result.
-    for (i, block) in blocks.iter_mut().enumerate() {
-        block.index = i;
+    for (offset, block) in blocks.iter_mut().enumerate() {
+        block.index = first_index + offset;
     }
     blocks
 }

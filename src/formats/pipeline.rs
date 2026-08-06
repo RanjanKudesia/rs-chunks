@@ -103,25 +103,39 @@ fn build_records(
     )?;
     let mut out = Vec::with_capacity(records.len());
     for spanned in records.into_iter() {
-        let mut rec = spanned.record;
-        if let serde_json::Value::Object(map) = &mut rec.metadata {
-            map.insert("document_metadata".to_string(), loaded.metadata.clone());
-            // The block span is internal. It only becomes visible metadata for a
-            // format that has records to name, which is why adding it changed
-            // nothing for `.md`, `.html`, `.txt`, `.pdf` and the rest.
-            if let (Some(starts), Some(span)) = (loaded.records.as_deref(), spanned.blocks) {
-                if let Some((first, last)) = records_for(starts, span) {
-                    // Range only. A sibling `record_count` was in the design,
-                    // but `document_metadata.record_count` already means the
-                    // *file's* total, and two different counts under one name
-                    // is a trap; the chunk's own count is `last - first + 1`.
-                    map.insert("record_range".to_string(), serde_json::json!([first, last]));
-                }
-            }
-        }
-        out.push(rec);
+        out.push(stamp(spanned, &loaded.metadata, loaded.records.as_deref()));
     }
     Ok(out)
+}
+
+/// Attach the document-level metadata a finished record still needs.
+///
+/// Split out so the incremental PDF path ([`super::pdf::stream`]) stamps its
+/// chunks with exactly this code rather than a copy of it — the two must agree
+/// byte for byte, and `stream_matches_batch_for_every_mode` only catches a
+/// divergence if there is one place to get it right.
+pub(crate) fn stamp(
+    spanned: md::common::SpannedRecord,
+    metadata: &serde_json::Value,
+    records: Option<&[usize]>,
+) -> md::common::ChunkRecordInput {
+    let mut rec = spanned.record;
+    if let serde_json::Value::Object(map) = &mut rec.metadata {
+        map.insert("document_metadata".to_string(), metadata.clone());
+        // The block span is internal. It only becomes visible metadata for a
+        // format that has records to name, which is why adding it changed
+        // nothing for `.md`, `.html`, `.txt`, `.pdf` and the rest.
+        if let (Some(starts), Some(span)) = (records, spanned.blocks) {
+            if let Some((first, last)) = records_for(starts, span) {
+                // Range only. A sibling `record_count` was in the design, but
+                // `document_metadata.record_count` already means the *file's*
+                // total, and two different counts under one name is a trap; the
+                // chunk's own count is `last - first + 1`.
+                map.insert("record_range".to_string(), serde_json::json!([first, last]));
+            }
+        }
+    }
+    rec
 }
 
 pub(crate) fn chunk(

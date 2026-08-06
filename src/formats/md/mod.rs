@@ -1,9 +1,15 @@
 //! Markdown chunking — the foundational prose engine.
 //!
-//! Many prose-like formats (json, eml, odf, msg, epub, ipynb, rtf, pdf) assemble
-//! clean Markdown and reuse these builders, so `md` is ported first. The
-//! `build_*` functions are shared crate-internally via [`build_records_from_bytes`].
+//! Seven prose-like formats (json, eml, odf, msg, ipynb, rtf, pdf) assemble
+//! clean Markdown and reuse these builders through
+//! [`crate::formats::pipeline`], so `md` is ported first. The `build_*`
+//! functions are shared crate-internally via [`build_records_from_bytes`].
+//!
+//! `epub` is **not** one of them despite what this comment used to say — it
+//! reuses `html`'s builder family, as `txt` does. That is eight formats on this
+//! module, not ten ([#87](TECH_DEBT.md)).
 
+pub(crate) mod block_stream;
 pub mod common;
 pub(crate) mod page_aware;
 pub(crate) mod section;

@@ -124,6 +124,11 @@ impl Reader {
         self.has_text
     }
 
+    /// Pages rendered so far — what a streaming caller has actually paid for.
+    pub fn pages_rendered(&self) -> usize {
+        self.next_to_render
+    }
+
     /// Render the next page, or `None` once every page has been read. A blank
     /// page yields an empty string rather than being skipped, so the caller
     /// decides what an empty page means.
