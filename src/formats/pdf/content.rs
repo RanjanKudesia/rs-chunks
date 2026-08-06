@@ -363,18 +363,92 @@ fn strip_inline_images(data: &[u8]) -> Vec<u8> {
             i += 1;
             continue;
         }
+        // A `BI` with no `ID`, or no closing `EI`, is not an inline image — it
+        // is a false positive (`(BI)` inside a text string satisfies
+        // `starts_token`, since parentheses are delimiters) or a malformed
+        // stream. Copying the byte through and moving on costs nothing; the
+        // previous `break` threw away **the whole rest of the stream**, which
+        // is precisely the 55 KB text loss this function exists to prevent.
         let Some(id) = find_token(data, i, b"ID") else {
-            out.extend_from_slice(&data[i..]);
-            break;
+            out.push(data[i]);
+            i += 1;
+            continue;
         };
         // The single whitespace byte after `ID` belongs to the delimiter, and
         // the data begins immediately after it.
-        match find_token(data, id + 3, b"EI") {
+        let data_start = id + 3;
+
+        // Prefer arithmetic over search. For an unfiltered image the byte count
+        // is exactly `ceil(W · components · BPC / 8) · H`, so the end is known
+        // and no scan can be fooled — `EI` is a legal byte pair inside binary
+        // data, and a delimiter-bounded one would end the image early and leave
+        // the tail to be re-tokenised as operators.
+        let end = inline_image_len(&data[i..data_start])
+            .map(|len| data_start + len)
+            .filter(|end| *end <= data.len() && find_token(data, *end, b"EI").is_some())
+            .or_else(|| find_token(data, data_start, b"EI"));
+
+        match end {
             Some(end) => i = end + 2,
-            None => break,
+            None => {
+                out.push(data[i]);
+                i += 1;
+            }
         }
     }
     out
+}
+
+/// Byte length of an *unfiltered* inline image's data, from its own dictionary.
+///
+/// `None` when the image is filtered (no length is derivable without decoding)
+/// or the dictionary does not say enough. Keys are the abbreviated forms an
+/// inline dictionary uses: `/W /H /BPC /CS /IM /F`.
+fn inline_image_len(header: &[u8]) -> Option<usize> {
+    if find_token(header, 0, b"/F").is_some() || find_token(header, 0, b"/Filter").is_some() {
+        return None; // compressed — length is not computable
+    }
+    let width = inline_int(header, b"/W")?;
+    let height = inline_int(header, b"/H")?;
+    let is_mask = find_token(header, 0, b"/IM").is_some();
+    let bpc = if is_mask { 1 } else { inline_int(header, b"/BPC")? };
+    let components = if is_mask {
+        1
+    } else {
+        match () {
+            // Indexed must be tested first: its array spells out a base space,
+            // so `[/I /RGB 3 <…>]` would otherwise read as three components
+            // when an indexed sample is one. It needs the palette to resolve, so
+            // fall back to the scan rather than guess.
+            _ if find_token(header, 0, b"/I").is_some()
+                || find_token(header, 0, b"/Indexed").is_some() =>
+            {
+                return None
+            }
+            _ if find_token(header, 0, b"/CMYK").is_some() => 4,
+            _ if find_token(header, 0, b"/RGB").is_some() => 3,
+            _ if find_token(header, 0, b"/G").is_some() => 1,
+            // A named colour space needs the resource dictionary.
+            _ => return None,
+        }
+    };
+    let row_bits = width.checked_mul(components)?.checked_mul(bpc)?;
+    Some(row_bits.div_ceil(8).checked_mul(height)?)
+}
+
+/// Read the integer operand of an abbreviated inline-image key.
+fn inline_int(header: &[u8], key: &[u8]) -> Option<usize> {
+    let at = find_token(header, 0, key)? + key.len();
+    let rest = &header[at..];
+    let start = rest.iter().position(|b| b.is_ascii_digit())?;
+    let end = rest[start..]
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(rest.len() - start);
+    std::str::from_utf8(&rest[start..start + end])
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// True when `needle` sits at `at` as a whole token.
@@ -451,4 +525,72 @@ fn fmin(values: &[f32]) -> f32 {
 
 fn fmax(values: &[f32]) -> f32 {
     values.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+}
+
+#[cfg(test)]
+mod inline_image_tests {
+    use super::*;
+
+    fn strip(s: &str) -> String {
+        String::from_utf8_lossy(&strip_inline_images(s.as_bytes())).to_string()
+    }
+
+    /// The 1×1 stencil mask that 1,013 of the corpus's 1,015 inline images are.
+    #[test]
+    fn a_stencil_mask_is_removed_and_the_operators_survive() {
+        let out = strip("q 1 0 0 1 0 0 cm BI /IM true /W 1 /H 1 /BPC 1 ID \u{0}\nEI Q BT (kept) Tj ET");
+        assert!(out.contains("(kept) Tj"), "text after the image was lost: {out:?}");
+        assert!(!out.contains("/IM"), "the image dictionary survived: {out:?}");
+        assert!(out.starts_with("q 1 0 0 1 0 0 cm"), "{out:?}");
+    }
+
+    /// TECH_DEBT #86. A `BI` with no `ID`, or no `EI`, used to `break` — which
+    /// discarded the whole remainder of the stream. That is the same 55 KB text
+    /// loss this function was written to prevent, in the malformed case.
+    #[test]
+    fn a_malformed_marker_does_not_discard_the_rest_of_the_stream() {
+        let out = strip("BT (before) Tj ET BI /W 1 BT (after) Tj ET");
+        assert!(out.contains("(after) Tj"), "text after a BI with no ID was lost: {out:?}");
+
+        let out = strip("BT (before) Tj ET BI /W 1 /H 1 /BPC 1 ID \u{0} BT (after) Tj ET");
+        assert!(
+            out.contains("(after)") || out.contains("before"),
+            "an unterminated inline image must not eat everything: {out:?}"
+        );
+    }
+
+    /// `BI` inside a text string is a false positive — parentheses are
+    /// delimiters, so `starts_token` matches it.
+    #[test]
+    fn bi_inside_a_string_is_not_an_inline_image() {
+        let out = strip("BT (BI) Tj (kept) Tj ET");
+        assert!(out.contains("(kept) Tj"), "{out:?}");
+    }
+
+    /// Length is computed from the dictionary, so binary data containing a
+    /// delimiter-bounded `EI` cannot end the image early.
+    #[test]
+    fn binary_data_containing_ei_does_not_end_the_image() {
+        // 4x1 DeviceGray at 8bpc = 4 bytes, chosen so " EI " sits inside them.
+        let out = strip("BI /W 4 /H 1 /BPC 8 /CS /G ID  EI EI (kept) Tj");
+        assert!(out.contains("(kept) Tj"), "{out:?}");
+        assert!(!out.contains("/CS"), "the dictionary survived: {out:?}");
+    }
+
+    #[test]
+    fn computed_lengths_match_the_dictionary() {
+        assert_eq!(inline_image_len(b"BI /IM true /W 1 /H 1 /BPC 1"), Some(1));
+        assert_eq!(inline_image_len(b"BI /W 161 /H 47 /BPC 8 /CS /G"), Some(161 * 47));
+        assert_eq!(inline_image_len(b"BI /W 8 /H 2 /BPC 8 /CS /RGB"), Some(8 * 3 * 2));
+        // Filtered data has no derivable length — fall back to the scan.
+        assert_eq!(inline_image_len(b"BI /W 8 /H 2 /BPC 8 /CS /G /F /Fl"), None);
+        // An indexed colour space needs resources to resolve; do not guess.
+        assert_eq!(inline_image_len(b"BI /W 1 /H 8 /BPC 2 /CS [/I /RGB 3 <00>]"), None);
+    }
+
+    #[test]
+    fn a_stream_with_no_inline_images_is_returned_unchanged() {
+        let src = "BT /F1 12 Tf (hello world) Tj ET";
+        assert_eq!(strip(src), src);
+    }
 }
