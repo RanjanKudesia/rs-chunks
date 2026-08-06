@@ -77,7 +77,7 @@ The default **`pdf-native`** feature adds only page *rasterisation* (via the
 embedded page image to return. Disable default features for `wasm32`:
 
 ```toml
-rs-chunks = { version = "0.1", default-features = false }
+rs-chunks = { version = "0.6", default-features = false }
 ```
 
 PDFs still parse without it; a text-less one reports that it has no text rather

@@ -3,7 +3,7 @@
 # The library import name stays `chunks_rs` (see [lib]), so downstream `use
 # chunks_rs::...` is unaffected.
 name = "rs-chunks"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 description = "Fast, high-fidelity document chunking for RAG — a pure-Rust engine covering 36 file formats (Office, OpenDocument, PDF, email, ebooks, notebooks, and more)."
 authors = ["Ranjan Kudesia <ranjan.kudesia@gmail.com>"]
