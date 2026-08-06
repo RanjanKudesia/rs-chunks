@@ -16,6 +16,13 @@ use super::common::{
 pub struct TableInfo {
     pub name: Option<String>,
     pub is_named_table: bool,
+    /// Whether the source *declares* where the header row is.
+    ///
+    /// An OOXML table part does (`headerRowCount`), so its first row is the
+    /// header. An ODF named range does not — it is a label over a rectangle and
+    /// makes no claim about headers — so an ODS-named region keeps whatever the
+    /// heuristic decided and gains only its name (TECH_DEBT #20).
+    pub declares_header: bool,
     pub start_row: usize,
     pub end_row: usize,
     pub start_col: usize,
@@ -153,6 +160,7 @@ fn parse_table_definition(table_xml: &[u8]) -> Result<Option<TableInfo>, String>
     Ok(Some(TableInfo {
         name: table_name.or(display_name),
         is_named_table: true,
+        declares_header: true,
         start_row,
         end_row,
         start_col,
@@ -256,12 +264,56 @@ fn read_named_tables_for_sheet(
     Ok(tables)
 }
 
+/// ODF names that describe the *page*, not a table. `Print_Area` is written by
+/// every spreadsheet that has a print range set, and calling it a named table
+/// would label an arbitrary rectangle as the user's data.
+const ODS_BUILTIN_NAMES: [&str; 4] = ["Print_Area", "Print_Range", "Repeat_Row", "Repeat_Column"];
+
+/// Label each detected region with the named range that covers it, if any.
+///
+/// "Covers" rather than "equals": a range usually includes the header row that
+/// region detection consumes, so requiring an exact match would never fire.
+fn apply_ods_names(
+    tables: &mut [TableInfo],
+    archive: &mut Option<ZipArchive<std::io::Cursor<Vec<u8>>>>,
+    sheet_name: &str,
+) -> Result<(), String> {
+    let Some(archive) = archive.as_mut() else {
+        return Ok(());
+    };
+    let Some(content) = read_zip_entry(archive, "content.xml")? else {
+        return Ok(());
+    };
+    let ranges: Vec<_> = super::common::get_ods_named_ranges_for_sheet(&content, sheet_name)
+        .into_iter()
+        .filter(|r| {
+            !ODS_BUILTIN_NAMES.contains(&r.name.as_str()) && !r.name.starts_with('_')
+        })
+        .collect();
+    if ranges.is_empty() {
+        return Ok(());
+    }
+    for table in tables.iter_mut() {
+        if let Some(range) = ranges.iter().find(|r| {
+            r.start_row <= table.start_row
+                && r.end_row >= table.end_row
+                && r.start_col <= table.start_col
+                && r.end_col >= table.end_col
+        }) {
+            table.name = Some(range.name.clone());
+            table.is_named_table = true;
+        }
+    }
+    Ok(())
+}
+
 fn build_heuristic_tables(rows: &[&[Data]], base_row: usize) -> Vec<TableInfo> {
     detect_contiguous_regions(rows, base_row)
         .into_iter()
         .map(|region| TableInfo {
             name: None,
             is_named_table: false,
+            declares_header: false,
             start_row: region.start_row,
             end_row: region.end_row,
             start_col: region.start_col,
@@ -332,13 +384,29 @@ pub fn build_table_chunks(
             continue;
         }
 
-        let mut tables = if let Some(ref mut archive) = maybe_archive {
+        let mut tables = if ext == "ods" {
+            Vec::new()
+        } else if let Some(ref mut archive) = maybe_archive {
             read_named_tables_for_sheet(archive, sheet_index + 1)?
         } else {
             Vec::new()
         };
         if tables.is_empty() {
             tables = build_heuristic_tables(&rows, base_row_index);
+        }
+        // `read_named_tables_for_sheet` reads OOXML *table parts*, which ODS
+        // does not have — its named ranges live in `content.xml`. So `table`
+        // mode reported every ODS region unnamed while `sheet` mode listed the
+        // names correctly: the same drift #20 closed for `.xlsb`, still open
+        // for `.ods`. It stayed invisible until a fixture existed whose named
+        // range spans a data region rather than a single cell.
+        //
+        // ODS names *annotate* the detected regions rather than replace them.
+        // An OOXML table part declares what the tables are; an ODF named range
+        // is an arbitrary label over arbitrary cells, so emitting one chunk per
+        // range would drop every cell outside a range from `table` mode.
+        if ext == "ods" {
+            apply_ods_names(&mut tables, &mut maybe_archive, &sheet_name)?;
         }
 
         let mut chunk_index = 0usize;
@@ -350,7 +418,7 @@ pub fn build_table_chunks(
             let col_count = table.end_col - table.start_col + 1;
 
             let mut header_row_abs = table.start_row;
-            if table.is_named_table {
+            if table.declares_header {
                 if table.headers.is_empty() {
                     let header_local = table.start_row.saturating_sub(base_row_index);
                     if let Some(header_row) = rows.get(header_local) {
@@ -396,7 +464,7 @@ pub fn build_table_chunks(
                 table.headers.truncate(col_count);
             }
 
-            let data_start_row = if table.is_named_table {
+            let data_start_row = if table.declares_header {
                 table.start_row + 1
             } else {
                 header_row_abs + 1

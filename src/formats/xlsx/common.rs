@@ -488,6 +488,103 @@ pub fn get_named_table_names_for_sheet(
 /// Parse `table:named-range` elements from an ODS `content.xml`, returning the
 /// names of those attributed to `sheet_name` (via the `table:cell-range-address`
 /// or `table:base-cell-address` prefix, e.g. `"Sheet1.$A$1"`).
+/// One ODS named range: its name and the cell region it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OdsNamedRange {
+    pub name: String,
+    pub start_row: usize,
+    pub end_row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+}
+
+/// Parse an ODF cell reference — `Sheet1.$A$1`, `.$C$4`, `$Sheet1.A1` — into a
+/// 0-based (row, col).
+fn parse_ods_cell_ref(reference: &str) -> Option<(usize, usize)> {
+    let cell = reference.rsplit('.').next()?;
+    let cell = cell.trim_start_matches('$');
+    let mut col = 0usize;
+    let mut chars = cell.chars().peekable();
+    let mut saw_letter = false;
+    while let Some(c) = chars.peek() {
+        if c.is_ascii_alphabetic() {
+            col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+            saw_letter = true;
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if !saw_letter {
+        return None;
+    }
+    let rest: String = chars.collect();
+    let row: usize = rest.trim_start_matches('$').parse().ok()?;
+    (row > 0).then(|| (row - 1, col - 1))
+}
+
+/// Named ranges on `sheet_name`, with the region each one covers.
+///
+/// [`get_named_table_names_for_sheet`] returns only the names, which is all
+/// `sheet` mode needs. `table` mode has to know *where* each range is to decide
+/// whether a detected region is that named table (TECH_DEBT #20).
+pub fn get_ods_named_ranges_for_sheet(
+    content: &[u8],
+    sheet_name: &str,
+) -> Vec<OdsNamedRange> {
+    let mut reader = XmlReader::from_reader(content);
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                if local_name(e.name()).as_slice() == b"named-range" {
+                    let mut name: Option<String> = None;
+                    let mut address: Option<String> = None;
+                    for attr in e.attributes().flatten() {
+                        let key = local_name(QName(attr.key.as_ref()));
+                        let value = attr_value(&attr);
+                        match key.as_slice() {
+                            b"name" => name = Some(value),
+                            b"cell-range-address" => address = Some(value),
+                            _ => {}
+                        }
+                    }
+                    if let (Some(name), Some(address)) = (name, address) {
+                        let on_sheet = address
+                            .split('.')
+                            .next()
+                            .map(|s| s.trim_start_matches('$').trim_matches('\''))
+                            .is_some_and(|s| s == sheet_name);
+                        // A single-cell range has no ':' — `Sheet1.$A$1`. It is
+                        // still a named range, and its region is that one cell.
+                        let (from, to) = match address.split_once(':') {
+                            Some((a, b)) => (a, b),
+                            None => (address.as_str(), address.as_str()),
+                        };
+                        if let (true, Some(a), Some(b)) =
+                            (on_sheet, parse_ods_cell_ref(from), parse_ods_cell_ref(to))
+                        {
+                            out.push(OdsNamedRange {
+                                name,
+                                start_row: a.0.min(b.0),
+                                end_row: a.0.max(b.0),
+                                start_col: a.1.min(b.1),
+                                end_col: a.1.max(b.1),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 fn parse_ods_named_ranges_for_sheet(content: &[u8], sheet_name: &str) -> Vec<String> {
     let mut reader = XmlReader::from_reader(content);
     let mut buf = Vec::new();
