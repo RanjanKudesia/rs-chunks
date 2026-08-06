@@ -189,6 +189,7 @@ pub fn classify_block(block: &str) -> ContentType {
             && lines[0].len() <= 80
             && !lines[0].contains('|')
             && lines.len() == 1
+            && !is_all_caps_non_heading(lines[0], &alpha)
         {
             return ContentType::HeadingSection;
         }
@@ -210,6 +211,49 @@ pub fn classify_block(block: &str) -> ContentType {
     } else {
         ContentType::PlainParagraph
     }
+}
+
+/// Lines that are ALL-CAPS but are not section headings (TECH_DEBT #33).
+///
+/// The rule "a single ALL-CAPS line is a heading" was measured against a
+/// three-document corpus and was right 30 times out of 30 — because all three
+/// documents happened to use capitals only for section titles. Widening the
+/// corpus with real books ([#34](TECH_DEBT.md)) produced counter-examples that
+/// nobody constructed, and these are the three shapes they take.
+///
+/// Deliberately narrow. Each rule was checked against **28 genuine headings**
+/// from the corpus — including `WARNING`, `NOTE`, `CAUTION`, `NOTE:` and
+/// `ETYMOLOGY.` — and loses none of them. The admonition blocklist the tracker
+/// originally proposed is *not* here: none of the real false positives is an
+/// admonition, and in `adversarial_allcaps.txt` those words genuinely are
+/// headings.
+fn is_all_caps_non_heading(line: &str, alpha: &str) -> bool {
+    let t = line.trim();
+
+    // A decorative fence is a machine banner, not a title:
+    // `*** START OF THE PROJECT GUTENBERG EBOOK … ***`.
+    if t.starts_with("***") && t.ends_with("***") {
+        return true;
+    }
+
+    // Too few letters to be a title — `1.F.` is a licence clause number.
+    if alpha.chars().count() < 3 {
+        return true;
+    }
+
+    // A bare numeral printed above the title it belongs to: `I.`, `II.`, `III.`
+    // The trailing period is required, so a word like `MIX` is untouched.
+    if t.ends_with('.') {
+        let stem = &t[..t.len() - 1];
+        if !stem.is_empty() && stem.chars().all(|c| "IVXLCDM".contains(c)) {
+            return true;
+        }
+    }
+
+    // A title does not end mid-clause. `MOBY-DICK;` is a title *continued* on
+    // the next line. A trailing colon is NOT included — `NOTE:` and `WARNING:`
+    // are ordinary heading punctuation.
+    t.ends_with(';') || t.ends_with(',')
 }
 
 pub fn is_list_block(lines: &[&str]) -> bool {
@@ -558,5 +602,81 @@ mod tests {
     fn classify_prose_medium_is_plain() {
         let t = "x".repeat(200);
         assert_eq!(classify_prose(&t).as_str(), "plain_paragraph");
+    }
+}
+
+#[cfg(test)]
+mod all_caps_tests {
+    use super::*;
+
+    fn is_heading(line: &str) -> bool {
+        classify_block(line) == ContentType::HeadingSection
+    }
+
+    /// The false positives real books produced once the corpus was widened
+    /// (TECH_DEBT #33, #34). None of these was constructed.
+    #[test]
+    fn machine_markers_and_numbering_are_not_headings() {
+        for line in [
+            "*** START OF THE PROJECT GUTENBERG EBOOK MOBY DICK; OR, THE WHALE ***",
+            "*** END OF THE PROJECT GUTENBERG EBOOK MOBY DICK; OR, THE WHALE ***",
+            "1.F.",
+            "MOBY-DICK;",
+            "I.",
+            "II.",
+            "III.",
+        ] {
+            assert!(!is_heading(line), "{line:?} must not be a heading");
+        }
+    }
+
+    /// Every genuine heading the corpus contains must survive the narrowing.
+    /// The admonition blocklist the tracker proposed would have failed this.
+    #[test]
+    fn genuine_all_caps_headings_survive() {
+        for line in [
+            "THE ECONOMICS OF OPEN SOURCE SOFTWARE",
+            "EXECUTIVE SUMMARY",
+            "A SCANDAL IN BOHEMIA",
+            "ETYMOLOGY.",
+            "EXTRACTS.",
+            "CONTENTS",
+            "INTRODUCTION",
+            "WARNING",
+            "NOTE",
+            "CAUTION",
+            "APPENDIX A: GLOSSARY",
+            "KEY METRICS (PSEUDO TABLE)",
+            "DATES, MONEY, VERSIONS",
+            "THE FULL PROJECT GUTENBERG™ LICENSE",
+        ] {
+            assert!(is_heading(line), "{line:?} must stay a heading");
+        }
+    }
+
+    /// A trailing colon is ordinary heading punctuation, unlike a semicolon or
+    /// comma — which mark a line continued onto the next.
+    #[test]
+    fn a_trailing_colon_is_not_a_continuation() {
+        assert!(is_heading("NOTE:"));
+        assert!(is_heading("WARNING:"));
+        assert!(!is_heading("MOBY-DICK;"));
+        assert!(!is_heading("DATES, MONEY,"));
+    }
+
+    /// The Roman-numeral rule requires the trailing period, so an ordinary word
+    /// made only of those letters is untouched.
+    #[test]
+    fn a_word_of_roman_letters_is_still_a_heading() {
+        assert!(is_heading("MIX"));
+        assert!(is_heading("CIVIL"));
+        assert!(!is_heading("XVI."));
+    }
+
+    /// Honest limit: an acronym string is not lexically separable from a title,
+    /// and this rule does not pretend otherwise (#33).
+    #[test]
+    fn an_acronym_line_is_still_read_as_a_heading() {
+        assert!(is_heading("NASA JPL USA"));
     }
 }
