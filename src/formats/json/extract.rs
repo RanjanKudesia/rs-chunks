@@ -210,6 +210,13 @@ mod tests {
     #[test]
     fn record_starts_match_the_documents_own_blocks() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test_files");
+        // The fixture corpus lives at the workspace root and is not shipped with
+        // the repo — corpus-less checkouts (release CI runs `--lib`) skip here.
+        // When the corpus IS present, the `checked >= 10` guard below stays loud.
+        if !dir.exists() {
+            eprintln!("skipping: fixture corpus not present at {}", dir.display());
+            return;
+        }
         let mut checked = 0;
         for sub in ["json", "jsonl"] {
             let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
