@@ -21,7 +21,11 @@ const RESOURCE_KEYS: [&[u8]; 5] = [b"Font", b"XObject", b"ExtGState", b"ColorSpa
 
 pub(crate) struct Page {
     pub content: PageContent,
+    // Page geometry captured from /MediaBox; not yet consumed downstream but
+    // only recoverable here.
+    #[allow(dead_code)]
     pub width: f32,
+    #[allow(dead_code)]
     pub height: f32,
 }
 

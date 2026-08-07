@@ -2,8 +2,20 @@
 //! the package differently (indexed paragraphs, paragraph events, block tree),
 //! then builds chunks — faithful to the reference engine.
 
+mod block_api;
+mod block_model;
 pub mod common;
+mod docx_aux;
+mod harvest;
+mod images_rels;
 mod page_aware;
+mod stream_walker;
+mod structural_build;
+mod structural_build_images;
+mod structural_model;
+mod structural_text;
+mod table_render;
+mod xml_text;
 mod section;
 mod semantic;
 mod sentence;

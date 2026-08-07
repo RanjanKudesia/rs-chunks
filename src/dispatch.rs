@@ -1,6 +1,10 @@
 //! Source-agnostic dispatch: route a file to the right engine by extension,
 //! mirroring the Python `get_chunks()` routing (including the delimited/
 //! spreadsheet special-casing) so behaviour matches the reference package.
+//!
+//! Every public entry point here runs the parse behind a `catch_unwind`
+//! boundary: a panic anywhere in the engine (or a third-party parser) is
+//! converted into [`ChunkError::Parse`] instead of unwinding into the caller.
 
 use std::path::Path;
 
@@ -8,13 +12,50 @@ use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 use crate::formats;
 
+/// Run `f` behind a panic boundary, converting any panic into
+/// [`ChunkError::Parse`] so adversarial inputs can never unwind across the
+/// public dispatch API.
+///
+/// `AssertUnwindSafe` is justified: the closure only captures shared references
+/// to caller-owned input (`&[u8]` / `&str`) plus `Copy` scalars, the engine
+/// keeps no global mutable state, and on the panic path every partially-built
+/// value is owned by the closure and dropped — nothing observable is left in a
+/// broken state.
+fn catch_parser_panics<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            Err(ChunkError::Parse(format!("internal parser panic: {msg}")))
+        }
+    }
+}
+
 /// Chunk a document supplied as raw bytes. `filename` is used only for extension
 /// detection (routing) — never persisted under that name.
 ///
-/// Routes to each format's no-filesystem `chunk_from_bytes` where available (these
-/// work on wasm32). Formats not yet refactored fall back to a temp file on native
-/// targets; on wasm32 they return [`ChunkError::Unsupported`] until refactored.
+/// Routes to each format's no-filesystem `chunk_from_bytes`; unsupported
+/// extensions return [`ChunkError::Unsupported`]. See [`get_chunks`] for the
+/// `sentences_per_chunk == 3` spreadsheet sentinel.
 pub fn get_chunks_from_bytes(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    catch_parser_panics(|| {
+        get_chunks_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    })
+}
+
+fn get_chunks_from_bytes_inner(
     data: &[u8],
     filename: &str,
     mode: &str,
@@ -33,6 +74,8 @@ pub fn get_chunks_from_bytes(
         }
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            // Sentinel (parity with the Python default): 3 == "caller left the
+            // default", mapped to rows_per_chunk = 1. See `get_chunks`.
             let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
             formats::xlsx::chunk_from_bytes(data, &ext, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000)
         }
@@ -51,12 +94,16 @@ pub fn get_chunks_from_bytes(
         "doc" => formats::doc::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "ppt" => formats::ppt::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "pdf" => formats::pdf::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        _ => bytes_fallback_chunks(data, &ext, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
+        other => Err(ChunkError::Unsupported(format!("Unsupported file type '.{other}'"))),
     }
 }
 
 /// Convert bytes to Markdown; see [`get_chunks_from_bytes`] for the routing note.
 pub fn get_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
+    catch_parser_panics(|| get_markdown_from_bytes_inner(data, filename))
+}
+
+fn get_markdown_from_bytes_inner(data: &[u8], filename: &str) -> Result<String> {
     let ext = ext_of(filename);
     match ext.as_str() {
         "csv" => formats::csv::to_markdown_from_bytes(data, None, "utf-8"),
@@ -77,7 +124,7 @@ pub fn get_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
         "doc" => formats::doc::to_markdown_from_bytes(data),
         "ppt" => formats::ppt::to_markdown_from_bytes(data),
         "pdf" => formats::pdf::to_markdown_from_bytes(data),
-        _ => bytes_fallback_markdown(data, &ext),
+        other => Err(ChunkError::Unsupported(format!("get_markdown does not support '.{other}'"))),
     }
 }
 
@@ -94,10 +141,27 @@ pub fn get_chunks_with_images_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    catch_parser_panics(|| {
+        get_chunks_with_images_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn get_chunks_with_images_from_bytes_inner(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
     let ext = ext_of(filename);
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            // Sentinel (parity with the Python default): 3 == "caller left the
+            // default", mapped to rows_per_chunk = 1. See `get_chunks`.
             let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
             formats::xlsx::chunk_with_images_from_bytes(data, &ext, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000)
         }
@@ -113,12 +177,16 @@ pub fn get_chunks_with_images_from_bytes(
         "ppt" => formats::ppt::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         "pdf" => formats::pdf::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
         // No embedded-image support: chunks only, empty image list.
-        _ => Ok((get_chunks_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?, Vec::new())),
+        _ => Ok((get_chunks_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?, Vec::new())),
     }
 }
 
 /// Convert bytes to Markdown and return extracted image bytes (`list_images=True`).
 pub fn get_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+    catch_parser_panics(|| get_markdown_with_images_from_bytes_inner(data, filename))
+}
+
+fn get_markdown_with_images_from_bytes_inner(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
     let ext = ext_of(filename);
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => formats::xlsx::to_markdown_with_images_from_bytes(data, &ext),
@@ -133,76 +201,7 @@ pub fn get_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Resul
         "doc" => formats::doc::to_markdown_with_images_from_bytes(data),
         "ppt" => formats::ppt::to_markdown_with_images_from_bytes(data),
         "pdf" => formats::pdf::to_markdown_with_images_from_bytes(data),
-        _ => Ok((get_markdown_from_bytes(data, filename)?, Vec::new())),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments)]
-fn bytes_fallback_chunks(
-    data: &[u8],
-    ext: &str,
-    mode: &str,
-    window_size: usize,
-    overlap: usize,
-    sentences_per_chunk: usize,
-    paragraphs_per_page: usize,
-) -> Result<Vec<Chunk>> {
-    let tmp = TempFile::new(data, ext)?;
-    get_chunks(tmp.path(), mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[allow(clippy::too_many_arguments)]
-fn bytes_fallback_chunks(_: &[u8], ext: &str, _: &str, _: usize, _: usize, _: usize, _: usize) -> Result<Vec<Chunk>> {
-    Err(ChunkError::Unsupported(format!("bytes chunking for '.{ext}' is not yet available on wasm32")))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn bytes_fallback_markdown(data: &[u8], ext: &str) -> Result<String> {
-    let tmp = TempFile::new(data, ext)?;
-    get_markdown(tmp.path())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn bytes_fallback_markdown(_: &[u8], ext: &str) -> Result<String> {
-    Err(ChunkError::Unsupported(format!("bytes markdown for '.{ext}' is not yet available on wasm32")))
-}
-
-/// Minimal RAII temp file (no external deps). Removed on drop.
-#[cfg(not(target_arch = "wasm32"))]
-struct TempFile {
-    path: String,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl TempFile {
-    fn new(data: &[u8], ext: &str) -> Result<Self> {
-        use std::io::Write;
-        let mut dir = std::env::temp_dir();
-        let unique = format!(
-            "chunks_rs_{}_{}.{ext}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        dir.push(unique);
-        let path = dir.to_string_lossy().to_string();
-        let mut f = std::fs::File::create(&path).map_err(ChunkError::Io)?;
-        f.write_all(data).map_err(ChunkError::Io)?;
-        Ok(TempFile { path })
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        _ => Ok((get_markdown_from_bytes_inner(data, filename)?, Vec::new())),
     }
 }
 
@@ -221,7 +220,31 @@ fn csv_rows_per_chunk(sentences_per_chunk: usize) -> usize {
 /// Chunk any supported document by path. `mode` is passed through to the engine
 /// ("default" selects each format's natural strategy); the delimited formats map
 /// it onto their row/window/page strategies exactly like the Python entry point.
+///
+/// # The `sentences_per_chunk == 3` spreadsheet sentinel
+///
+/// For spreadsheet extensions (`xlsx`/`xls`/`xlsm`/`xlsb`/`ods`/`xltx`/`xltm`)
+/// the value `3` — the Python API's *default* for `sentences_per_chunk` — is
+/// treated as "caller didn't ask" and mapped to `rows_per_chunk = 1`, the
+/// spreadsheet default. This mirrors the reference Python `get_chunks()`
+/// exactly and is a deliberate parity constraint. The consequence: a caller
+/// who *deliberately* wants 3 rows per chunk cannot express it through this
+/// entry point (3 is unreachable); use `formats::xlsx::chunk` /
+/// `chunk_with_options` directly, which take `rows_per_chunk` verbatim.
 pub fn get_chunks(
+    file_path: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    catch_parser_panics(|| {
+        get_chunks_inner(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    })
+}
+
+fn get_chunks_inner(
     file_path: &str,
     mode: &str,
     window_size: usize,
@@ -255,6 +278,9 @@ pub fn get_chunks(
         // ── Spreadsheets (calamine) ─────────────────────────────────────
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            // Sentinel (parity with the Python default): 3 == "caller left the
+            // default", mapped to rows_per_chunk = 1. A deliberate 3 is
+            // unreachable here — see the doc comment on `get_chunks`.
             let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
             formats::xlsx::chunk(
                 file_path, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000,
@@ -287,6 +313,10 @@ pub fn get_chunks(
 
 /// Convert a supported document to Markdown by path.
 pub fn get_markdown(file_path: &str) -> Result<String> {
+    catch_parser_panics(|| get_markdown_inner(file_path))
+}
+
+fn get_markdown_inner(file_path: &str) -> Result<String> {
     let ext = ext_of(file_path);
     match ext.as_str() {
         "csv" | "tsv" => {
@@ -310,5 +340,31 @@ pub fn get_markdown(file_path: &str) -> Result<String> {
         "pdf" => formats::pdf::to_markdown(file_path),
         "epub" => formats::epub::to_markdown(file_path),
         other => Err(ChunkError::Unsupported(format!("get_markdown does not support '.{other}'"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_boundary_converts_panics_to_parse_errors() {
+        let err = catch_parser_panics::<()>(|| panic!("boom at offset 42")).unwrap_err();
+        match err {
+            ChunkError::Parse(m) => {
+                assert!(m.contains("internal parser panic"), "unexpected message: {m}");
+                assert!(m.contains("boom at offset 42"), "payload lost: {m}");
+            }
+            other => panic!("expected Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panic_boundary_passes_results_through() {
+        assert!(catch_parser_panics(|| Ok(7)).is_ok_and(|v| v == 7));
+        assert!(matches!(
+            catch_parser_panics::<()>(|| Err(ChunkError::InvalidArg("x".into()))),
+            Err(ChunkError::InvalidArg(_))
+        ));
     }
 }

@@ -59,6 +59,9 @@ pub(crate) struct Line {
 }
 
 impl Line {
+    // Unused since blank filtering moved into region assembly; retained as the
+    // canonical definition of "blank" for this type.
+    #[allow(dead_code)]
     pub fn is_blank(&self) -> bool {
         self.text.trim().is_empty()
     }

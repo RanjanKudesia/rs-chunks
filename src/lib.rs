@@ -1,9 +1,3 @@
-// The format modules vendor complete parsers ported from the reference engine.
-// Some internal helpers (e.g. image-extraction and streaming aux paths) are
-// retained for fidelity and future public surface but are not all wired into the
-// current API yet — allow the resulting dead-code rather than delete proven code.
-#![allow(dead_code)]
-
 //! # chunks-rs
 //!
 //! Fast, high-fidelity document chunking for RAG pipelines — a pure-Rust engine

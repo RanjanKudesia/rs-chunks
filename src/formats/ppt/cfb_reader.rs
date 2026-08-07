@@ -1,7 +1,8 @@
 use std::io::{Cursor, Read};
 
-fn open_cfb(bytes: &[u8]) -> Result<cfb::CompoundFile<Cursor<Vec<u8>>>, String> {
-    cfb::CompoundFile::open(Cursor::new(bytes.to_vec()))
+fn open_cfb(bytes: &[u8]) -> Result<cfb::CompoundFile<Cursor<&[u8]>>, String> {
+    // Borrowed cursor: the CFB is read-only here, so no copy of the file bytes.
+    cfb::CompoundFile::open(Cursor::new(bytes))
         .map_err(|e| format!("Cannot open .ppt file (invalid CFB format): {e}"))
 }
 

@@ -263,10 +263,11 @@ pub fn extract_doc_images(file_path: &str) -> Result<Vec<DocImage>, String> {
 }
 
 pub fn extract_doc_images_bytes(bytes: &[u8]) -> Result<Vec<DocImage>, String> {
-    let word_doc = cfb_reader::read_word_document_stream(bytes)?;
+    let mut cfb = cfb_reader::DocCfb::open(bytes)?;
+    let word_doc = cfb.word_document_stream()?;
     let fib: Fib = fib::parse_fib(&word_doc)?;
-    let table = cfb_reader::read_table_stream(bytes, fib.f_which_tbl_stm)?;
-    let data_stream = cfb_reader::read_data_stream(bytes).unwrap_or(None);
+    let table = cfb.table_stream(fib.f_which_tbl_stm)?;
+    let data_stream = cfb.data_stream().unwrap_or(None);
     let pieces =
         piece_table::parse_pieces(&table, fib.fc_clx, fib.lcb_clx, fib.ccp_text).unwrap_or_default();
 

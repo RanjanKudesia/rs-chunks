@@ -12,7 +12,7 @@ use encoding_rs::{Encoding, BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1
 
 use super::rtf::compressed_rtf_to_text;
 
-type Cfb = cfb::CompoundFile<std::io::Cursor<Vec<u8>>>;
+type Cfb<'a> = cfb::CompoundFile<std::io::Cursor<&'a [u8]>>;
 
 // ── Property ids (PidTag*, hex) ───────────────────────────────────────────────
 const PID_SUBJECT: u16 = 0x0037;
@@ -81,7 +81,7 @@ pub struct MsgDocument {
 
 // ── Low-level CFB / property access ───────────────────────────────────────────
 
-fn read_stream(cfb: &mut Cfb, path: &str) -> Option<Vec<u8>> {
+fn read_stream(cfb: &mut Cfb<'_>, path: &str) -> Option<Vec<u8>> {
     let mut s = cfb.open_stream(path).ok()?;
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).ok()?;
@@ -120,7 +120,7 @@ fn decode_ansi(bytes: &[u8], codepage: u32) -> String {
 }
 
 /// Read a string property `<prefix>/__substg1.0_<pid><type>`, Unicode first.
-fn read_string(cfb: &mut Cfb, prefix: &str, pid: u16, codepage: u32) -> Option<String> {
+fn read_string(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, codepage: u32) -> Option<String> {
     let hex = format!("{pid:04X}");
     if let Some(bytes) = read_stream(cfb, &format!("{prefix}/__substg1.0_{hex}001F")) {
         let (d, _, _) = encoding_rs::UTF_16LE.decode(&bytes);
@@ -138,14 +138,14 @@ fn read_string(cfb: &mut Cfb, prefix: &str, pid: u16, codepage: u32) -> Option<S
     None
 }
 
-fn read_binary(cfb: &mut Cfb, prefix: &str, pid: u16) -> Option<Vec<u8>> {
+fn read_binary(cfb: &mut Cfb<'_>, prefix: &str, pid: u16) -> Option<Vec<u8>> {
     read_stream(cfb, &format!("{prefix}/__substg1.0_{pid:04X}0102"))
 }
 
 /// Fixed-width property lookup in `<prefix>/__properties_version1.0`. Entries are
 /// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. `header` is 32 at the top
 /// level, 24 inside recipient/attachment/embedded sub-storages.
-fn read_fixed_prop(cfb: &mut Cfb, prefix: &str, pid: u16, header: usize) -> Option<(u16, [u8; 8])> {
+fn read_fixed_prop(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<(u16, [u8; 8])> {
     let data = read_stream(cfb, &format!("{prefix}/__properties_version1.0"))?;
     let mut off = header;
     while off + 16 <= data.len() {
@@ -161,7 +161,7 @@ fn read_fixed_prop(cfb: &mut Cfb, prefix: &str, pid: u16, header: usize) -> Opti
     None
 }
 
-fn read_u32_prop(cfb: &mut Cfb, prefix: &str, pid: u16, header: usize) -> Option<u32> {
+fn read_u32_prop(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<u32> {
     let (_, v) = read_fixed_prop(cfb, prefix, pid, header)?;
     Some(u32::from_le_bytes([v[0], v[1], v[2], v[3]]))
 }
@@ -195,24 +195,24 @@ fn filetime_to_iso(ft: u64) -> Option<String> {
     Some(format!("{year:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
 }
 
-fn read_date(cfb: &mut Cfb, pid: u16) -> Option<String> {
+fn read_date(cfb: &mut Cfb<'_>, pid: u16) -> Option<String> {
     let (_, v) = read_fixed_prop(cfb, "", pid, 32)?;
     filetime_to_iso(u64::from_le_bytes(v))
 }
 
 /// Read a PT_SYSTIME property (8-byte FILETIME) → ISO string.
-fn read_systime(cfb: &mut Cfb, pid: u16) -> Option<String> {
+fn read_systime(cfb: &mut Cfb<'_>, pid: u16) -> Option<String> {
     let (_, v) = read_fixed_prop(cfb, "", pid, 32)?;
     filetime_to_iso(u64::from_le_bytes(v))
 }
 
 /// Read a PT_DOUBLE property (8-byte little-endian f64).
-fn read_double(cfb: &mut Cfb, pid: u16) -> Option<f64> {
+fn read_double(cfb: &mut Cfb<'_>, pid: u16) -> Option<f64> {
     let (_, v) = read_fixed_prop(cfb, "", pid, 32)?;
     Some(f64::from_le_bytes(v))
 }
 
-fn resolve_codepage(cfb: &mut Cfb) -> u32 {
+fn resolve_codepage(cfb: &mut Cfb<'_>) -> u32 {
     // Prefer PidTagMessageCodepage (3FFD); fall back to PidTagInternetCodepage
     // (3FDE). A 65001 (UTF-8) value here is handled safely in `decode_ansi`
     // (which validates and falls back to cp1252 for single-byte 001E streams).
@@ -224,7 +224,7 @@ fn resolve_codepage(cfb: &mut Cfb) -> u32 {
 // ── Sub-storage enumeration (recipients / attachments) ────────────────────────
 
 /// Names of immediate child storages of `parent` (root = "/") matching `prefix`.
-fn child_storages(cfb: &mut Cfb, parent: &str, prefix: &str) -> Vec<String> {
+fn child_storages(cfb: &mut Cfb<'_>, parent: &str, prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(entries) = cfb.read_storage(parent) {
         for e in entries {
@@ -276,7 +276,7 @@ fn usable_email(addr_type: Option<&str>, value: Option<String>) -> Option<String
     Some(trimmed.to_string())
 }
 
-fn read_recipients(cfb: &mut Cfb, codepage: u32, doc: &mut MsgDocument) {
+fn read_recipients(cfb: &mut Cfb<'_>, codepage: u32, doc: &mut MsgDocument) {
     let storages = child_storages(cfb, "/", "__recip_version1.0");
     for st in storages {
         let prefix = format!("/{st}");
@@ -362,7 +362,7 @@ fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-fn read_attachments(cfb: &mut Cfb, codepage: u32, depth: usize, doc: &mut MsgDocument) {
+fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut MsgDocument) {
     if depth > 3 {
         return; // guard against pathological nesting
     }
@@ -424,7 +424,7 @@ fn read_attachments(cfb: &mut Cfb, codepage: u32, depth: usize, doc: &mut MsgDoc
 
 /// Minimal recursive extraction of an embedded message sub-storage (subject +
 /// body only — enough to inline attachment content).
-fn extract_embedded(cfb: &mut Cfb, prefix: &str, depth: usize) -> Option<MsgDocument> {
+fn extract_embedded(cfb: &mut Cfb<'_>, prefix: &str, depth: usize) -> Option<MsgDocument> {
     if depth > 3 {
         return None;
     }
@@ -458,7 +458,7 @@ fn html_to_text(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn read_body(cfb: &mut Cfb, prefix: &str, codepage: u32) -> Option<String> {
+fn read_body(cfb: &mut Cfb<'_>, prefix: &str, codepage: u32) -> Option<String> {
     // 1) Plain body — cleanest for chunking, present in almost all messages.
     if let Some(b) = read_string(cfb, prefix, PID_BODY, codepage) {
         if !b.trim().is_empty() {
@@ -508,7 +508,7 @@ fn task_status_label(v: u32) -> &'static str {
 
 /// Item-type-specific fields, resolved via the named-property map for
 /// appointments/tasks and standard `0x3A**` properties for contacts.
-fn read_item_fields(cfb: &mut Cfb, nameid: &super::nameid::NameIdMap, codepage: u32, doc: &mut MsgDocument) {
+fn read_item_fields(cfb: &mut Cfb<'_>, nameid: &super::nameid::NameIdMap, codepage: u32, doc: &mut MsgDocument) {
     use super::nameid::{PSETID_APPOINTMENT, PSETID_TASK};
     let class = doc.message_class.to_ascii_lowercase();
 
@@ -577,7 +577,8 @@ pub fn extract_document(file_path: &str) -> Result<MsgDocument, String> {
 }
 
 pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
-    let mut cfb = cfb::CompoundFile::open(std::io::Cursor::new(bytes.to_vec()))
+    // Borrowed cursor: the CFB is read-only here, so no copy of the file bytes.
+    let mut cfb = cfb::CompoundFile::open(std::io::Cursor::new(bytes))
         .map_err(|e| format!("Not a valid .msg (CFB) file: {e}"))?;
 
     // Sanity: must look like a MAPI message store.

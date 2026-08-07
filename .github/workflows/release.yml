@@ -28,6 +28,19 @@ jobs:
           cargo build --release
           cargo build --release --target wasm32-unknown-unknown --no-default-features
 
+      # The fixture corpus (../test_files) lives outside this repo, so the
+      # fixture-driven integration tests in tests/ cannot run on CI (they fail
+      # loudly on a missing corpus by design). What runs here instead:
+      #   1. every inline #[cfg(test)] unit test (--lib), and
+      #   2. tests/adversarial_inputs.rs, which synthesises corrupt inputs
+      #      in-memory and needs no fixtures (panic-boundary + malformed-MIME
+      #      coverage).
+      # The full fixture suite runs locally via plain `cargo test`.
+      - name: Test
+        run: |
+          cargo test --release --lib
+          cargo test --release --test adversarial_inputs
+
       - name: Get crates.io token via OIDC
         uses: rust-lang/crates-io-auth-action@v1
         id: auth

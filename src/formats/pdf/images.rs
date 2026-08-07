@@ -20,6 +20,9 @@ use super::filters::{self, Codec};
 const MAX_PIXELS: u64 = 100_000_000;
 
 pub(crate) struct Image {
+    // Image naming derives the extension elsewhere; kept alongside the bytes
+    // so decoders stay self-describing.
+    #[allow(dead_code)]
     pub extension: &'static str,
     pub bytes: Vec<u8>,
 }

@@ -8,7 +8,12 @@
 
 use std::fmt;
 
+/// Error type returned by every public entry point.
+///
+/// Marked `#[non_exhaustive]`: downstream `match`es need a wildcard arm, so new
+/// variants can be added without a semver-major bump.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ChunkError {
     /// The file extension / format is not handled by the engine.
     Unsupported(String),

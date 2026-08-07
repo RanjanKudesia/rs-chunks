@@ -69,17 +69,6 @@ pub(crate) fn dedup_images(images: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u
     out
 }
 
-/// The chunking modes every markdown-pipeline format supports.
-pub(crate) const MODES: &[&str] = &[
-    "default",
-    "structural",
-    "section",
-    "semantic",
-    "sentence",
-    "page_aware",
-    "sliding_window",
-];
-
 fn build_records(
     loaded: &Loaded,
     mode: &str,

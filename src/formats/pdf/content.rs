@@ -54,7 +54,11 @@ pub(crate) struct PlacedImage {
     /// Top edge, so an image sorts against the text line it interrupts.
     pub top: f32,
     pub left: f32,
+    // Recorded at draw time but not yet consumed by layout; kept because the
+    // content-stream walker is the only place they can be captured.
+    #[allow(dead_code)]
     pub width: f32,
+    #[allow(dead_code)]
     pub height: f32,
 }
 

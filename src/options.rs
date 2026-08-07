@@ -1,9 +1,13 @@
-//! Chunking modes and the unified options bag used by the dispatch layer.
+//! Chunking modes and the per-format options bag.
 //!
-//! Per-format modules also expose faithful, format-specific entry points; this
-//! `ChunkOptions` is the single knob-set the source-agnostic `get_chunks` /
-//! `stream_chunks` dispatch routes through, mirroring the keyword arguments the
-//! Python `get_chunks()` accepted.
+//! [`ChunkOptions`] is consumed by the per-format `chunk_with_options` entry
+//! points (e.g. `formats::docx::chunk_with_options`); its field defaults mirror
+//! the keyword-argument defaults of the Python `get_chunks()`. The
+//! source-agnostic dispatch layer (`dispatch::get_chunks` and friends) does
+//! **not** take a `ChunkOptions` — it takes positional arguments (`mode: &str`,
+//! `window_size`, `overlap`, `sentences_per_chunk`, `paragraphs_per_page`) to
+//! match the Python entry point one-for-one. There is no dispatch-level
+//! streaming API; streaming is per-format (`formats::<fmt>::stream`).
 
 /// The chunking strategies across formats. Not every mode applies to every
 /// format; each format validates and maps `mode` onto the strategies it
@@ -40,8 +44,20 @@ impl ChunkMode {
         }
     }
 
+    /// Parse a mode string. Inherent convenience that delegates to the
+    /// [`std::str::FromStr`] impl but returns `Option` (kept for
+    /// backwards-compatibility with existing callers).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<ChunkMode> {
-        Some(match s {
+        <ChunkMode as std::str::FromStr>::from_str(s).ok()
+    }
+}
+
+impl std::str::FromStr for ChunkMode {
+    type Err = crate::error::ChunkError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "default" => ChunkMode::Default,
             "section" => ChunkMode::Section,
             "semantic" => ChunkMode::Semantic,
@@ -52,7 +68,11 @@ impl ChunkMode {
             "row" => ChunkMode::Row,
             "table" => ChunkMode::Table,
             "sheet" => ChunkMode::Sheet,
-            _ => return None,
+            other => {
+                return Err(crate::error::ChunkError::InvalidArg(format!(
+                    "unknown chunk mode '{other}'"
+                )))
+            }
         })
     }
 }

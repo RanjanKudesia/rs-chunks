@@ -31,9 +31,10 @@ pub(super) struct ParsedDoc {
 
 impl ParsedDoc {
     pub fn open(bytes: &[u8]) -> Result<Self, String> {
-        let word_doc = cfb_reader::read_word_document_stream(bytes)?;
+        let mut cfb = cfb_reader::DocCfb::open(bytes)?;
+        let word_doc = cfb.word_document_stream()?;
         let fib = fib::parse_fib(&word_doc)?;
-        let table = cfb_reader::read_table_stream(bytes, fib.f_which_tbl_stm)?;
+        let table = cfb.table_stream(fib.f_which_tbl_stm)?;
         let stylesheet = stylesheet::parse_stylesheet(&table, fib.fc_stshf, fib.lcb_stshf)?;
         let props = super::paragraph_props::parse_paragraph_props(
             &word_doc,

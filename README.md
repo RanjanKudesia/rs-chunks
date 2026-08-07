@@ -88,18 +88,23 @@ than returning page renders.
 Validated against the `py-chunks` reference implementation over **every fixture ×
 every mode** (`examples/parity_dump.rs` + `examples/parity_check.py`):
 
-- **2204 / 2214 chunk comparisons byte-identical (99.5%)**
-- **1056 / 1056** image extractions identical
-- **273 / 273** markdown conversions identical
+- **3,222 / 3,222 chunk comparisons byte-identical (100%)** — last re-verified
+  2026-08-08
 
-All OOXML, legacy binary (`.doc`/`.ppt`), OpenDocument, email, ebook and
-delimited families are byte-identical. The remaining differences are confined to
-`semantic`-mode `primary_merge_reason`, a tie-break the reference engine resolves
-via randomized `HashMap` iteration order.
+Every family — OOXML, legacy binary (`.doc`/`.ppt`), OpenDocument, email,
+ebook, PDF, notebook and delimited — is byte-identical, including
+`semantic`-mode `primary_merge_reason`: all engines share the same
+deterministic tie-break (sort by count descending, then key ascending), so
+there is no residual nondeterminism. The same harness family also checks image
+extraction (`images_dump.rs`) and markdown conversion (`md_images_dump.rs`)
+byte-for-byte.
 
 Streaming (`stream`) yields the same chunks as `chunk`. Adversarial inputs fail
-with a clean `ChunkError` and never panic — panic-prone third-party parsers are
-wrapped.
+with a clean `ChunkError` and never panic: every dispatch entry point
+(`get_chunks`, `get_markdown`, and the `_from_bytes` / `_with_images` variants)
+runs the parse behind a `catch_unwind` boundary, so even a panic in a
+third-party parser surfaces as `ChunkError::Parse` instead of unwinding into
+the caller.
 
 ## Develop
 

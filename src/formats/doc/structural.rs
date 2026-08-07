@@ -36,6 +36,8 @@ pub(crate) fn load_doc_paragraphs_bytes(bytes: &[u8]) -> Result<Vec<DocParagraph
 /// Like [`load_doc_paragraphs`] but keeps each paragraph's raw ordinal, so
 /// callers can interleave content anchored by raw paragraph index (used by
 /// the image-aware markdown converter).
+// Path-based twin of the used `_bytes` variant, kept for loader API symmetry.
+#[allow(dead_code)]
 pub(crate) fn load_doc_paragraphs_indexed(
     file_path: &str,
 ) -> Result<Vec<(usize, DocParagraph)>, String> {

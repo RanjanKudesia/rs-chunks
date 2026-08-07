@@ -43,6 +43,9 @@ pub enum DetectedEncoding {
 }
 
 impl DetectedEncoding {
+    // No current caller; kept so the canonical label of each detection result
+    // lives next to the detector.
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             DetectedEncoding::Utf8 => "utf-8",

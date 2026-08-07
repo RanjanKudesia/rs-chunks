@@ -1,9 +1,21 @@
 //! PowerPoint OOXML (`.pptx` / `.potx` / `.potm` / `.ppsx` / `.ppsm`) chunking.
 //! Every mode builds directly from the package bytes.
 
-pub mod common;
+mod archive;
 mod chart;
+mod classify;
+pub mod common;
 mod diagram;
+mod md_blocks;
+mod md_rels;
+mod md_render;
+mod md_slide_parse;
+mod presentation;
+mod slide_images;
+mod slide_model;
+mod slide_xml;
+mod text_split;
+mod xml_util;
 mod page_aware;
 mod section;
 mod semantic;

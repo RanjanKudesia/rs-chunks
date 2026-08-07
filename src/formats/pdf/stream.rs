@@ -60,6 +60,9 @@ enum Backend {
     #[cfg(not(target_arch = "wasm32"))]
     Threaded(std::sync::mpsc::Receiver<Result<Chunk>>),
     /// The work, deferred until the first `next()` and then drained.
+    // Constructed only on wasm32 (native runs the same work on a worker thread
+    // as `Threaded`), so native builds see it as never-constructed.
+    #[allow(dead_code)]
     Deferred(Box<Deferred>),
     /// `default` mode with no threads to hand: a page is read only when a chunk
     /// is asked for. Native builds run the same [`Incremental`] on the worker

@@ -3,7 +3,7 @@
 # The library import name stays `chunks_rs` (see [lib]), so downstream `use
 # chunks_rs::...` is unaffected.
 name = "rs-chunks"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Fast, high-fidelity document chunking for RAG — a pure-Rust engine covering 36 file formats (Office, OpenDocument, PDF, email, ebooks, notebooks, and more)."
 authors = ["Ranjan Kudesia <ranjan.kudesia@gmail.com>"]
@@ -23,11 +23,16 @@ exclude = ["/examples", "/tests", "/target", "/.github"]
 name = "chunks_rs"
 
 [features]
-# Native PDF via the liteparse crate (PDFium). ON by default. Disable for
-# wasm32 builds, where PDF markdown is produced host-side (e.g. the
-# @llamaindex/liteparse-wasm package) and fed to `pdf::chunk_pdf_markdown`.
+# PDF *parsing* is pure Rust, always compiled in, and builds for wasm32.
+# `pdf-native` (ON by default) adds only page rasterisation via the liteparse
+# crate (PDFium) — the fallback used when a scanned PDF has no embedded page
+# image to return. Disable default features for wasm32 builds; text-less PDFs
+# then report "no text" instead of returning page renders.
 default = ["pdf-native"]
 pdf-native = ["dep:liteparse", "dep:tokio"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

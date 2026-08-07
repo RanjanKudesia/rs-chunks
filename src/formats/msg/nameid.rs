@@ -7,7 +7,7 @@
 
 use std::io::Read;
 
-type Cfb = cfb::CompoundFile<std::io::Cursor<Vec<u8>>>;
+type Cfb<'a> = cfb::CompoundFile<std::io::Cursor<&'a [u8]>>;
 
 /// {00062002-0000-0000-C000-000000000046} — calendar/appointment properties.
 pub const PSETID_APPOINTMENT: [u8; 16] = [
@@ -31,7 +31,7 @@ pub struct NameIdMap {
     entries: Vec<Entry>,
 }
 
-fn read_stream(cfb: &mut Cfb, path: &str) -> Vec<u8> {
+fn read_stream(cfb: &mut Cfb<'_>, path: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     if let Ok(mut s) = cfb.open_stream(path) {
         let _ = s.read_to_end(&mut buf);
@@ -39,7 +39,7 @@ fn read_stream(cfb: &mut Cfb, path: &str) -> Vec<u8> {
     buf
 }
 
-pub fn parse(cfb: &mut Cfb) -> NameIdMap {
+pub fn parse(cfb: &mut Cfb<'_>) -> NameIdMap {
     let guid_bytes = read_stream(cfb, "/__nameid_version1.0/__substg1.0_00020102");
     let entry_bytes = read_stream(cfb, "/__nameid_version1.0/__substg1.0_00030102");
 

@@ -1,4 +1,6 @@
-//! Dump native PDF chunk contents for parity vs the chunks-js liteparse-wasm path.
+//! Dump PDF chunk contents as JSONL for ad-hoc parity spot-checks against the
+//! bindings. (All three SDKs share this crate's pure-Rust PDF parser; the
+//! historical liteparse-wasm host path this compared against is gone.)
 use chunks_rs::get_chunks;
 fn main() {
     let p = std::env::args().nth(1).expect("path");

@@ -36,6 +36,8 @@ pub(crate) struct Parsed {
     /// non-empty is not the same question as the PDF having text.
     pub has_text: bool,
     /// Images present on a page but left out of `images`, with the reason.
+    /// Populated for diagnostics; no current consumer reads it.
+    #[allow(dead_code)]
     pub skipped: Vec<String>,
 }
 
@@ -125,6 +127,8 @@ impl Reader {
     }
 
     /// Pages rendered so far — what a streaming caller has actually paid for.
+    // Diagnostic accessor for streaming callers; not wired into the public API.
+    #[allow(dead_code)]
     pub fn pages_rendered(&self) -> usize {
         self.next_to_render
     }

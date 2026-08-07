@@ -1,0 +1,650 @@
+//! Slide XML -> markdown block-stream parser.
+
+use crate::entities::read_event_folding_entities;
+
+use quick_xml::events::Event as XmlEvent;
+use quick_xml::Reader as XmlReader;
+
+use super::md_blocks::{
+    attr_local_name, collapse_ws, decode_attr, push_text, BlockKind, SlideBlock,
+    SlideMarkdownContent,
+};
+
+use std::collections::HashMap;
+use std::io::Cursor;
+
+pub(super) fn parse_slide_for_markdown(
+    xml_bytes: &[u8],
+    rels: &HashMap<String, String>,
+) -> Result<SlideMarkdownContent, String> {
+    let mut reader = XmlReader::from_reader(Cursor::new(xml_bytes));
+    let mut buf = Vec::new();
+
+    // Shape tracking
+    let mut sp_depth: i32 = 0;
+    let mut sp_is_title = false;
+    let mut sp_ph_checked = false;
+    let mut in_pic = false;
+    // Slide-background fill: <p:bg><p:bgPr><a:blipFill><a:blip r:embed>. It is
+    // never inside a <p:pic>, so the `in_pic` gate below skipped it and a
+    // background-only slide rendered with no image at all — while the chunk
+    // path now extracts it, leaving the two disagreeing (TECH_DEBT #17).
+    let mut in_bg = false;
+    let mut bg_rid: Option<String> = None;
+    let mut pic_alt: Option<String> = None;
+    let mut pic_rid: Option<String> = None;
+
+    // Text body / paragraph tracking (inside sp)
+    let mut in_txbody = false;
+    let mut in_para = false;
+    let mut para_level: u8 = 0;
+    let mut para_has_bullet = false;
+    let mut para_is_numbered = false;
+    let mut para_explicit_bu_none = false;
+    let mut para_in_ppr = false;
+    let mut para_text = String::new();
+
+    // Run tracking (inside a:r)
+    let mut in_run = false;
+    let mut cur_bold = false;
+    let mut cur_italic = false;
+    let mut cur_run_text = String::new();
+    let mut cur_hlink_rid = String::new(); // r:id from <a:hlinkClick> in current rPr
+
+    // <a:t> tracking
+    let mut in_t = false;
+
+    // Table tracking
+    let mut in_tbl = false;
+    let mut tbl_has_header = false;
+    let mut in_tbl_ppr = false;
+    let mut tbl_rows: Vec<Vec<String>> = Vec::new();
+    let mut tbl_current_row: Vec<String> = Vec::new();
+    let mut in_tc = false;
+    let mut tc_text = String::new();
+    let mut in_tc_body = false;
+    let mut in_tc_para = false;
+    let mut tc_para_text = String::new();
+    let mut in_tc_t = false;
+
+    // Shape paragraphs accumulation
+    let mut shape_paragraphs: Vec<SlideBlock> = Vec::new();
+
+    let mut slide = SlideMarkdownContent::default();
+
+    loop {
+        // Entity references arrive as their own event; fold them back into text.
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
+            Ok(XmlEvent::Start(ref e)) => {
+                let ename = e.name();
+                let ebytes = ename.as_ref();
+                let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+
+                match local {
+                    // Group shapes are traversed transparently; the tag itself
+                    // needs no state — shapes inside are handled as normal.
+                    b"grpSp" => {}
+                    b"sp" => {
+                        sp_depth += 1;
+                        if sp_depth == 1 {
+                            sp_is_title = false;
+                            sp_ph_checked = false;
+                            shape_paragraphs.clear();
+                        }
+                    }
+                    b"ph" if sp_depth > 0 && !sp_ph_checked => {
+                        sp_ph_checked = true;
+                        let mut ph_type: Option<String> = None;
+                        let mut ph_idx: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            let val = String::from_utf8_lossy(attr.value.as_ref())
+                                .trim()
+                                .to_string();
+                            match key_local {
+                                b"type" => ph_type = Some(val),
+                                b"idx" => ph_idx = Some(val),
+                                _ => {}
+                            }
+                        }
+                        if let Some(t) = ph_type {
+                            let t = t.to_ascii_lowercase();
+                            sp_is_title = matches!(t.as_str(), "title" | "ctrtitle" | "subtitle");
+                        } else if ph_idx.as_deref() == Some("0") {
+                            sp_is_title = true;
+                        }
+                    }
+                    b"txBody" if in_tc => {
+                        in_tc_body = true;
+                    }
+                    b"txBody" if sp_depth > 0 && !in_tbl => {
+                        in_txbody = true;
+                    }
+                    b"p" if in_txbody => {
+                        in_para = true;
+                        para_text.clear();
+                        para_level = 0;
+                        para_has_bullet = false;
+                        para_is_numbered = false;
+                        para_explicit_bu_none = false;
+                        para_in_ppr = false;
+                        cur_hlink_rid.clear();
+                    }
+                    b"pPr" if in_para => {
+                        para_in_ppr = true;
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"lvl" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .parse::<u8>()
+                                    .unwrap_or(0);
+                                para_level = v;
+                                break;
+                            }
+                        }
+                    }
+                    b"buChar" if para_in_ppr => {
+                        para_has_bullet = true;
+                        para_is_numbered = false;
+                    }
+                    b"buAutoNum" if para_in_ppr => {
+                        para_has_bullet = true;
+                        para_is_numbered = true;
+                    }
+                    b"buNone" if para_in_ppr => {
+                        para_has_bullet = false;
+                        para_is_numbered = false;
+                        para_explicit_bu_none = true;
+                    }
+                    b"r" if in_para => {
+                        in_run = true;
+                        cur_bold = false;
+                        cur_italic = false;
+                        cur_run_text.clear();
+                    }
+                    b"rPr" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            let val =
+                                String::from_utf8_lossy(attr.value.as_ref()).to_ascii_lowercase();
+                            match key_local {
+                                b"b" => cur_bold = val == "1" || val == "true",
+                                b"i" => cur_italic = val == "1" || val == "true",
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"hlinkClick" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"id" {
+                                cur_hlink_rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                break;
+                            }
+                        }
+                    }
+                    b"t" if in_para && !in_tc_para => {
+                        in_t = true;
+                    }
+                    b"pic" => {
+                        in_pic = true;
+                        pic_alt = None;
+                        pic_rid = None;
+                    }
+                    b"bg" => {
+                        in_bg = true;
+                        bg_rid = None;
+                    }
+                    b"cNvPr" if in_pic => {
+                        let mut descr: Option<String> = None;
+                        let mut name: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            // descr/name are human-authored, so they carry real
+                            // entities — a raw byte read leaks "&#xA;" into the
+                            // alt text. Decode, then flatten the newlines that
+                            // decoding reveals: this renders inline.
+                            let val = collapse_ws(&decode_attr(&attr));
+                            if val.is_empty() {
+                                continue;
+                            }
+                            match key_local {
+                                b"descr" => descr = Some(val),
+                                b"name" => name = Some(val),
+                                _ => {}
+                            }
+                        }
+                        if let Some(d) = descr {
+                            pic_alt = Some(d);
+                        } else if let Some(n) = name {
+                            let lower = n.to_ascii_lowercase();
+                            let generic = lower.starts_with("picture ")
+                                || lower.starts_with("image ")
+                                || lower.starts_with("graphic ")
+                                || lower.starts_with("chart ");
+                            if !generic {
+                                pic_alt = Some(n);
+                            }
+                        }
+                    }
+                    b"blip" if in_pic => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    pic_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"blip" if in_bg => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    bg_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"tbl" => {
+                        in_tbl = true;
+                        tbl_has_header = false;
+                        tbl_rows.clear();
+                    }
+                    b"tblPr" if in_tbl => {
+                        in_tbl_ppr = true;
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"firstRow" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref());
+                                tbl_has_header = v.trim() == "1";
+                                break;
+                            }
+                        }
+                    }
+                    b"tr" if in_tbl => {
+                        tbl_current_row.clear();
+                    }
+                    b"tc" if in_tbl => {
+                        in_tc = true;
+                        tc_text.clear();
+                    }
+                    b"p" if in_tc_body => {
+                        in_tc_para = true;
+                        tc_para_text.clear();
+                    }
+                    b"t" if in_tc_para => {
+                        in_tc_t = true;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(XmlEvent::Empty(ref e)) => {
+                let ename = e.name();
+                let ebytes = ename.as_ref();
+                let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+
+                match local {
+                    // SmartArt: the slide only points at the part holding the text.
+                    // `<c:chart r:id=…/>` — the pointer to the chart part.
+                    b"chart" => {
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"id" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !v.is_empty() {
+                                    slide.chart_rids.push(v);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"relIds" => {
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"dm" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !v.is_empty() {
+                                    slide.diagram_rids.push(v);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"pPr" if in_para => {
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"lvl" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .parse::<u8>()
+                                    .unwrap_or(0);
+                                para_level = v;
+                                break;
+                            }
+                        }
+                    }
+                    b"hlinkClick" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"id" {
+                                cur_hlink_rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                break;
+                            }
+                        }
+                    }
+                    b"ph" if sp_depth > 0 && !sp_ph_checked => {
+                        sp_ph_checked = true;
+                        let mut ph_type: Option<String> = None;
+                        let mut ph_idx: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            let val = String::from_utf8_lossy(attr.value.as_ref())
+                                .trim()
+                                .to_string();
+                            match key_local {
+                                b"type" => ph_type = Some(val),
+                                b"idx" => ph_idx = Some(val),
+                                _ => {}
+                            }
+                        }
+                        if let Some(t) = ph_type {
+                            let t = t.to_ascii_lowercase();
+                            sp_is_title = matches!(t.as_str(), "title" | "ctrtitle" | "subtitle");
+                        } else if ph_idx.as_deref() == Some("0") {
+                            sp_is_title = true;
+                        }
+                    }
+                    b"buChar" if para_in_ppr => {
+                        para_has_bullet = true;
+                        para_is_numbered = false;
+                    }
+                    b"buAutoNum" if para_in_ppr => {
+                        para_has_bullet = true;
+                        para_is_numbered = true;
+                    }
+                    b"buNone" if para_in_ppr => {
+                        para_has_bullet = false;
+                        para_is_numbered = false;
+                        para_explicit_bu_none = true;
+                    }
+                    b"rPr" if in_run => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            let val =
+                                String::from_utf8_lossy(attr.value.as_ref()).to_ascii_lowercase();
+                            match key_local {
+                                b"b" => cur_bold = val == "1" || val == "true",
+                                b"i" => cur_italic = val == "1" || val == "true",
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"pic" => {
+                        in_pic = false;
+                        slide.blocks.push(SlideBlock::image(None, None));
+                    }
+                    b"cNvPr" if in_pic => {
+                        let mut descr: Option<String> = None;
+                        let mut name: Option<String> = None;
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            // descr/name are human-authored, so they carry real
+                            // entities — a raw byte read leaks "&#xA;" into the
+                            // alt text. Decode, then flatten the newlines that
+                            // decoding reveals: this renders inline.
+                            let val = collapse_ws(&decode_attr(&attr));
+                            if val.is_empty() {
+                                continue;
+                            }
+                            match key_local {
+                                b"descr" => descr = Some(val),
+                                b"name" => name = Some(val),
+                                _ => {}
+                            }
+                        }
+                        if let Some(d) = descr {
+                            pic_alt = Some(d);
+                        } else if let Some(n) = name {
+                            let lower = n.to_ascii_lowercase();
+                            let generic = lower.starts_with("picture ")
+                                || lower.starts_with("image ")
+                                || lower.starts_with("graphic ")
+                                || lower.starts_with("chart ");
+                            if !generic {
+                                pic_alt = Some(n);
+                            }
+                        }
+                    }
+                    b"blip" if in_pic => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    pic_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"blip" if in_bg => {
+                        for attr in e.attributes().flatten() {
+                            let key_local = attr_local_name(attr.key.as_ref());
+                            if key_local == b"embed" {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref())
+                                    .trim()
+                                    .to_string();
+                                if !rid.is_empty() {
+                                    bg_rid = Some(rid);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    b"tblPr" if in_tbl => {
+                        for attr in e.attributes().flatten() {
+                            if attr_local_name(attr.key.as_ref()) == b"firstRow" {
+                                let v = String::from_utf8_lossy(attr.value.as_ref());
+                                tbl_has_header = v.trim() == "1";
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(XmlEvent::Text(ref e)) => {
+                if in_t && in_para && !in_tc_para {
+                    let txt = e.decode().unwrap_or_default().to_string();
+                    if in_run {
+                        push_text(&mut cur_run_text, &txt);
+                    } else {
+                        push_text(&mut para_text, &txt);
+                    }
+                }
+                if in_tc_t {
+                    let txt = e.decode().unwrap_or_default().to_string();
+                    push_text(&mut tc_para_text, &txt);
+                }
+            }
+            Ok(XmlEvent::CData(ref e)) => {
+                if in_t && in_para && !in_tc_para {
+                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
+                    if in_run {
+                        push_text(&mut cur_run_text, &txt);
+                    } else {
+                        push_text(&mut para_text, &txt);
+                    }
+                }
+                if in_tc_t {
+                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
+                    push_text(&mut tc_para_text, &txt);
+                }
+            }
+            Ok(XmlEvent::End(ref e)) => {
+                let ename = e.name();
+                let ebytes = ename.as_ref();
+                let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+
+                match local {
+                    b"grpSp" => {}
+                    b"r" if in_para => {
+                        if !cur_run_text.is_empty() {
+                            let formatted = match (cur_bold, cur_italic) {
+                                (true, true) => format!("***{}***", cur_run_text),
+                                (true, false) => format!("**{}**", cur_run_text),
+                                (false, true) => format!("*{}*", cur_run_text),
+                                _ => cur_run_text.clone(),
+                            };
+                            let final_text = if !cur_hlink_rid.is_empty() {
+                                if let Some(url) = rels.get(&cur_hlink_rid) {
+                                    format!("[{}]({})", formatted, url)
+                                } else {
+                                    formatted
+                                }
+                            } else {
+                                formatted
+                            };
+                            push_text(&mut para_text, &final_text);
+                        }
+                        in_run = false;
+                        cur_bold = false;
+                        cur_italic = false;
+                        cur_run_text.clear();
+                        cur_hlink_rid.clear();
+                    }
+                    b"t" if in_t => {
+                        in_t = false;
+                    }
+                    b"t" if in_tc_t => {
+                        in_tc_t = false;
+                    }
+                    b"pPr" if para_in_ppr => {
+                        para_in_ppr = false;
+                    }
+                    b"p" if in_para => {
+                        in_para = false;
+                        let trimmed = para_text.trim().to_string();
+                        if !trimmed.is_empty() {
+                            let inferred_bullet = !sp_is_title && !para_explicit_bu_none;
+                            if para_has_bullet || (inferred_bullet && !para_is_numbered) {
+                                shape_paragraphs.push(SlideBlock::list_item(
+                                    trimmed,
+                                    para_level,
+                                    para_is_numbered,
+                                ));
+                            } else {
+                                shape_paragraphs.push(SlideBlock::paragraph(trimmed));
+                            }
+                        }
+                        para_text.clear();
+                    }
+                    b"txBody" if in_txbody && !in_tbl => {
+                        in_txbody = false;
+                    }
+                    b"sp" if sp_depth > 0 => {
+                        sp_depth -= 1;
+                        if sp_depth == 0 {
+                            if sp_is_title && slide.title.is_none() {
+                                let title_parts: Vec<String> = shape_paragraphs
+                                    .iter()
+                                    .filter_map(|b| {
+                                        if matches!(
+                                            b.kind,
+                                            BlockKind::Paragraph | BlockKind::ListItem
+                                        ) {
+                                            Some(b.text.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                if !title_parts.is_empty() {
+                                    slide.title = Some(title_parts.join(" "));
+                                }
+                            } else {
+                                slide.blocks.extend(shape_paragraphs.drain(..));
+                            }
+                            shape_paragraphs.clear();
+                            sp_is_title = false;
+                            sp_ph_checked = false;
+                        }
+                    }
+                    b"pic" if in_pic => {
+                        in_pic = false;
+                        slide
+                            .blocks
+                            .push(SlideBlock::image(pic_alt.take(), pic_rid.take()));
+                    }
+                    b"bg" if in_bg => {
+                        in_bg = false;
+                        if let Some(rid) = bg_rid.take() {
+                            slide.blocks.push(SlideBlock::image(None, Some(rid)));
+                        }
+                    }
+                    b"p" if in_tc_para => {
+                        in_tc_para = false;
+                        let t = tc_para_text.trim().to_string();
+                        if !t.is_empty() {
+                            if !tc_text.is_empty() {
+                                tc_text.push(' ');
+                            }
+                            tc_text.push_str(&t);
+                        }
+                        tc_para_text.clear();
+                    }
+                    b"txBody" if in_tc_body => {
+                        in_tc_body = false;
+                    }
+                    b"tc" if in_tc => {
+                        in_tc = false;
+                        tbl_current_row.push(tc_text.trim().to_string());
+                        tc_text.clear();
+                    }
+                    b"tr" if in_tbl => {
+                        if !tbl_current_row.is_empty() {
+                            tbl_rows.push(std::mem::take(&mut tbl_current_row));
+                        }
+                    }
+                    b"tbl" if in_tbl => {
+                        in_tbl = false;
+                        if !tbl_rows.is_empty() {
+                            let has_hdr = tbl_has_header || tbl_rows.len() > 1;
+                            slide
+                                .blocks
+                                .push(SlideBlock::table(std::mem::take(&mut tbl_rows), has_hdr));
+                        }
+                    }
+                    b"tblPr" if in_tbl_ppr => {
+                        in_tbl_ppr = false;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(XmlEvent::Eof) => break,
+            Err(e) => return Err(format!("PPTX slide XML parse error: {e}")),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(slide)
+}
