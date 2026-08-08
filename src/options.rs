@@ -131,3 +131,53 @@ impl ChunkOptions {
         self
     }
 }
+
+/// Reject out-of-range mode arguments *before* the document is parsed.
+///
+/// `docx`, `pptx`, `xlsx`, `csv`, `doc` and `ppt` each validate inline and
+/// return [`ChunkError::InvalidArg`](crate::ChunkError::InvalidArg). The
+/// markdown-pipeline formats (`md`, `txt`, `html`, and everything routed
+/// through `formats::pipeline` — odf, eml, json, rtf, msg, ipynb, pdf, epub)
+/// instead let their builders return `Result<_, String>` and lifted the whole
+/// thing with `map_err(ChunkError::Parse)`, so "overlap must be less than
+/// window_size" — an argument error, raised before a single byte is parsed —
+/// reached callers tagged as a *parse failure*. js-chunks surfaced that as
+/// `kind: "parse"` where csv/xlsx gave `"invalid-arg"`.
+///
+/// (py-chunks was never affected: it validates in its own Python layer and
+/// raises `ValueError` before the engine is called at all.)
+///
+/// The messages are the canonical ones — the wording `docx` and the published
+/// error-handling docs already use. The builders keep their own guards as a
+/// backstop; this one simply runs first, with the right variant.
+pub(crate) fn validate_mode_args(
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> crate::Result<()> {
+    let bad = |m: &str| Err(crate::ChunkError::InvalidArg(m.to_string()));
+    match mode {
+        "sliding_window" => {
+            if window_size == 0 {
+                return bad("window_size must be greater than 0");
+            }
+            if overlap >= window_size {
+                return bad("overlap must be less than window_size");
+            }
+        }
+        "sentence" => {
+            if sentences_per_chunk == 0 {
+                return bad("sentences_per_chunk must be greater than 0");
+            }
+        }
+        "page_aware" => {
+            if paragraphs_per_page == 0 {
+                return bad("paragraphs_per_page must be greater than 0");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}

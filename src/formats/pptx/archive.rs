@@ -84,7 +84,9 @@ pub(super) fn find_notes_for_slide(archive: &mut PptxArchive, slide_name: &str) 
             if let Some(target_start) = chunk.find("Target=\"") {
                 let rest = &chunk[target_start + 8..];
                 if let Some(target_end) = rest.find('"') {
-                    return Some(resolve_relative_path(dir, &rest[..target_end]));
+                    // Attribute values are escaped; decode before resolving.
+                    let target = crate::entities::decode_attr_value(rest[..target_end].as_bytes());
+                    return Some(resolve_relative_path(dir, &target));
                 }
             }
         }

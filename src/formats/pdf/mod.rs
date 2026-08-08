@@ -1,6 +1,6 @@
 //! PDF chunking: PDF → markdown → shared markdown pipeline.
 //!
-//! **The parser is this crate's own** ([`parse`]), pure Rust and wasm-clean, so
+//! **The parser is this crate's own** (`parse`), pure Rust and wasm-clean, so
 //! `rs-chunks`, `py-chunks` and `js-chunks` all read a PDF with the same code
 //! instead of each SDK delegating to its own build of a host parser
 //! ([#57](TECH_DEBT.md), [#74](TECH_DEBT.md)). Passing markdown produced
@@ -197,7 +197,7 @@ pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(
 
 /// Stream a PDF's chunks. Reading the file happens here — so a missing or
 /// misnamed path still fails at construction — but parsing and chunking do not
-/// (see [`stream`](stream) for what streaming can and cannot do for PDF).
+/// (see [`stream`](mod@stream) for what streaming can and cannot do for PDF).
 pub fn stream(
     file_path: &str,
     mode: &str,

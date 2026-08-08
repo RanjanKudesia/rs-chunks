@@ -106,7 +106,7 @@ pub fn chunk_from_bytes(
         "page_aware" => page_aware::build_page_aware_chunks(data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars),
         "sliding_window" => {
             if window_size < 1 {
-                return Err(ChunkError::InvalidArg("window_size must be >= 1".into()));
+                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
             }
             if overlap >= window_size {
                 return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
@@ -136,6 +136,12 @@ pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Ch
             )))
         }
     };
+    // Same rule as the dispatch arms: ignored, but not unvalidated.
+    if mode == "page_aware" && opts.paragraphs_per_page == 0 {
+        return Err(ChunkError::InvalidArg(
+            "paragraphs_per_page must be greater than 0".to_string(),
+        ));
+    }
     let rows_per_chunk = if opts.sentences_per_chunk == 3 { 1 } else { opts.sentences_per_chunk };
     chunk(
         file_path,
@@ -203,7 +209,7 @@ pub fn chunk_with_images_from_bytes(
         "page_aware" => page_aware::build_page_aware_chunks(data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars),
         "sliding_window" => {
             if window_size < 1 {
-                return Err(ChunkError::InvalidArg("window_size must be >= 1".into()));
+                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
             }
             if overlap >= window_size {
                 return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
@@ -260,7 +266,7 @@ pub fn to_markdown_with_images_from_bytes(data: &[u8], ext: &str) -> Result<(Str
 /// Unlike every other format's `stream`, this is genuinely incremental for
 /// `row` and `sliding_window`: the workbook is parsed once and one chunk is
 /// built per `next()`. The remaining modes need whole-sheet analysis and
-/// batch-drain. See [`stream`](self::stream) for the details.
+/// batch-drain. See [`stream`](mod@self::stream) for the details.
 ///
 /// Takes the full option set — an earlier version hardcoded `include_headers`,
 /// `sheet_names`, `skip_empty_rows` and `max_chunk_chars`, so it could not

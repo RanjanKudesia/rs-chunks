@@ -202,7 +202,10 @@ fn parse_rels_xml(xml: &str) -> (HashMap<String, String>, Vec<String>) {
 
                     for attr in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let val = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                        // Attribute values arrive escaped. A hyperlink Target is
+                        // rendered straight into `[label](url)`, so skipping the
+                        // decode published `&amp;` inside every query string.
+                        let val = crate::entities::decode_attr(&attr);
                         match key.as_str() {
                             "Id" => id = val,
                             "Target" => target = val,

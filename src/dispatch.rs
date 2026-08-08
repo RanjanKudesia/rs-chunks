@@ -74,6 +74,7 @@ fn get_chunks_from_bytes_inner(
         }
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            check_spreadsheet_page_arg(xmode, paragraphs_per_page)?;
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. See `get_chunks`.
             let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
@@ -160,6 +161,7 @@ fn get_chunks_with_images_from_bytes_inner(
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            check_spreadsheet_page_arg(xmode, paragraphs_per_page)?;
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. See `get_chunks`.
             let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
@@ -215,6 +217,27 @@ fn ext_of(file_path: &str) -> String {
 
 fn csv_rows_per_chunk(sentences_per_chunk: usize) -> usize {
     sentences_per_chunk.max(1)
+}
+
+/// Reject `paragraphs_per_page == 0` for the spreadsheet family.
+///
+/// Spreadsheets paginate by `rows_per_chunk`, so the arms below map
+/// `sentences_per_chunk` and drop `paragraphs_per_page` entirely — which meant
+/// `page_aware` with `0` was silently accepted here while every other format
+/// rejects it, and three docs pages promise it is rejected. The parameter stays
+/// *ignored* (a spreadsheet page is a sheet region, not a unit count); only an
+/// unusable value is now an error.
+///
+/// Mode-scoped exactly like [`crate::options::validate_mode_args`]: a value is
+/// only required to be usable by the mode that reads it, so `0` in `row`/
+/// `sheet`/`table` remains fine — as it is for every other format.
+fn check_spreadsheet_page_arg(mode: &str, paragraphs_per_page: usize) -> Result<()> {
+    if mode == "page_aware" && paragraphs_per_page == 0 {
+        return Err(ChunkError::InvalidArg(
+            "paragraphs_per_page must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Chunk any supported document by path. `mode` is passed through to the engine
@@ -278,6 +301,7 @@ fn get_chunks_inner(
         // ── Spreadsheets (calamine) ─────────────────────────────────────
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
+            check_spreadsheet_page_arg(xmode, paragraphs_per_page)?;
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. A deliberate 3 is
             // unreachable here — see the doc comment on `get_chunks`.

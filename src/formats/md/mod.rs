@@ -2,8 +2,8 @@
 //!
 //! Seven prose-like formats (json, eml, odf, msg, ipynb, rtf, pdf) assemble
 //! clean Markdown and reuse these builders through
-//! [`crate::formats::pipeline`], so `md` is ported first. The `build_*`
-//! functions are shared crate-internally via [`build_records_from_bytes`].
+//! `crate::formats::pipeline`, so `md` is ported first. The `build_*`
+//! functions are shared crate-internally via `build_records_from_bytes`.
 //!
 //! `epub` is **not** one of them despite what this comment used to say — it
 //! reuses `html`'s builder family, as `txt` does. That is eight formats on this
@@ -59,6 +59,13 @@ pub(crate) fn build_records_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<SpannedRecord>> {
+    crate::options::validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let res = match mode {
         "default" | "structural" => structural::build_chunks_from_md_bytes(bytes),
         "section" => section::build_section_chunks(bytes),

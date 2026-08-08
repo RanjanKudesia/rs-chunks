@@ -6,7 +6,7 @@ pub mod package;
 
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
-use crate::options::{ChunkMode, ChunkOptions};
+use crate::options::{self, ChunkMode, ChunkOptions};
 use extract::{chunk_package, package_to_markdown};
 use package::{parse, EpubPackage};
 
@@ -18,6 +18,49 @@ fn ensure_epub(file_path: &str) -> Result<()> {
             "Expected .epub file path, got: {file_path}"
         )))
     }
+}
+
+const VALID_MODES: &[&str] = &[
+    "default",
+    "structural",
+    "section",
+    "semantic",
+    "sentence",
+    "page_aware",
+    "sliding_window",
+];
+
+/// Reject a bad `mode` or an argument the mode cannot use, before any parsing.
+///
+/// EPUB reuses the HTML builders directly instead of routing through the
+/// markdown pipeline, so it never picked up the shared check every other format
+/// gets. Worse, `extract::chunk_package` deliberately swallows per-spine-document
+/// builder failures with `.unwrap_or_default()` — an image-only cover page must
+/// not abort a whole book — so an invalid argument did not surface as an error
+/// at all: it produced an **empty chunk list**. A silent wrong answer is worse
+/// than a loud one, hence the guard here rather than in the builders.
+///
+/// Ordering matters: this runs before `load`/`parse`, so the bytes route rejects
+/// a bad argument without first spending the parse on it.
+fn validate_args(
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<()> {
+    if !VALID_MODES.contains(&mode) {
+        return Err(ChunkError::InvalidArg(format!(
+            "mode must be one of {VALID_MODES:?} for EPUB, got: '{mode}'"
+        )));
+    }
+    options::validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 fn image_key(href: &str) -> String {
@@ -38,6 +81,8 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
+    ensure_epub(file_path)?;
+    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let pkg = load(file_path)?;
     chunk_pkg(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
 }
@@ -53,6 +98,7 @@ fn chunk_pkg(pkg: &EpubPackage, mode: &str, window_size: usize, overlap: usize, 
 
 /// No-filesystem entry (wasm/browser).
 pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
+    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let pkg = parse(data.to_vec()).map_err(ChunkError::Parse)?;
     chunk_pkg(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
 }
@@ -96,6 +142,8 @@ pub fn chunk_with_images(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    ensure_epub(file_path)?;
+    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let pkg = load(file_path)?;
     let records = chunk_package(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
         .map_err(ChunkError::Parse)?;
@@ -135,6 +183,7 @@ pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, 
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
 pub fn chunk_with_images_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
     let pkg = parse(data.to_vec()).map_err(ChunkError::Parse)?;
     let records = chunk_package(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page).map_err(ChunkError::Parse)?;
     let mut chunks: Vec<Chunk> = pkg.images.iter().map(|(href, _)| { let key = image_key(href); Chunk::new(key.clone(), "image", serde_json::json!({"image_name": key, "href": href})) }).collect();

@@ -46,6 +46,13 @@ fn build_records(
     paragraphs_per_page: usize,
 ) -> Result<Vec<ChunkRecordInput>> {
     let normalized = if mode == "default" { "structural" } else { mode };
+    crate::options::validate_mode_args(
+        normalized,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let res = match normalized {
         "structural" => structural::build_chunks_from_html_bytes(bytes),
         "section" => section::build_section_chunks(bytes),

@@ -147,13 +147,14 @@ pub(super) fn attr_local_name(key: &[u8]) -> &[u8] {
     key.rsplit(|b| *b == b':').next().unwrap_or(key)
 }
 
-/// Resolve XML entities in an attribute value, falling back to the raw bytes if
-/// the value references an entity quick-xml cannot expand.
+/// Resolve XML entities in an attribute value.
+///
+/// Delegates to the shared resolver so an attribute gets the same entity table
+/// element text does — quick-xml's own `unescape_value` knows only the five
+/// predefined names, and errored (falling back to the raw, still-escaped bytes)
+/// on anything else.
 pub(super) fn decode_attr(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
-    match attr.unescape_value() {
-        Ok(v) => v.into_owned(),
-        Err(_) => String::from_utf8_lossy(attr.value.as_ref()).into_owned(),
-    }
+    crate::entities::decode_attr(attr)
 }
 
 /// Squash any run of whitespace (including the newlines `&#xA;` decodes to)

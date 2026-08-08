@@ -62,7 +62,11 @@ fn extract_attr(chunk: &str, attr: &str) -> Option<String> {
     let start = chunk.find(&needle)? + needle.len();
     let rest = &chunk[start..];
     let end = rest.find('"')?;
-    let val = rest[..end].trim().to_string();
+    // Attribute values are escaped in the file; decode so a Target holding "&"
+    // resolves to the real part name.
+    let val = crate::entities::decode_attr_value(rest[..end].as_bytes())
+        .trim()
+        .to_string();
     if val.is_empty() {
         None
     } else {

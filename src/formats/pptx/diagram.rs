@@ -69,7 +69,10 @@ fn attr(fragment: &str, name: &str) -> Option<String> {
     let needle = format!("{name}=\"");
     let start = fragment.find(&needle)? + needle.len();
     let rest = &fragment[start..];
-    Some(rest[..rest.find('"')?].to_string())
+    // Attribute values are escaped in the file; decode before use.
+    Some(crate::entities::decode_attr_value(
+        rest[..rest.find('"')?].as_bytes(),
+    ))
 }
 
 /// Extract the paragraphs of a diagram data part, in document order.

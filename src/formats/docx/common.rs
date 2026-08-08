@@ -4,13 +4,13 @@
 //! extension surface plus `pub(super)` re-exports so every consumer keeps
 //! importing from `super::common` unchanged:
 //!
-//! - [`super::xml_text`] — XML/text primitives (`qname_eq`, `push_text`, …)
-//! - [`super::block_model`] — the block/paragraph event model
-//! - [`super::block_api`] — the `parse_docx_*` entry points every mode calls
-//! - [`super::table_render`] — table → Markdown pipe-table rendering
-//! - [`super::harvest`] — alt-text / note-id / blip attribute harvesting
-//! - [`super::images_rels`] — image placeholders, rels parsing, image chunks
-//! - [`super::stream_walker`] — the canonical streaming `document.xml` walker
+//! - `xml_text` — XML/text primitives (`qname_eq`, `push_text`, …)
+//! - `block_model` — the block/paragraph event model
+//! - `block_api` — the `parse_docx_*` entry points every mode calls
+//! - `table_render` — table → Markdown pipe-table rendering
+//! - `harvest` — alt-text / note-id / blip attribute harvesting
+//! - `images_rels` — image placeholders, rels parsing, image chunks
+//! - `stream_walker` — the canonical streaming `document.xml` walker
 
 /// Every WordprocessingML OOXML extension routed through the docx chunker. They
 /// all store the body in `word/document.xml`, which the parser reads by part name

@@ -4,13 +4,13 @@
 //! the whole of [#87](TECH_DEBT.md) as it applies to PDF, and it is a property
 //! of the *reader*, not of the chunker:
 //!
-//! - `default` ranks heading sizes within each page ([`parse::Headings::PerPage`]),
+//! - `default` ranks heading sizes within each page (`parse::Headings::PerPage`),
 //!   so a page is parsed, rendered and dropped. With a resumable builder
-//!   ([`StructuralBuilder`]) a chunk costs the pages it came from: the first
+//!   (`StructuralBuilder`) a chunk costs the pages it came from: the first
 //!   chunk of `sample-5000-page.pdf` reads fewer than 10 of its 5,000 pages,
 //!   asserted below.
 //! - Every other mode ranks sizes across the whole document
-//!   ([`parse::Headings::Ranked`]) and its reader has read every page before it
+//!   (`parse::Headings::Ranked`) and its reader has read every page before it
 //!   renders the first. Nothing a builder does can change that, so those modes
 //!   keep the worker-thread-and-channel shape: construction still returns
 //!   immediately and chunks still arrive one at a time, but the document is
@@ -24,8 +24,8 @@
 //! arrived, which is what makes the output identical.
 //!
 //! **Output is byte-identical to batch in every mode**, because it is the same
-//! code: the same [`StructuralBuilder`], the same [`ProseMerger`] and
-//! [`pipeline::stamp`]. Pinned across the corpus, for all seven modes and
+//! code: the same `StructuralBuilder`, the same `ProseMerger` and
+//! `pipeline::stamp`. Pinned across the corpus, for all seven modes and
 //! including metadata, by `stream_matches_batch_for_every_mode` in
 //! `tests/pdf_stream.rs`.
 //!

@@ -77,7 +77,15 @@ pub fn chunk_package(
             sentences_per_chunk,
             paragraphs_per_page,
         )
-        // An individual empty/nav-only XHTML shouldn't abort the whole book.
+        // An individual empty/nav-only XHTML shouldn't abort the whole book:
+        // `structural.rs` returns Err for "HTML file is empty after decoding" /
+        // "No chunks generated", which a legitimate image-only cover page hits.
+        //
+        // It also hides genuine parse failures, and it is why bad *arguments*
+        // used to yield an empty book instead of an error. That part is fixed at
+        // the facade (`mod.rs::validate_args`, which runs before any builder);
+        // separating "empty document" from "parse failed" here is tracked as
+        // TECH_DEBT L14.
         .unwrap_or_default();
 
         for rec in &mut records {

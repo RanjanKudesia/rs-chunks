@@ -198,7 +198,7 @@ pub type BlockSpan = (usize, usize);
 /// A chunk together with where it came from.
 ///
 /// The span is **internal**: it never reaches a caller as itself.
-/// [`crate::formats::pipeline`] translates it into `record_range` for the
+/// `crate::formats::pipeline` translates it into `record_range` for the
 /// formats that have records — `.json`, `.jsonl`, `.ndjson` — and drops it for
 /// everything else, which is why tracking it changes no other format's
 /// metadata. It rides here rather than on [`ChunkRecordInput`] because that

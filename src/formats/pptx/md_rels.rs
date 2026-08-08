@@ -114,7 +114,9 @@ pub(super) fn parse_slide_rels_with_images(
                     let mut is_external = false;
                     for attr in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let val = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                        // Same escaping rule as docx: a hyperlink Target goes
+                        // straight into `[label](url)`, so it must be decoded.
+                        let val = crate::entities::decode_attr(&attr);
                         match key.as_str() {
                             "Id" => id = val,
                             "Target" => target = val,
@@ -183,7 +185,8 @@ pub(super) fn extract_notes_text(
             let start = chunk.find("Target=\"")? + 8;
             let rest = &chunk[start..];
             let end = rest.find('"')?;
-            Some(resolve_relative_path(dir, &rest[..end]))
+            let target = crate::entities::decode_attr_value(rest[..end].as_bytes());
+            Some(resolve_relative_path(dir, &target))
         })?;
 
     // 3. Parse notes XML: collect body text (not title which is an image placeholder)

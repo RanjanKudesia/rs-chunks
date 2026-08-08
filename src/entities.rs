@@ -117,6 +117,53 @@ pub fn resolve_entity(name: &str) -> String {
     }
 }
 
+/// Resolve every entity reference inside a raw XML **attribute** value.
+///
+/// quick-xml hands attribute values back exactly as they appear on disk:
+/// `Target="…?eid=2-s2.0-0024997614&amp;partnerID=K84"` arrives with the
+/// `&amp;` still in it. Element *text* has always been decoded — it goes
+/// through [`read_event_folding_entities!`] — but attributes had no
+/// equivalent, so every OOXML relationship `Target` kept its escapes and
+/// `get_markdown` emitted hyperlink URLs containing a literal `&amp;`.
+///
+/// An attribute value can never legitimately contain a bare `&` (XML forbids
+/// it), so decoding here is unconditionally correct rather than a heuristic.
+/// A `&` that does *not* start a well-formed reference is passed through
+/// untouched, and an unrecognised reference survives as `&name;` — the same
+/// "make the gap visible, never delete characters" rule [`resolve_entity`]
+/// follows.
+pub fn decode_attr_value(raw: &[u8]) -> String {
+    let s = String::from_utf8_lossy(raw);
+    if !s.contains('&') {
+        return s.into_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest: &str = s.as_ref();
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        // An entity name is `#`? followed by name characters, then `;`.
+        // Anything else is a stray ampersand, kept verbatim.
+        let name_end = after
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '#')
+            .unwrap_or(after.len());
+        if name_end > 0 && after[name_end..].starts_with(';') {
+            out.push_str(&resolve_entity(&after[..name_end]));
+            rest = &after[name_end + 1..];
+        } else {
+            out.push('&');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// [`decode_attr_value`] for a quick-xml [`Attribute`](quick_xml::events::attributes::Attribute).
+pub fn decode_attr(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
+    decode_attr_value(attr.value.as_ref())
+}
+
 /// Resolve a `GeneralRef` event's payload, given the raw entity name bytes.
 pub fn resolve_entity_bytes(raw: &[u8]) -> String {
     match std::str::from_utf8(raw) {
@@ -211,5 +258,46 @@ mod tests {
     fn surrogate_code_points_are_not_forged_into_chars() {
         // char::from_u32 rejects D800-DFFF; the reference must survive as text.
         assert_eq!(resolve_entity("#xD800"), "&#xD800;");
+    }
+
+    // ── decode_attr_value ────────────────────────────────────────────────────
+
+    fn decode(s: &str) -> String {
+        decode_attr_value(s.as_bytes())
+    }
+
+    #[test]
+    fn attribute_values_without_an_ampersand_are_returned_unchanged() {
+        assert_eq!(decode("word/media/image1.png"), "word/media/image1.png");
+        assert_eq!(decode(""), "");
+    }
+
+    #[test]
+    fn relationship_targets_have_their_ampersands_decoded() {
+        // The exact shape of the bug: a Scopus URL out of word/_rels.
+        assert_eq!(
+            decode("http://www.scopus.com/record.url?eid=2-s2.0-00249&amp;partnerID=K84&amp;rel=3.0.0"),
+            "http://www.scopus.com/record.url?eid=2-s2.0-00249&partnerID=K84&rel=3.0.0"
+        );
+    }
+
+    #[test]
+    fn attribute_values_decode_the_same_table_element_text_does() {
+        assert_eq!(decode("&lt;b&gt;"), "<b>");
+        assert_eq!(decode("&quot;quoted&quot;"), "\"quoted\"");
+        assert_eq!(decode("R&amp;D &#8212; &copy;"), "R&D — ©");
+    }
+
+    #[test]
+    fn a_stray_ampersand_is_kept_rather_than_swallowed() {
+        // Not well-formed XML, but real files contain it; never delete data.
+        assert_eq!(decode("a & b"), "a & b");
+        assert_eq!(decode("q?a=1&b=2"), "q?a=1&b=2");
+        assert_eq!(decode("trailing&"), "trailing&");
+    }
+
+    #[test]
+    fn unknown_references_in_attributes_stay_visible() {
+        assert_eq!(decode("&notAnEntity;"), "&notAnEntity;");
     }
 }

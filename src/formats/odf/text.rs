@@ -81,7 +81,9 @@ fn local(name: &[u8]) -> &[u8] {
 fn attr<'a>(e: &'a quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if a.key.as_ref() == key || local(a.key.as_ref()) == local(key) {
-            return Some(String::from_utf8_lossy(&a.value).into_owned());
+            // Escaped in the file like every attribute value; `xlink:href` is
+            // rendered straight into `[label](url)`, so it must be decoded.
+            return Some(crate::entities::decode_attr(&a));
         }
     }
     None

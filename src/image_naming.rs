@@ -1,8 +1,14 @@
 //! Content-addressed names for extracted images: `"<16 hex>.<ext>"`.
 //!
-//! Every format that extracts images names them this way, so the same picture
-//! in two documents gets the same key and identical bytes inside one document
-//! are deduped.
+//! The formats that route through here — docx, pptx, xlsx, html, odf
+//! (odt/odp) and the legacy ODRAW path (doc/ppt) — name images this way, so
+//! the same picture in two documents gets the same key and identical bytes
+//! inside one document are deduped.
+//!
+//! **PDF is the exception and does not use this module.** It names images
+//! positionally, `"image_p{page}_{ordinal}.{ext}"` (see `formats/pdf/parse.rs`),
+//! because a PDF image is identified by its object id and its reading-order
+//! position on a page rather than by its decoded bytes.
 //!
 //! # Why this is not `DefaultHasher` (TECH_DEBT #76)
 //!

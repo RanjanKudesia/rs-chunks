@@ -154,7 +154,9 @@ fn local_name(name: QName<'_>) -> Vec<u8> {
 fn attr(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if local_name(QName(a.key.as_ref())).as_slice() == key {
-            return Some(String::from_utf8_lossy(a.value.as_ref()).into_owned());
+            // Attribute values are escaped: an `href` naming a part with "&" in
+            // it is written "&amp;" and will not open until it is decoded.
+            return Some(crate::entities::decode_attr(&a));
         }
     }
     None

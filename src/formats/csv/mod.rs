@@ -91,6 +91,19 @@ pub fn chunk_from_bytes(
         "row" | "default" | "sliding_window" | "page_aware" => {}
         _ => return Err(ChunkError::InvalidArg("mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV".to_string())),
     }
+    // The same range checks `chunk` runs. They were missing here, so the
+    // no-filesystem entry point — the only one js-chunks ever calls — let
+    // `overlap >= window_size` fall through to the builder and come back as
+    // `Parse` instead of `InvalidArg`.
+    if rows_per_chunk == 0 {
+        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".to_string()));
+    }
+    if window_size == 0 {
+        return Err(ChunkError::InvalidArg("window_size must be greater than 0".to_string()));
+    }
+    if overlap >= window_size {
+        return Err(ChunkError::InvalidArg("overlap must be less than window_size".to_string()));
+    }
     build_chunks(data, mode, rows_per_chunk, window_size, overlap, include_headers, delimiter, encoding, skip_empty_rows)
 }
 

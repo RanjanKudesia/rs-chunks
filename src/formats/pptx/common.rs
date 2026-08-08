@@ -1,4 +1,5 @@
-/// Shared types, slide parser, and helpers for all PPTX chunking strategies.
+//! Shared types, slide parser, and helpers for all PPTX chunking strategies.
+
 /// Every PresentationML OOXML extension routed through the pptx chunker. All
 /// store slides under `ppt/slides/`, which the parser enumerates by part name
 /// regardless of extension. NOTE: legacy binary `.ppt` is NOT here — it routes

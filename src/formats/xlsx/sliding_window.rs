@@ -44,10 +44,10 @@ pub fn build_sliding_window_chunks(
     skip_empty_rows: bool,
 ) -> Result<Vec<XlsxChunkRecord>, String> {
     if window_size == 0 {
-        return Err("window_size must be >= 1".to_string());
+        return Err("window_size must be greater than 0".to_string());
     }
     if overlap >= window_size {
-        return Err("overlap must be < window_size".to_string());
+        return Err("overlap must be less than window_size".to_string());
     }
 
     let mut workbook =

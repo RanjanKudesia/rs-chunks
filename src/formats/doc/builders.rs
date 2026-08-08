@@ -1,7 +1,7 @@
 //! The six chunk builders shared by `.doc` and `.ppt`.
 //!
 //! Every builder consumes a positioned paragraph list (see [`super::context`])
-//! and emits [`ChunkRecord`]s. A chunk takes the structural position of the
+//! and emits `ChunkRecord`s. A chunk takes the structural position of the
 //! paragraph it *starts* on; the aggregating builders record the position where
 //! their accumulation began rather than where it flushed.
 

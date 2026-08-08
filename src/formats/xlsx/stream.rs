@@ -1,7 +1,7 @@
 //! Incremental streaming for spreadsheet chunking.
 //!
 //! `row` and `sliding_window` are genuine state machines: the workbook is
-//! parsed once into [`SheetData`], then **one** [`XlsxChunkRecord`] is built per
+//! parsed once into `SheetData`, then **one** [`XlsxChunkRecord`] is built per
 //! `next()`. The other four modes (`table`, `sheet`, `page_aware`, `semantic`)
 //! need global analysis of the whole sheet before any chunk is correct, so they
 //! batch-drain — all chunks built up front, yielded one at a time.
@@ -438,7 +438,7 @@ pub fn stream_from_bytes(
         }
         "sliding_window" => {
             if window_size < 1 {
-                return Err(ChunkError::InvalidArg("window_size must be >= 1".into()));
+                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
             }
             if overlap >= window_size {
                 return Err(ChunkError::InvalidArg(

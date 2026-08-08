@@ -54,8 +54,11 @@ fn local_name(name: QName<'_>) -> Vec<u8> {
     bytes[idx..].to_vec()
 }
 
+/// Attribute values are stored escaped (`R&amp;D`, `&quot;`), so every read
+/// goes through the shared entity resolver — relationship `Target`s, table and
+/// named-range names, and `xlink:href` alike.
 fn attr_value(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
-    String::from_utf8_lossy(attr.value.as_ref()).into_owned()
+    crate::entities::decode_attr(attr)
 }
 
 fn resolve_target(base_dir: &str, target: &str) -> String {

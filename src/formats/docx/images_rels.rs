@@ -62,7 +62,10 @@ pub(super) fn parse_rels_xml_images(xml: &str) -> HashMap<String, String> {
 
                     for attr in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let val = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                        // Escaped like every attribute value: a part name holding
+                        // "&" is written "&amp;" and must be decoded before it can
+                        // be looked up in the zip.
+                        let val = crate::entities::decode_attr(&attr);
                         match key.as_str() {
                             "Id" => id = val,
                             "Target" => target = val,
