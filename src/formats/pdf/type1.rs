@@ -20,7 +20,9 @@ const MAX_HEADER: usize = 64_000;
 /// Read a Type 1 program's `/Encoding`, or `None` if it names a standard one or
 /// has none to read.
 pub(crate) fn builtin_encoding(program: &[u8]) -> Option<[Option<char>; 256]> {
-    let end = find(program, b"eexec").unwrap_or(program.len()).min(MAX_HEADER);
+    let end = find(program, b"eexec")
+        .unwrap_or(program.len())
+        .min(MAX_HEADER);
     let header = &program[..end];
     let start = find(header, b"/Encoding")? + "/Encoding".len();
     let header = &header[start..];
@@ -37,8 +39,12 @@ pub(crate) fn builtin_encoding(program: &[u8]) -> Option<[Option<char>; 256]> {
     while let Some(offset) = find(&header[i..], b"dup ") {
         let at = i + offset + 4;
         i = at;
-        let Some((code, rest)) = read_code(&header[at..]) else { continue };
-        let Some(name) = read_name(rest) else { continue };
+        let Some((code, rest)) = read_code(&header[at..]) else {
+            continue;
+        };
+        let Some(name) = read_name(rest) else {
+            continue;
+        };
         if code < 256 {
             table[code] = glyph_to_char(&name);
             found = true;
@@ -105,7 +111,9 @@ mod tests {
 
     #[test]
     fn a_font_deferring_to_the_standard_encoding_reports_none() {
-        assert!(builtin_encoding(b"/FontName /X def\n/Encoding StandardEncoding def\neexec").is_none());
+        assert!(
+            builtin_encoding(b"/FontName /X def\n/Encoding StandardEncoding def\neexec").is_none()
+        );
     }
 
     #[test]

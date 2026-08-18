@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use chunks_rs::formats::md;
 
 fn md_fixtures() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test_files").join("md");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test_files")
+        .join("md");
     let mut out: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
@@ -17,7 +20,14 @@ fn md_fixtures() -> Vec<PathBuf> {
     out
 }
 
-const MODES: &[&str] = &["default", "section", "semantic", "sentence", "page_aware", "sliding_window"];
+const MODES: &[&str] = &[
+    "default",
+    "section",
+    "semantic",
+    "sentence",
+    "page_aware",
+    "sliding_window",
+];
 
 #[test]
 fn all_modes_all_fixtures_well_formed() {
@@ -29,7 +39,10 @@ fn all_modes_all_fixtures_well_formed() {
             assert!(!chunks.is_empty(), "no chunks: {p} [{mode}]");
             for c in &chunks {
                 assert!(!c.content_type.is_empty());
-                assert!(c.metadata.is_object(), "metadata must be object: {p} [{mode}]");
+                assert!(
+                    c.metadata.is_object(),
+                    "metadata must be object: {p} [{mode}]"
+                );
             }
         }
     }

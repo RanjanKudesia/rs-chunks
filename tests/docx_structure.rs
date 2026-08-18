@@ -73,7 +73,12 @@ fn semantic_keeps_a_bulleted_list_together() {
 
     let list_chunks: Vec<&String> = semantic
         .iter()
-        .filter(|c| c.lines().filter(|l| l.trim_start().starts_with("- ")).count() >= 2)
+        .filter(|c| {
+            c.lines()
+                .filter(|l| l.trim_start().starts_with("- "))
+                .count()
+                >= 2
+        })
         .collect();
 
     assert_eq!(
@@ -115,7 +120,9 @@ fn markdown_keeps_text_that_shares_a_paragraph_with_an_image() {
 
     // The text must come before its image, in document order.
     let t = md.find(sentence).expect("text present");
-    let i = md.find("[Image: Web Access Symbol]").expect("marker present");
+    let i = md
+        .find("[Image: Web Access Symbol]")
+        .expect("marker present");
     assert!(t < i, "text should precede the image marker it introduces");
 
     // The second image-bearing paragraph too — one fix, not a special case.

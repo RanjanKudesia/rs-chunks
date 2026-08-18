@@ -6,12 +6,13 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use zip::ZipArchive;
 
-use super::common::{docx_heading_level, image_placeholder, parse_docx_blocks, DocxBlock, DocxBlockKind};
+use super::common::{
+    docx_heading_level, image_placeholder, parse_docx_blocks, DocxBlock, DocxBlockKind,
+};
 use super::docx_aux::{
     count_prefixed_entries, extract_notes_map, extract_text_from_xml, read_first_prefixed_entry,
     read_zip_entry,
 };
-
 
 pub(super) const MAX_DOCX_AUX_XML_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -44,7 +45,9 @@ pub(super) const SHORT_PARAGRAPH_THRESHOLD: usize = 80;
 pub(super) const MAX_SECTION_CHARS: usize = 1200;
 
 fn is_complete_sentence(text: &str) -> bool {
-    const SENTENCE_END: [char; 8] = ['.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}'];
+    const SENTENCE_END: [char; 8] = [
+        '.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}',
+    ];
     let t = text.trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}', ' ']);
     t.chars().count() >= 12 && t.ends_with(SENTENCE_END)
 }
@@ -284,9 +287,7 @@ fn lower_blocks_to_elements(raw: Vec<DocxBlock>) -> Vec<DocumentElement> {
                     for (rid, alt) in block.images.iter().skip(1) {
                         out.push(DocumentElement {
                             content_type: ContentType::Image,
-                            text: image_placeholder(
-                                alt.as_deref().or(block.image_alt.as_deref()),
-                            ),
+                            text: image_placeholder(alt.as_deref().or(block.image_alt.as_deref())),
                             page_number: Some(block_page),
                             heading_level: None,
                             footnote_refs: Vec::new(),

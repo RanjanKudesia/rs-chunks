@@ -26,13 +26,18 @@ pub(super) fn chunk(bytes: &[u8]) -> Result<Vec<crate::chunk::Chunk>, String> {
         .collect())
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let parsed = parse_docx_document(bytes)?;
     let mut image_out = Vec::new();
     let combined = build_chunks_from_elements_with_images(
-        parsed.elements, &parsed.doc_metadata, &parsed.footnote_map, &parsed.endnote_map,
-        &image_rids_map, &mut archive, &mut image_out,
+        parsed.elements,
+        &parsed.doc_metadata,
+        &parsed.footnote_map,
+        &parsed.endnote_map,
+        &image_rids_map,
+        &mut archive,
+        &mut image_out,
     );
     Ok((
         combined

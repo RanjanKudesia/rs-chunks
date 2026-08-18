@@ -89,7 +89,10 @@ mod tests {
     use crate::formats::md::common::parse_markdown_blocks;
 
     fn whole(text: &str) -> Vec<(String, usize)> {
-        parse_markdown_blocks(text).into_iter().map(|b| (b.content, b.index)).collect()
+        parse_markdown_blocks(text)
+            .into_iter()
+            .map(|b| (b.content, b.index))
+            .collect()
     }
 
     fn in_pieces(text: &str, at: &[usize]) -> Vec<(String, usize)> {
@@ -129,11 +132,19 @@ mod tests {
         for document in documents {
             let expected = whole(document);
             for cut in 0..=document.len() {
-                assert_eq!(in_pieces(document, &[cut]), expected, "split at {cut} of {document:?}");
+                assert_eq!(
+                    in_pieces(document, &[cut]),
+                    expected,
+                    "split at {cut} of {document:?}"
+                );
             }
             // And fed one byte at a time, the worst case for a buffering parser.
             let every: Vec<usize> = (0..document.len()).collect();
-            assert_eq!(in_pieces(document, &every), expected, "byte-at-a-time {document:?}");
+            assert_eq!(
+                in_pieces(document, &every),
+                expected,
+                "byte-at-a-time {document:?}"
+            );
         }
     }
 

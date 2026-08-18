@@ -15,9 +15,8 @@ pub const CT_SEMANTIC: &str = "semantic_group";
 
 /// Every spreadsheet extension routed through the calamine-backed xlsx chunkers.
 /// Adding a new calamine-readable format is a one-line change here.
-pub const SPREADSHEET_EXTS: &[&str] = &[
-    ".xlsx", ".xls", ".xlsm", ".xlsb", ".ods", ".xltx", ".xltm",
-];
+pub const SPREADSHEET_EXTS: &[&str] =
+    &[".xlsx", ".xls", ".xlsm", ".xlsb", ".ods", ".xltx", ".xltm"];
 
 thread_local! {
     /// Set while we are deliberately catching a calamine panic, so the custom
@@ -138,7 +137,8 @@ pub fn open_spreadsheet_from_bytes(data: &[u8], ext: &str) -> Result<Workbook, S
             Err(specific_open_error(&repaired_bytes(data, ext), ext).unwrap_or(generic))
         }
         Err(_) => Err(
-            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)".to_string(),
+            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)"
+                .to_string(),
         ),
     }
 }
@@ -175,9 +175,7 @@ fn specific_open_error(data: &[u8], ext: &str) -> Option<String> {
     // Wrap in calamine's own `Error` so the text matches what the path-based
     // `open_workbook_auto` produced ("Xlsx error: …", not bare "…").
     let err = match ext {
-        "xlsx" | "xlsm" | "xltx" | "xltm" => {
-            Xlsx::new(cursor()).err().map(calamine::Error::Xlsx)
-        }
+        "xlsx" | "xlsm" | "xltx" | "xltm" => Xlsx::new(cursor()).err().map(calamine::Error::Xlsx),
         "xlsb" => Xlsb::new(cursor()).err().map(calamine::Error::Xlsb),
         "ods" => Ods::new(cursor()).err().map(calamine::Error::Ods),
         "xls" => Xls::new(cursor()).err().map(calamine::Error::Xls),
@@ -326,7 +324,10 @@ pub fn parse_range_ref(range_ref: &str) -> Option<(usize, usize, usize, usize)> 
     Some((r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
 }
 
-fn read_zip_entry(archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> Result<Option<Vec<u8>>, String> {
+fn read_zip_entry(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+) -> Result<Option<Vec<u8>>, String> {
     match archive.by_name(name) {
         Ok(mut entry) => {
             let mut buf = Vec::new();
@@ -383,21 +384,21 @@ fn parse_table_relationship_targets(rels_xml: &[u8]) -> Result<Vec<String>, Stri
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse worksheet relationships XML: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"Relationship" {
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        if key.as_slice() == b"Type" {
-                            rel_type = attr_value(&attr);
-                        } else if key.as_slice() == b"Target" {
-                            target = attr_value(&attr);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"Relationship" =>
+            {
+                let mut rel_type = String::new();
+                let mut target = String::new();
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    if key.as_slice() == b"Type" {
+                        rel_type = attr_value(&attr);
+                    } else if key.as_slice() == b"Target" {
+                        target = attr_value(&attr);
                     }
-                    if rel_type.ends_with("/table") && !target.is_empty() {
-                        targets.push(target);
-                    }
+                }
+                if rel_type.ends_with("/table") && !target.is_empty() {
+                    targets.push(target);
                 }
             }
             _ => {}
@@ -416,21 +417,21 @@ fn parse_table_name(table_xml: &[u8]) -> Result<Option<String>, String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse table XML: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"table" {
-                    let mut table_name: Option<String> = None;
-                    let mut display_name: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        if key.as_slice() == b"name" {
-                            table_name = Some(value);
-                        } else if key.as_slice() == b"displayName" {
-                            display_name = Some(value);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"table" =>
+            {
+                let mut table_name: Option<String> = None;
+                let mut display_name: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    if key.as_slice() == b"name" {
+                        table_name = Some(value);
+                    } else if key.as_slice() == b"displayName" {
+                        display_name = Some(value);
                     }
-                    return Ok(table_name.or(display_name));
                 }
+                return Ok(table_name.or(display_name));
             }
             _ => {}
         }
@@ -531,10 +532,7 @@ fn parse_ods_cell_ref(reference: &str) -> Option<(usize, usize)> {
 /// [`get_named_table_names_for_sheet`] returns only the names, which is all
 /// `sheet` mode needs. `table` mode has to know *where* each range is to decide
 /// whether a detected region is that named table (TECH_DEBT #20).
-pub fn get_ods_named_ranges_for_sheet(
-    content: &[u8],
-    sheet_name: &str,
-) -> Vec<OdsNamedRange> {
+pub fn get_ods_named_ranges_for_sheet(content: &[u8], sheet_name: &str) -> Vec<OdsNamedRange> {
     let mut reader = XmlReader::from_reader(content);
     let mut buf = Vec::new();
     let mut out = Vec::new();
@@ -542,42 +540,42 @@ pub fn get_ods_named_ranges_for_sheet(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"named-range" {
-                    let mut name: Option<String> = None;
-                    let mut address: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        match key.as_slice() {
-                            b"name" => name = Some(value),
-                            b"cell-range-address" => address = Some(value),
-                            _ => {}
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"named-range" =>
+            {
+                let mut name: Option<String> = None;
+                let mut address: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    match key.as_slice() {
+                        b"name" => name = Some(value),
+                        b"cell-range-address" => address = Some(value),
+                        _ => {}
                     }
-                    if let (Some(name), Some(address)) = (name, address) {
-                        let on_sheet = address
-                            .split('.')
-                            .next()
-                            .map(|s| s.trim_start_matches('$').trim_matches('\''))
-                            .is_some_and(|s| s == sheet_name);
-                        // A single-cell range has no ':' — `Sheet1.$A$1`. It is
-                        // still a named range, and its region is that one cell.
-                        let (from, to) = match address.split_once(':') {
-                            Some((a, b)) => (a, b),
-                            None => (address.as_str(), address.as_str()),
-                        };
-                        if let (true, Some(a), Some(b)) =
-                            (on_sheet, parse_ods_cell_ref(from), parse_ods_cell_ref(to))
-                        {
-                            out.push(OdsNamedRange {
-                                name,
-                                start_row: a.0.min(b.0),
-                                end_row: a.0.max(b.0),
-                                start_col: a.1.min(b.1),
-                                end_col: a.1.max(b.1),
-                            });
-                        }
+                }
+                if let (Some(name), Some(address)) = (name, address) {
+                    let on_sheet = address
+                        .split('.')
+                        .next()
+                        .map(|s| s.trim_start_matches('$').trim_matches('\''))
+                        .is_some_and(|s| s == sheet_name);
+                    // A single-cell range has no ':' — `Sheet1.$A$1`. It is
+                    // still a named range, and its region is that one cell.
+                    let (from, to) = match address.split_once(':') {
+                        Some((a, b)) => (a, b),
+                        None => (address.as_str(), address.as_str()),
+                    };
+                    if let (true, Some(a), Some(b)) =
+                        (on_sheet, parse_ods_cell_ref(from), parse_ods_cell_ref(to))
+                    {
+                        out.push(OdsNamedRange {
+                            name,
+                            start_row: a.0.min(b.0),
+                            end_row: a.0.max(b.0),
+                            start_col: a.1.min(b.1),
+                            end_col: a.1.max(b.1),
+                        });
                     }
                 }
             }
@@ -596,30 +594,28 @@ fn parse_ods_named_ranges_for_sheet(content: &[u8], sheet_name: &str) -> Vec<Str
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"named-range" {
-                    let mut name: Option<String> = None;
-                    let mut range_sheet: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        match key.as_slice() {
-                            b"name" => name = Some(value),
-                            b"cell-range-address" | b"base-cell-address"
-                                if range_sheet.is_none() =>
-                            {
-                                // "Sheet1.$A$1" → sheet is the part before the first '.'
-                                let raw = value.split('.').next().unwrap_or("");
-                                range_sheet =
-                                    Some(raw.trim_start_matches('$').trim_matches('\'').to_string());
-                            }
-                            _ => {}
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"named-range" =>
+            {
+                let mut name: Option<String> = None;
+                let mut range_sheet: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    match key.as_slice() {
+                        b"name" => name = Some(value),
+                        b"cell-range-address" | b"base-cell-address" if range_sheet.is_none() => {
+                            // "Sheet1.$A$1" → sheet is the part before the first '.'
+                            let raw = value.split('.').next().unwrap_or("");
+                            range_sheet =
+                                Some(raw.trim_start_matches('$').trim_matches('\'').to_string());
                         }
+                        _ => {}
                     }
-                    if let (Some(name), Some(rs)) = (name, range_sheet) {
-                        if rs == sheet_name {
-                            names.push(name);
-                        }
+                }
+                if let (Some(name), Some(rs)) = (name, range_sheet) {
+                    if rs == sheet_name {
+                        names.push(name);
                     }
                 }
             }

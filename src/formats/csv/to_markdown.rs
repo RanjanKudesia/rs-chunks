@@ -20,7 +20,11 @@ pub fn csv_to_markdown(file_path: &str, delimiter: Option<u8>, encoding: &str) -
 }
 
 /// No-filesystem CSV → Markdown table (wasm/browser).
-pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: &str) -> Result<String> {
+pub fn csv_to_markdown_from_bytes(
+    data: &[u8],
+    delimiter: Option<u8>,
+    encoding: &str,
+) -> Result<String> {
     use super::common::{decode_to_utf8, first_data_line_of};
     let delim_byte = match delimiter {
         Some(b) => b,
@@ -56,7 +60,8 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
     let mut max_width = headers.len();
 
     for result in records {
-        let record = result.map_err(|e| ChunkError::Parse(format!("Failed to read CSV row: {e}")))?;
+        let record =
+            result.map_err(|e| ChunkError::Parse(format!("Failed to read CSV row: {e}")))?;
         let row: Vec<String> = record.iter().map(|v| v.to_string()).collect();
         if is_empty_row(&row) {
             continue;
@@ -87,7 +92,11 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
 
     let header_line = format!(
         "| {} |",
-        headers.iter().map(|h| escape(h)).collect::<Vec<_>>().join(" | ")
+        headers
+            .iter()
+            .map(|h| escape(h))
+            .collect::<Vec<_>>()
+            .join(" | ")
     );
     let sep_line = format!("| {} |", vec!["---"; max_width].join(" | "));
 
@@ -95,7 +104,10 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
     for row in &data_rows {
         let cell_line = format!(
             "| {} |",
-            row.iter().map(|c| escape(c)).collect::<Vec<_>>().join(" | ")
+            row.iter()
+                .map(|c| escape(c))
+                .collect::<Vec<_>>()
+                .join(" | ")
         );
         lines.push(cell_line);
     }

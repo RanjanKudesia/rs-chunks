@@ -258,8 +258,20 @@ pub fn find_matching_tag_end(s: &str, from: usize, tag: &str) -> Option<usize> {
 fn is_void_element(tag: &str) -> bool {
     matches!(
         tag,
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input"
-            | "link" | "meta" | "param" | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 
@@ -272,10 +284,36 @@ fn implicitly_closed_by(open: &str, next: &str) -> bool {
     match open {
         "p" => matches!(
             next,
-            "address" | "article" | "aside" | "blockquote" | "details" | "div" | "dl"
-                | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
-                | "h3" | "h4" | "h5" | "h6" | "header" | "hgroup" | "hr" | "main"
-                | "menu" | "nav" | "ol" | "p" | "pre" | "section" | "table" | "ul"
+            "address"
+                | "article"
+                | "aside"
+                | "blockquote"
+                | "details"
+                | "div"
+                | "dl"
+                | "fieldset"
+                | "figcaption"
+                | "figure"
+                | "footer"
+                | "form"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "header"
+                | "hgroup"
+                | "hr"
+                | "main"
+                | "menu"
+                | "nav"
+                | "ol"
+                | "p"
+                | "pre"
+                | "section"
+                | "table"
+                | "ul"
         ),
         "li" => next == "li",
         "dt" | "dd" => matches!(next, "dt" | "dd"),
@@ -474,7 +512,6 @@ pub fn extract_block_content(raw: &str, tag: &str, block_type: HtmlBlockType) ->
     }
 }
 
-
 /// Blocks of `tag` that are *direct* content of `html` — occurrences inside a
 /// nested `container` are skipped, along with the container itself.
 ///
@@ -522,11 +559,7 @@ fn find_block_end_skipping(html: &str, from: usize, tag: &str, container: &str) 
     html.len()
 }
 
-fn extract_blocks_skipping_nested<'a>(
-    html: &'a str,
-    tag: &str,
-    container: &str,
-) -> Vec<&'a str> {
+fn extract_blocks_skipping_nested<'a>(html: &'a str, tag: &str, container: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let bytes = html.as_bytes();
     let mut i = 0usize;

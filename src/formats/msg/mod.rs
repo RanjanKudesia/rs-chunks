@@ -32,8 +32,22 @@ fn load_bytes(data: &[u8]) -> Result<Loaded> {
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    pipeline::chunk(
+        &load_bytes(data)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
@@ -57,7 +71,12 @@ fn loaded_from_doc(doc: extract::MsgDocument) -> Result<Loaded> {
         "has_attachments": !doc.attachments.is_empty(),
         "attachment_count": doc.attachments.len(),
     });
-    Ok(Loaded { markdown, images: doc.images, metadata, records: None })
+    Ok(Loaded {
+        markdown,
+        images: doc.images,
+        metadata,
+        records: None,
+    })
 }
 
 pub fn chunk(
@@ -68,7 +87,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -84,8 +110,15 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_images_from_bytes(
@@ -95,16 +128,23 @@ pub fn chunk_with_images_from_bytes(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load_bytes(data)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load(file_path)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load_bytes(data)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
@@ -121,7 +161,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

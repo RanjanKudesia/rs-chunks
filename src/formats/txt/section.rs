@@ -12,7 +12,6 @@
 ///   paragraph_count  — non-heading blocks accumulated
 ///   block_types      — unique block types present
 ///   char_count       — total content characters
-
 use serde_json::json;
 
 use super::common::{
@@ -33,7 +32,11 @@ struct SectionBody {
 
 impl SectionBody {
     fn joined(&self) -> String {
-        self.parts.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join("\n\n")
+        self.parts
+            .iter()
+            .map(|(c, _)| c.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
     fn char_count(&self) -> usize {
         self.parts.iter().map(|(c, _)| c.len()).sum::<usize>()
@@ -41,29 +44,50 @@ impl SectionBody {
     }
     fn block_types(&self) -> Vec<&'static str> {
         let mut seen: Vec<&'static str> = Vec::new();
-        for (_, t) in &self.parts { if !seen.contains(t) { seen.push(t); } }
+        for (_, t) in &self.parts {
+            if !seen.contains(t) {
+                seen.push(t);
+            }
+        }
         seen
     }
     fn paragraph_count(&self) -> usize {
-        self.parts.iter().filter(|(_, t)| *t == "paragraph" || *t == "list").count()
+        self.parts
+            .iter()
+            .filter(|(_, t)| *t == "paragraph" || *t == "list")
+            .count()
     }
 }
 
 fn split_large_section(text: &str, max_chars: usize) -> Vec<String> {
-    if text.len() <= max_chars { return vec![text.trim().to_string()]; }
+    if text.len() <= max_chars {
+        return vec![text.trim().to_string()];
+    }
     let mut chunks = Vec::new();
     let mut current = String::new();
     for para in text.split("\n\n") {
-        let candidate = if current.is_empty() { para.to_string() }
-        else { format!("{}\n\n{}", current, para) };
-        if candidate.len() <= max_chars { current = candidate; }
-        else {
-            if !current.is_empty() { chunks.push(current.trim().to_string()); }
+        let candidate = if current.is_empty() {
+            para.to_string()
+        } else {
+            format!("{}\n\n{}", current, para)
+        };
+        if candidate.len() <= max_chars {
+            current = candidate;
+        } else {
+            if !current.is_empty() {
+                chunks.push(current.trim().to_string());
+            }
             current = para.to_string();
         }
     }
-    if !current.trim().is_empty() { chunks.push(current.trim().to_string()); }
-    if chunks.is_empty() { vec![text.trim().to_string()] } else { chunks }
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+    if chunks.is_empty() {
+        vec![text.trim().to_string()]
+    } else {
+        chunks
+    }
 }
 
 fn flush_section(
@@ -73,13 +97,17 @@ fn flush_section(
     total: usize,
 ) {
     let joined = body.joined();
-    if joined.trim().is_empty() { return; }
+    if joined.trim().is_empty() {
+        return;
+    }
     let block_types = body.block_types();
     let paragraph_count = body.paragraph_count();
     let parts = split_large_section(&joined, MAX_SECTION_CHARS);
     let part_count = parts.len();
     for (i, content) in parts.into_iter().enumerate() {
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
         result.push(ChunkRecordInput {
             content_type: ContentType::Section,
             content: content.clone(),
@@ -116,7 +144,9 @@ fn block_type_str(ct: ContentType) -> &'static str {
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
     let text = crate::text_encoding::decode_text(bytes).0;
-    if text.trim().is_empty() { return Err("TXT file is empty".to_string()); }
+    if text.trim().is_empty() {
+        return Err("TXT file is empty".to_string());
+    }
 
     let blocks = parse_txt_blocks(&text);
     let total = blocks.len();
@@ -176,7 +206,11 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
                     section_level: next_level,
                     heading_path: next_path,
                 });
-                current.as_mut().unwrap().parts.push((block.content.clone(), bts));
+                current
+                    .as_mut()
+                    .unwrap()
+                    .parts
+                    .push((block.content.clone(), bts));
             } else {
                 a.parts.push((block.content.clone(), bts));
             }
@@ -186,7 +220,12 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Strin
     if let Some(body) = current.take() {
         flush_section(&mut result, body, &mut chunk_index, total);
     }
-    if result.is_empty() { return Err("No section chunks generated".to_string()); }
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
+    if result.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(result)
 }
-

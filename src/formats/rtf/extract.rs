@@ -300,11 +300,32 @@ fn handle_control_word(
 
     match word {
         // ── Destinations to skip entirely ──
-        b"fonttbl" | b"colortbl" | b"stylesheet" | b"listtable" | b"listoverridetable"
-        | b"revtbl" | b"rsidtbl" | b"generator" | b"themedata" | b"colorschememapping"
-        | b"latentstyles" | b"datastore" | b"pict" | b"object" | b"nonshppict"
-        | b"fldinst" | b"xmlnstbl" | b"mmath" | b"header" | b"headerl" | b"headerr"
-        | b"headerf" | b"footer" | b"footerl" | b"footerr" | b"footerf" => {
+        b"fonttbl"
+        | b"colortbl"
+        | b"stylesheet"
+        | b"listtable"
+        | b"listoverridetable"
+        | b"revtbl"
+        | b"rsidtbl"
+        | b"generator"
+        | b"themedata"
+        | b"colorschememapping"
+        | b"latentstyles"
+        | b"datastore"
+        | b"pict"
+        | b"object"
+        | b"nonshppict"
+        | b"fldinst"
+        | b"xmlnstbl"
+        | b"mmath"
+        | b"header"
+        | b"headerl"
+        | b"headerr"
+        | b"headerf"
+        | b"footer"
+        | b"footerl"
+        | b"footerr"
+        | b"footerf" => {
             stack[top_idx].skip = true;
         }
         b"info" => {

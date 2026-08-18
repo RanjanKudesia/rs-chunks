@@ -3,7 +3,6 @@
 /// TXT has no explicit structure markers, so headings, code blocks, tables,
 /// and lists are all detected heuristically from whitespace, capitalisation,
 /// and punctuation patterns.
-
 // Re-export shared utilities so strategy files can keep importing from super::common.
 pub use crate::shared::{
     has_keyword_overlap, split_at_sentences, split_sentences, tokenize_keywords,
@@ -117,10 +116,7 @@ pub fn split_at_setext_boundaries(block: &str) -> Vec<String> {
     let mut current: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if i + 1 < lines.len()
-            && !lines[i].trim().is_empty()
-            && is_setext_underline(lines[i + 1])
-        {
+        if i + 1 < lines.len() && !lines[i].trim().is_empty() && is_setext_underline(lines[i + 1]) {
             if !current.is_empty() {
                 let s = current.join("\n").trim().to_string();
                 if !s.is_empty() {
@@ -146,9 +142,7 @@ pub fn split_at_setext_boundaries(block: &str) -> Vec<String> {
 
 pub fn is_setext_underline(line: &str) -> bool {
     let t = line.trim();
-    t.len() >= 4
-        && !t.contains('|')
-        && (t.chars().all(|c| c == '=') || t.chars().all(|c| c == '-'))
+    t.len() >= 4 && !t.contains('|') && (t.chars().all(|c| c == '=') || t.chars().all(|c| c == '-'))
 }
 
 // ── Block classification ──────────────────────────────────────────────────────
@@ -177,9 +171,7 @@ pub fn classify_block(block: &str) -> ContentType {
     if lines.len() == 2 && is_setext_underline(lines[1]) {
         return ContentType::HeadingSection;
     }
-    if lines.len() == 1
-        && (lines[0].starts_with("# ") || lines[0].starts_with("## "))
-    {
+    if lines.len() == 1 && (lines[0].starts_with("# ") || lines[0].starts_with("## ")) {
         return ContentType::HeadingSection;
     }
     {
@@ -243,8 +235,7 @@ fn is_all_caps_non_heading(line: &str, alpha: &str) -> bool {
 
     // A bare numeral printed above the title it belongs to: `I.`, `II.`, `III.`
     // The trailing period is required, so a word like `MIX` is untouched.
-    if t.ends_with('.') {
-        let stem = &t[..t.len() - 1];
+    if let Some(stem) = t.strip_suffix('.') {
         if !stem.is_empty() && stem.chars().all(|c| "IVXLCDM".contains(c)) {
             return true;
         }
@@ -295,9 +286,9 @@ pub fn is_list_item_line(line: &str) -> bool {
 
 pub fn looks_like_command_block(lines: &[&str]) -> bool {
     const COMMAND_STARTS: &[&str] = &[
-        "source ", "python ", "python3 ", "cargo ", "npm ", "yarn ", "cd ",
-        "git ", "export ", "pip ", "pip3 ", "brew ", "apt ", "sudo ", "bash ",
-        "sh ", "make ", "./", "docker ", "kubectl ",
+        "source ", "python ", "python3 ", "cargo ", "npm ", "yarn ", "cd ", "git ", "export ",
+        "pip ", "pip3 ", "brew ", "apt ", "sudo ", "bash ", "sh ", "make ", "./", "docker ",
+        "kubectl ",
     ];
     lines.iter().any(|l| {
         let t = if l.starts_with('#') {
@@ -476,7 +467,10 @@ mod tests {
 
     #[test]
     fn classify_block_short_under_80() {
-        assert_eq!(classify_block("Short text here.").as_str(), "short_disconnected_paragraph");
+        assert_eq!(
+            classify_block("Short text here.").as_str(),
+            "short_disconnected_paragraph"
+        );
     }
 
     #[test]
@@ -565,7 +559,10 @@ mod tests {
         assert_eq!(stack.len(), 2);
         update_heading_stack(&mut stack, 1, "New Chapter".to_string());
         assert_eq!(stack.len(), 1);
-        assert_eq!(current_section_heading(&stack), Some("New Chapter".to_string()));
+        assert_eq!(
+            current_section_heading(&stack),
+            Some("New Chapter".to_string())
+        );
     }
 
     #[test]
@@ -595,7 +592,10 @@ mod tests {
 
     #[test]
     fn classify_prose_under_90_is_short() {
-        assert_eq!(classify_prose("short").as_str(), "short_disconnected_paragraph");
+        assert_eq!(
+            classify_prose("short").as_str(),
+            "short_disconnected_paragraph"
+        );
     }
 
     #[test]

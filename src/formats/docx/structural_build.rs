@@ -5,10 +5,15 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::structural_model::{
-    ChunkRecordInput, ContentType, DocumentElement, MAX_SECTION_CHARS,
-    SEMANTIC_SPLIT_MAX_BYTES, SHORT_AGGREGATE_CHUNK_OVERLAP, SHORT_AGGREGATE_CHUNK_SIZE,
+    ChunkRecordInput, ContentType, DocumentElement, MAX_SECTION_CHARS, SEMANTIC_SPLIT_MAX_BYTES,
+    SHORT_AGGREGATE_CHUNK_OVERLAP, SHORT_AGGREGATE_CHUNK_SIZE,
 };
 use super::structural_text::{recursive_char_chunks, semantic_chunks};
+
+/// The `(footnotes, endnotes)` a single sub-chunk carries. Both are `(id, text)`
+/// pairs, and both are empty for every sub-chunk after the first — see the
+/// call sites for why duplication is avoided.
+pub(super) type NoteSlices<'a> = (&'a [(String, String)], &'a [(String, String)]);
 
 pub(super) fn build_chunks_from_elements(
     elements: Vec<DocumentElement>,
@@ -208,12 +213,11 @@ pub(super) fn build_chunks_from_elements(
                         // Attach the element's footnotes/endnotes only to the
                         // first sub-chunk; later sub-chunks of the same
                         // paragraph carry empty arrays to avoid duplication.
-                        let (chunk_fns, chunk_ens): (&[(String, String)], &[(String, String)]) =
-                            if idx == 0 {
-                                (fns.as_slice(), ens.as_slice())
-                            } else {
-                                (&[], &[])
-                            };
+                        let (chunk_fns, chunk_ens): NoteSlices = if idx == 0 {
+                            (fns.as_slice(), ens.as_slice())
+                        } else {
+                            (&[], &[])
+                        };
                         chunks.push(ChunkRecordInput {
                             content_type: element.content_type,
                             content: s,
@@ -292,7 +296,7 @@ pub(super) fn flush_outside_shorts(
     .into_iter()
     .enumerate()
     {
-        let (chunk_fns, chunk_ens): (&[(String, String)], &[(String, String)]) = if idx == 0 {
+        let (chunk_fns, chunk_ens): NoteSlices = if idx == 0 {
             (fns.as_slice(), ens.as_slice())
         } else {
             (&[], &[])

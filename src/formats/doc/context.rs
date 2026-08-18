@@ -94,7 +94,10 @@ pub(crate) fn position(paragraphs: Vec<DocParagraph>) -> Vec<Positioned> {
 
 /// The context of the first item in a window — the rule page provenance set.
 pub(crate) fn context_of(window: &[Positioned]) -> ChunkContext {
-    window.first().map(|p| p.context.clone()).unwrap_or_default()
+    window
+        .first()
+        .map(|p| p.context.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

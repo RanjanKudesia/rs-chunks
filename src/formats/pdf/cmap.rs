@@ -87,7 +87,11 @@ fn read_bfrange(tokens: &[Token], mut i: usize, map: &mut HashMap<u32, String>) 
                         _ => break,
                     }
                 }
-                i = if matches!(tokens.get(k), Some(Token::ArrayEnd)) { k + 1 } else { k };
+                i = if matches!(tokens.get(k), Some(Token::ArrayEnd)) {
+                    k + 1
+                } else {
+                    k
+                };
             }
             _ => return i + 3,
         }
@@ -103,7 +107,10 @@ fn insert(map: &mut HashMap<u32, String>, code: u32, dst: &[u8]) {
 }
 
 fn insert_offset(map: &mut HashMap<u32, String>, code: u32, dst: &[u8], offset: u32) {
-    let mut units: Vec<u16> = dst.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let mut units: Vec<u16> = dst
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     if units.is_empty() {
         return;
     }
@@ -116,13 +123,19 @@ fn insert_offset(map: &mut HashMap<u32, String>, code: u32, dst: &[u8], offset: 
 }
 
 fn utf16be(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16_lossy(&units).replace('\u{0}', "")
 }
 
 /// A CMap source code is a big-endian integer over its hex string's bytes.
 fn code_of(bytes: &[u8]) -> u32 {
-    bytes.iter().take(4).fold(0u32, |acc, b| (acc << 8) | *b as u32)
+    bytes
+        .iter()
+        .take(4)
+        .fold(0u32, |acc, b| (acc << 8) | *b as u32)
 }
 
 fn tokenize(bytes: &[u8]) -> Vec<Token> {
@@ -158,7 +171,9 @@ fn tokenize(bytes: &[u8]) -> Vec<Token> {
                 while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
-                out.push(Token::Keyword(String::from_utf8_lossy(&bytes[start..i]).to_string()));
+                out.push(Token::Keyword(
+                    String::from_utf8_lossy(&bytes[start..i]).to_string(),
+                ));
             }
             // Whitespace separates tokens without being one: the readers below
             // require a mapping's source and target to be *adjacent*.
@@ -187,7 +202,10 @@ fn hex_bytes(digits: &[u8]) -> Vec<u8> {
     if nibbles.len() % 2 == 1 {
         nibbles.push(0);
     }
-    nibbles.chunks_exact(2).map(|c| (c[0] << 4) | c[1]).collect()
+    nibbles
+        .chunks_exact(2)
+        .map(|c| (c[0] << 4) | c[1])
+        .collect()
 }
 
 #[cfg(test)]
@@ -215,7 +233,10 @@ mod tests {
     #[test]
     fn an_array_bfrange_assigns_one_target_per_code() {
         let map = parse_to_unicode(b"1 beginbfrange <08> <0A> [<0044> <0045> <0046>] endbfrange");
-        assert_eq!((map[&8].as_str(), map[&9].as_str(), map[&10].as_str()), ("D", "E", "F"));
+        assert_eq!(
+            (map[&8].as_str(), map[&9].as_str(), map[&10].as_str()),
+            ("D", "E", "F")
+        );
     }
 
     #[test]

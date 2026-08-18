@@ -11,15 +11,15 @@
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
+use super::common::{
+    current_section_heading, current_section_level, extend_span, extract_heading_text,
+    has_keyword_overlap, heading_level, heading_path_strings, parse_markdown_blocks,
+    strip_block_content, tokenize_keywords, update_heading_stack, BlockSpan, ChunkRecordInput,
+    ContentType, MdBlockType, SpannedRecord,
+};
 use crate::shared::{
     ci_starts_with, CAUSE_EFFECT_STARTS, CONTRAST_CONTINUATION, ELABORATION_STARTS, EXAMPLE_STARTS,
     MAX_SEMANTIC_CHARS, REFERENCE_STARTS, TRANSITION_BREAKS,
-};
-use super::common::{
-    current_section_heading, current_section_level, extract_heading_text, has_keyword_overlap,
-    heading_level, heading_path_strings, parse_markdown_blocks, strip_block_content,
-    tokenize_keywords, update_heading_stack, extend_span, BlockSpan, ChunkRecordInput,
-    ContentType, MdBlockType, SpannedRecord,
 };
 
 // ── Signal word tables ────────────────────────────────────────────────────────
@@ -84,7 +84,13 @@ impl SemanticAccum {
         }
     }
 
-    fn append(&mut self, content: String, block_type: MdBlockType, reason: &'static str, block: usize) {
+    fn append(
+        &mut self,
+        content: String,
+        block_type: MdBlockType,
+        reason: &'static str,
+        block: usize,
+    ) {
         self.char_count += content.len() + 2;
         self.ends_with_question = content.trim_end().ends_with('?');
         self.ends_with_definition_label = content.len() <= 80 && content.trim_end().ends_with(':');
@@ -183,10 +189,8 @@ fn decide_merge(
 
     // 10+11. Keyword-based signals — compute keywords once, reuse for both checks.
     let bkw = tokenize_keywords(clean);
-    if matches!(block_type, MdBlockType::List) {
-        if has_keyword_overlap(&accum.keywords, &bkw) {
-            return Some("list_continuation");
-        }
+    if matches!(block_type, MdBlockType::List) && has_keyword_overlap(&accum.keywords, &bkw) {
+        return Some("list_continuation");
     }
 
     // 11. Keyword overlap — paragraph shares at least one significant term.
@@ -199,11 +203,7 @@ fn decide_merge(
 
 // ── Finalise an accumulator into a ChunkRecordInput ───────────────────────────
 
-fn finalize(
-    accum: SemanticAccum,
-    chunk_index: usize,
-    total_input_blocks: usize,
-) -> SpannedRecord {
+fn finalize(accum: SemanticAccum, chunk_index: usize, total_input_blocks: usize) -> SpannedRecord {
     let span = accum.span;
     let content = accum.joined_content();
 
@@ -242,8 +242,11 @@ fn finalize(
         }
         // Sort by (count desc, key asc) for determinism when counts are tied.
         let mut reason_vec: Vec<(&'static str, usize)> = counts.into_iter().collect();
-        reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        reason_vec.first().map(|(r, _)| *r).unwrap_or("keyword_overlap")
+        reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        reason_vec
+            .first()
+            .map(|(r, _)| *r)
+            .unwrap_or("keyword_overlap")
     };
 
     let has_list = accum
@@ -288,7 +291,11 @@ fn finalize(
     });
 
     SpannedRecord::spanning(
-        ChunkRecordInput { content_type: ContentType::Semantic, content, metadata },
+        ChunkRecordInput {
+            content_type: ContentType::Semantic,
+            content,
+            metadata,
+        },
         span,
     )
 }
@@ -298,8 +305,12 @@ fn finalize(
 pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
     let text = crate::text_encoding::decode_utf8_document(bytes);
 
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("Markdown file is empty after decoding".to_string());
+        return Ok(Vec::new());
     }
 
     let blocks = parse_markdown_blocks(&text);
@@ -355,27 +366,30 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String>
                     chunk_index += 1;
                 }
                 let content = block.content.clone();
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::CodeBlock,
-                    content: content.clone(),
-                    metadata: json!({
-                        "section_heading":      current_section_heading(&heading_stack),
-                        "heading_path":         heading_path_strings(&heading_stack),
-                        "section_level":        current_section_level(&heading_stack),
-                        "paragraph_count":      0,
-                        "block_types":          ["code_block"],
-                        "merge_reasons":        [],
-                        "primary_merge_reason": "structural_boundary",
-                        "has_list":             false,
-                        "keyword_density":      0.0,
-                        "avg_block_length":     content.len(),
-                        "chunk_index":          chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::CodeBlock,
+                        content: content.clone(),
+                        metadata: json!({
+                            "section_heading":      current_section_heading(&heading_stack),
+                            "heading_path":         heading_path_strings(&heading_stack),
+                            "section_level":        current_section_level(&heading_stack),
+                            "paragraph_count":      0,
+                            "block_types":          ["code_block"],
+                            "merge_reasons":        [],
+                            "primary_merge_reason": "structural_boundary",
+                            "has_list":             false,
+                            "keyword_density":      0.0,
+                            "avg_block_length":     content.len(),
+                            "chunk_index":          chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
             }
 
@@ -386,27 +400,30 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String>
                     chunk_index += 1;
                 }
                 let content = block.content.clone();
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::Table,
-                    content: content.clone(),
-                    metadata: json!({
-                        "section_heading":      current_section_heading(&heading_stack),
-                        "heading_path":         heading_path_strings(&heading_stack),
-                        "section_level":        current_section_level(&heading_stack),
-                        "paragraph_count":      0,
-                        "block_types":          ["table"],
-                        "merge_reasons":        [],
-                        "primary_merge_reason": "structural_boundary",
-                        "has_list":             false,
-                        "keyword_density":      0.0,
-                        "avg_block_length":     content.len(),
-                        "chunk_index":          chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::Table,
+                        content: content.clone(),
+                        metadata: json!({
+                            "section_heading":      current_section_heading(&heading_stack),
+                            "heading_path":         heading_path_strings(&heading_stack),
+                            "section_level":        current_section_level(&heading_stack),
+                            "paragraph_count":      0,
+                            "block_types":          ["table"],
+                            "merge_reasons":        [],
+                            "primary_merge_reason": "structural_boundary",
+                            "has_list":             false,
+                            "keyword_density":      0.0,
+                            "avg_block_length":     content.len(),
+                            "chunk_index":          chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
             }
 
@@ -465,11 +482,14 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String>
         result.push(finalize(a, chunk_index, total_input_blocks));
     }
 
-    if result.is_empty() {
-        return Err("No chunks generated from Markdown document".to_string());
-    }
+    // A document that parsed cleanly but holds no extractable text is EMPTY,
+    // not broken: return an empty list rather than an error. Raising here
+    // conflated "nothing to chunk" with "could not read this file", and it was
+    // inconsistent — docx/ppt/xlsx already returned `[]` for the same condition
+    // while txt/html/md raised (TECH_DEBT T6). Structural invalidity still
+    // errors: a PPTX with no slides, or a PDF with no text layer, both raise a
+    // typed error carrying a remedy.
     Ok(result)
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

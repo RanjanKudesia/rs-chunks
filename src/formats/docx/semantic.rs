@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 
 use super::common::{
-    collapse_whitespace, docx_heading_level, image_hash_name, parse_docx_blocks, DocxBlock, DocxBlockKind,
+    collapse_whitespace, docx_heading_level, image_hash_name, parse_docx_blocks, DocxBlock,
+    DocxBlockKind,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -65,7 +66,7 @@ fn build_semantic_chunks_with_images(
     paragraphs: Vec<SemanticParagraph>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<(String, String, serde_json::Value)> {
     let mut result: Vec<(String, String, serde_json::Value)> = Vec::new();
 
@@ -185,9 +186,8 @@ fn build_semantic_chunks(paragraphs: Vec<SemanticParagraph>) -> Vec<ChunkRecordI
         return Vec::new();
     }
 
-    let semantic_chunks = propagate_section_headings(
-        merge_heading_singletons(group_semantic_chunks(cleaned)),
-    );
+    let semantic_chunks =
+        propagate_section_headings(merge_heading_singletons(group_semantic_chunks(cleaned)));
     semantic_chunks
         .into_iter()
         .map(|chunk| {
@@ -518,7 +518,6 @@ fn chunk_content_len(paragraphs: &[String]) -> usize {
     paragraphs.iter().map(|p| p.len()).sum::<usize>() + ((paragraphs.len() - 1) * 2)
 }
 
-
 pub(super) fn chunk(bytes: &[u8]) -> Result<Vec<crate::chunk::Chunk>, String> {
     let raw_blocks = parse_docx_blocks(bytes)?;
     let paragraphs = lower_blocks_to_paragraphs(raw_blocks);
@@ -528,10 +527,21 @@ pub(super) fn chunk(bytes: &[u8]) -> Result<Vec<crate::chunk::Chunk>, String> {
         .collect())
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let paragraphs = lower_blocks_to_paragraphs(parse_docx_blocks(bytes)?);
     let mut image_out = Vec::new();
-    let combined = build_semantic_chunks_with_images(paragraphs, &image_rids_map, &mut archive, &mut image_out);
-    Ok((combined.into_iter().map(|(ct, c, m)| crate::chunk::Chunk::new(c, ct, m)).collect(), image_out))
+    let combined = build_semantic_chunks_with_images(
+        paragraphs,
+        &image_rids_map,
+        &mut archive,
+        &mut image_out,
+    );
+    Ok((
+        combined
+            .into_iter()
+            .map(|(ct, c, m)| crate::chunk::Chunk::new(c, ct, m))
+            .collect(),
+        image_out,
+    ))
 }

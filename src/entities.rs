@@ -276,7 +276,9 @@ mod tests {
     fn relationship_targets_have_their_ampersands_decoded() {
         // The exact shape of the bug: a Scopus URL out of word/_rels.
         assert_eq!(
-            decode("http://www.scopus.com/record.url?eid=2-s2.0-00249&amp;partnerID=K84&amp;rel=3.0.0"),
+            decode(
+                "http://www.scopus.com/record.url?eid=2-s2.0-00249&amp;partnerID=K84&amp;rel=3.0.0"
+            ),
             "http://www.scopus.com/record.url?eid=2-s2.0-00249&partnerID=K84&rel=3.0.0"
         );
     }

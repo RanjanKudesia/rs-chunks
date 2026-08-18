@@ -27,7 +27,7 @@ pub(crate) mod image_naming;
 pub(crate) mod shared;
 pub(crate) mod text_encoding;
 
-pub use chunk::Chunk;
+pub use chunk::{Chunk, ChunksWithImages, ExtractedImage, ExtractedImages, MarkdownWithImages};
 pub use dispatch::{
     get_chunks, get_chunks_from_bytes, get_chunks_with_images_from_bytes, get_markdown,
     get_markdown_from_bytes, get_markdown_with_images_from_bytes,

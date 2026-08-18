@@ -1,9 +1,7 @@
 use calamine::{Data, Reader};
 
-
-
 fn escape_md_cell(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ").replace('\r', " ")
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 fn render_sheet_markdown(sheet_name: &str, rows: &[Vec<String>], has_header: bool) -> String {
@@ -48,7 +46,6 @@ fn render_sheet_markdown(sheet_name: &str, rows: &[Vec<String>], has_header: boo
     out.trim_end().to_string()
 }
 
-
 pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
     use super::common::{
         detect_header_row, open_spreadsheet_from_bytes, read_worksheet_range, row_is_empty_public,
@@ -84,7 +81,11 @@ pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
             .iter()
             .map(|row| {
                 (0..col_count)
-                    .map(|i| row.get(i).map(super::common::cell_to_string).unwrap_or_default())
+                    .map(|i| {
+                        row.get(i)
+                            .map(super::common::cell_to_string)
+                            .unwrap_or_default()
+                    })
                     .collect()
             })
             .collect();
@@ -113,18 +114,26 @@ pub(super) fn to_markdown(data: &[u8], ext: &str) -> Result<String, String> {
     Ok(parts.join("\n\n---\n\n"))
 }
 
-pub(super) fn to_markdown_with_images(data: &[u8], ext: &str) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images(
+    data: &[u8],
+    ext: &str,
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     use super::common::{
         detect_header_row, open_spreadsheet_from_bytes, read_worksheet_range, row_is_empty_public,
     };
     let mut workbook = open_spreadsheet_from_bytes(data, ext)?;
     let sheet_names = workbook.sheet_names().to_vec();
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
-    let image_infos = super::images::collect_spreadsheet_images(data, ext, &sheet_names, &mut image_out);
-    let mut sheet_image_map: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
+    let image_infos =
+        super::images::collect_spreadsheet_images(data, ext, &sheet_names, &mut image_out);
+    let mut sheet_image_map: std::collections::HashMap<usize, Vec<String>> =
+        std::collections::HashMap::new();
     for info in image_infos {
-        sheet_image_map.entry(info.sheet_index).or_default().push(info.hash_name);
+        sheet_image_map
+            .entry(info.sheet_index)
+            .or_default()
+            .push(info.hash_name);
     }
 
     let mut parts: Vec<String> = Vec::new();
@@ -162,7 +171,15 @@ pub(super) fn to_markdown_with_images(data: &[u8], ext: &str) -> Result<(String,
         }
         let string_rows: Vec<Vec<String>> = raw_rows
             .iter()
-            .map(|row| (0..col_count).map(|i| row.get(i).map(super::common::cell_to_string).unwrap_or_default()).collect())
+            .map(|row| {
+                (0..col_count)
+                    .map(|i| {
+                        row.get(i)
+                            .map(super::common::cell_to_string)
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
             .collect();
         let header_idx = detect_header_row(&raw_rows);
         let has_header = header_idx.map_or(raw_rows.len() > 1, |_| true);

@@ -94,11 +94,16 @@ pub struct MboxMessageInfo {
 
 pub fn mbox_to_markdown(
     raw: &[u8],
-) -> (String, Vec<(String, Vec<u8>)>, usize, Vec<MboxMessageInfo>) {
+) -> (
+    String,
+    crate::chunk::ExtractedImages,
+    usize,
+    Vec<MboxMessageInfo>,
+) {
     let messages = split_mbox(raw);
     let count = messages.len();
     let mut out = String::new();
-    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut images: crate::chunk::ExtractedImages = Vec::new();
 
     out.push_str(&format!(
         "# Mailbox — {count} message{}\n\n",

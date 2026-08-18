@@ -188,14 +188,12 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                     }
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_t {
-                    // One <a:t> arrives as several events when it contains
-                    // entity references, so concatenate verbatim here and let
-                    // the flush at </a:t> do the trimming and joining. Trimming
-                    // per event would put a space inside a word.
-                    t_buf.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_t => {
+                // One <a:t> arrives as several events when it contains
+                // entity references, so concatenate verbatim here and let
+                // the flush at </a:t> do the trimming and joining. Trimming
+                // per event would put a space inside a word.
+                t_buf.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => {
                 let local = local_name(e.name());

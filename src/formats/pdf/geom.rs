@@ -15,14 +15,28 @@ pub(crate) struct Matrix {
 }
 
 impl Matrix {
-    pub const IDENTITY: Matrix = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub const IDENTITY: Matrix = Matrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     pub fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Matrix {
         Matrix { a, b, c, d, e, f }
     }
 
     pub fn translate(tx: f32, ty: f32) -> Matrix {
-        Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: tx, f: ty }
+        Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: tx,
+            f: ty,
+        }
     }
 
     /// `self` applied first, then `other`.
@@ -38,7 +52,10 @@ impl Matrix {
     }
 
     pub fn apply(self, x: f32, y: f32) -> (f32, f32) {
-        (self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f)
+        (
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        )
     }
 
     /// How much this matrix scales a vertical unit — the factor that turns a
@@ -56,8 +73,14 @@ impl Matrix {
 /// Build the transform from PDF user space to upright page space: origin at the
 /// visible bottom-left, `y` increasing upward, `/Rotate` already applied.
 pub(crate) fn page_transform(media_box: [f32; 4], rotate: i64) -> (Matrix, f32, f32) {
-    let (x0, y0) = (media_box[0].min(media_box[2]), media_box[1].min(media_box[3]));
-    let (x1, y1) = (media_box[0].max(media_box[2]), media_box[1].max(media_box[3]));
+    let (x0, y0) = (
+        media_box[0].min(media_box[2]),
+        media_box[1].min(media_box[3]),
+    );
+    let (x1, y1) = (
+        media_box[0].max(media_box[2]),
+        media_box[1].max(media_box[3]),
+    );
     let (w, h) = (x1 - x0, y1 - y0);
     match rotate.rem_euclid(360) {
         90 => (Matrix::new(0.0, -1.0, 1.0, 0.0, -y0, x1), h, w),

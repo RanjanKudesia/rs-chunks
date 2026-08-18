@@ -34,7 +34,7 @@ pub struct EmlDocument {
     pub body: String,
     pub attachments: Vec<EmlAttachment>,
     /// Inline / attached images as (filename, bytes) for `list_images`.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// Format an address header into `Name <email>` / `email` display strings.
@@ -42,7 +42,10 @@ fn format_addresses(addr: Option<&Address>) -> Vec<String> {
     let mut out = Vec::new();
     let Some(addr) = addr else { return out };
     for a in addr.iter() {
-        let name = a.name().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let name = a
+            .name()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let email = a
             .address()
             .map(|s| s.trim().to_string())
@@ -204,9 +207,7 @@ fn redecode_if_charset_mismatched(msg: &Message<'_>, decoded: &str) -> Option<St
 fn header_ids(value: &mail_parser::HeaderValue<'_>) -> Vec<String> {
     match value {
         mail_parser::HeaderValue::Text(t) => vec![t.to_string()],
-        mail_parser::HeaderValue::TextList(list) => {
-            list.iter().map(|t| t.to_string()).collect()
-        }
+        mail_parser::HeaderValue::TextList(list) => list.iter().map(|t| t.to_string()).collect(),
         _ => Vec::new(),
     }
 }
@@ -220,7 +221,10 @@ fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
 
 pub fn document_from_message(msg: &Message) -> EmlDocument {
     let mut doc = EmlDocument {
-        subject: msg.subject().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        subject: msg
+            .subject()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         from: format_addresses(msg.from()).into_iter().next(),
         to: format_addresses(msg.to()),
         cc: format_addresses(msg.cc()),
@@ -253,7 +257,10 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
             }
             PartType::Binary(bytes) | PartType::InlineBinary(bytes) => {
                 let mime = full_content_type(part);
-                let is_image = mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false);
+                let is_image = mime
+                    .as_deref()
+                    .map(|m| m.starts_with("image/"))
+                    .unwrap_or(false);
                 if is_image {
                     let ext = image_ext(mime.as_deref());
                     let name = part
@@ -302,12 +309,20 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
     for part in &msg.parts {
         if let PartType::InlineBinary(bytes) = &part.body {
             let mime = full_content_type(part);
-            if mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false) {
-                let already = doc.images.iter().any(|(_, b)| b.as_slice() == bytes.as_ref());
+            if mime
+                .as_deref()
+                .map(|m| m.starts_with("image/"))
+                .unwrap_or(false)
+            {
+                let already = doc
+                    .images
+                    .iter()
+                    .any(|(_, b)| b.as_slice() == bytes.as_ref());
                 if !already {
                     let ext = image_ext(mime.as_deref());
                     img_counter += 1;
-                    doc.images.push((format!("inline_{img_counter}{ext}"), bytes.to_vec()));
+                    doc.images
+                        .push((format!("inline_{img_counter}{ext}"), bytes.to_vec()));
                 }
             }
         }
@@ -351,8 +366,15 @@ pub fn document_to_markdown(doc: &EmlDocument, heading_level: usize) -> String {
     if !doc.attachments.is_empty() {
         out.push_str("## Attachments\n\n");
         for att in &doc.attachments {
-            let name = att.filename.clone().unwrap_or_else(|| "(unnamed)".to_string());
-            let mime = att.mime.as_ref().map(|m| format!(" ({m})")).unwrap_or_default();
+            let name = att
+                .filename
+                .clone()
+                .unwrap_or_else(|| "(unnamed)".to_string());
+            let mime = att
+                .mime
+                .as_ref()
+                .map(|m| format!(" ({m})"))
+                .unwrap_or_default();
             out.push_str(&format!("- {name}{mime}\n"));
             if let Some(text) = &att.embedded_text {
                 out.push_str(&format!("\n{text}\n"));

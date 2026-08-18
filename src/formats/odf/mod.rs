@@ -29,8 +29,23 @@ fn load(file_path: &str) -> Result<Loaded> {
 }
 
 /// No-filesystem entry (wasm/browser). `filename` routes `.odt` vs `.odp`.
-pub fn chunk_from_bytes(data: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    chunk_odp(&load_bytes(data, filename)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_from_bytes(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    chunk_odp(
+        &load_bytes(data, filename)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
@@ -55,12 +70,7 @@ fn chunk_odp(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    if loaded
-        .metadata
-        .get("source_type")
-        .and_then(|v| v.as_str())
-        == Some("odp")
-    {
+    if loaded.metadata.get("source_type").and_then(|v| v.as_str()) == Some("odp") {
         inject_slide_metadata(&mut chunks);
     }
     Ok(chunks)
@@ -122,11 +132,7 @@ fn inject_slide_metadata(chunks: &mut [Chunk]) {
     // Backfill it, rather than leave one chunk per slide with a null title
     // while its siblings have one.
     for chunk in chunks.iter_mut() {
-        let Some(n) = chunk
-            .metadata
-            .get("slide_number")
-            .and_then(|v| v.as_u64())
-        else {
+        let Some(n) = chunk.metadata.get("slide_number").and_then(|v| v.as_u64()) else {
             continue;
         };
         let t = titles.get(&n).cloned();
@@ -144,7 +150,8 @@ fn slide_number_of(text: &str) -> Option<u64> {
 fn load_bytes(bytes: &[u8], filename: &str) -> Result<Loaded> {
     let kind = kind_for(filename)?;
     let container = load_container(bytes, kind).map_err(ChunkError::Parse)?;
-    let (markdown, slide_count) = content_to_markdown(&container.content_xml, kind, &container.image_names);
+    let (markdown, slide_count) =
+        content_to_markdown(&container.content_xml, kind, &container.image_names);
     let (title, creator) = container
         .meta_xml
         .as_deref()
@@ -158,7 +165,12 @@ fn load_bytes(bytes: &[u8], filename: &str) -> Result<Loaded> {
             "source_type": "odp", "title": title, "creator": creator, "slide_count": slide_count,
         }),
     };
-    Ok(Loaded { markdown, images: container.images, metadata, records: None })
+    Ok(Loaded {
+        markdown,
+        images: container.images,
+        metadata,
+        records: None,
+    })
 }
 
 pub fn chunk(
@@ -169,7 +181,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    chunk_odp(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_odp(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -183,29 +202,53 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
     Ok(load(file_path)?.markdown)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load(file_path)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(data: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load_bytes(data, filename)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_with_images_from_bytes(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load_bytes(data, filename)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    data: &[u8],
+    filename: &str,
+) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load_bytes(data, filename)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
-
 
 pub fn stream(
     file_path: &str,
@@ -215,7 +258,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

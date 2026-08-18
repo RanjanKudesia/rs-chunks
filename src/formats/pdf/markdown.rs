@@ -70,9 +70,7 @@ fn emphasised(spans: &[Span]) -> String {
     if text.trim().is_empty() {
         return String::new();
     }
-    let all_italic = spans
-        .iter()
-        .all(|s| s.italic || s.text.trim().is_empty())
+    let all_italic = spans.iter().all(|s| s.italic || s.text.trim().is_empty())
         && spans.iter().any(|s| s.italic);
 
     let mut out = String::with_capacity(text.len());
@@ -140,7 +138,9 @@ fn collapse(text: &str) -> String {
 }
 
 fn table(rows: &[Vec<String>]) -> String {
-    let Some(width) = rows.iter().map(Vec::len).max() else { return String::new() };
+    let Some(width) = rows.iter().map(Vec::len).max() else {
+        return String::new();
+    };
     if width == 0 {
         return String::new();
     }
@@ -159,14 +159,23 @@ mod tests {
     use super::*;
 
     fn span(text: &str, bold: bool, italic: bool) -> Span {
-        Span { text: text.into(), bold, italic, link: None }
+        Span {
+            text: text.into(),
+            bold,
+            italic,
+            link: None,
+        }
     }
 
     #[test]
     fn a_link_annotation_becomes_a_markdown_link() {
         let mut linked = span("Semeval-2017 task 1", false, false);
         linked.link = Some(std::rc::Rc::from("https://doi.org/10.18653/v1/S17-2001"));
-        let spans = vec![span("See ", false, false), linked, span(" for details", false, false)];
+        let spans = vec![
+            span("See ", false, false),
+            linked,
+            span(" for details", false, false),
+        ];
         assert_eq!(
             emphasised(&spans),
             "See [Semeval-2017 task 1](https://doi.org/10.18653/v1/S17-2001) for details"
@@ -175,47 +184,64 @@ mod tests {
 
     #[test]
     fn a_bold_run_is_wrapped_and_the_markers_stay_off_the_whitespace() {
-        let spans = vec![span("Encoder: ", true, false), span("the encoder is a stack", false, false)];
-        assert_eq!(
-            emphasised(&spans),
-            "**Encoder:** the encoder is a stack"
-        );
+        let spans = vec![
+            span("Encoder: ", true, false),
+            span("the encoder is a stack", false, false),
+        ];
+        assert_eq!(emphasised(&spans), "**Encoder:** the encoder is a stack");
     }
 
     #[test]
     fn a_bold_variable_is_left_alone() {
-        let spans = vec![span("the vector ", false, false), span("x", true, false), span(" is fixed", false, false)];
+        let spans = vec![
+            span("the vector ", false, false),
+            span("x", true, false),
+            span(" is fixed", false, false),
+        ];
         assert_eq!(emphasised(&spans), "the vector x is fixed");
     }
 
     #[test]
     fn italic_survives_only_when_it_covers_the_block() {
-        let inline = vec![span("the value of ", false, false), span("n", false, true), span(" grows", false, false)];
+        let inline = vec![
+            span("the value of ", false, false),
+            span("n", false, true),
+            span(" grows", false, false),
+        ];
         assert_eq!(emphasised(&inline), "the value of n grows");
 
-        let whole = vec![span("Equal contribution. Listing order is random.", false, true)];
-        assert_eq!(emphasised(&whole), "*Equal contribution. Listing order is random.*");
+        let whole = vec![span(
+            "Equal contribution. Listing order is random.",
+            false,
+            true,
+        )];
+        assert_eq!(
+            emphasised(&whole),
+            "*Equal contribution. Listing order is random.*"
+        );
     }
 
     #[test]
     fn a_table_gets_a_header_rule_and_square_rows() {
-        let rows = vec![
-            vec!["Layer".into(), "Ops".into()],
-            vec!["Recurrent".into()],
-        ];
+        let rows = vec![vec!["Layer".into(), "Ops".into()], vec!["Recurrent".into()]];
         assert_eq!(table(&rows), "| Layer | Ops |\n|---|---|\n| Recurrent |  |");
     }
 
     #[test]
     fn a_heading_takes_one_hash_per_level() {
-        let block = Block::Heading { level: 3, spans: vec![span("  Positional Encoding ", false, false)] };
+        let block = Block::Heading {
+            level: 3,
+            spans: vec![span("  Positional Encoding ", false, false)],
+        };
         assert_eq!(render(&block), "### Positional Encoding");
     }
 
     #[test]
     fn an_image_is_placed_as_a_reference_of_its_own() {
         let items = vec![
-            Item::Block(Block::Paragraph { spans: vec![span("above", false, false)] }),
+            Item::Block(Block::Paragraph {
+                spans: vec![span("above", false, false)],
+            }),
             Item::Image("image_p3_1.png".into()),
         ];
         assert_eq!(page(&items), "above\n\n![](image_p3_1.png)");

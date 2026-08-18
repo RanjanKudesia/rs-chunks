@@ -463,6 +463,8 @@ fn blocks_to_markdown(
     result.trim_end().to_string()
 }
 
+// Takes the five DOCX aux maps plus the render flags; see `DocxAuxParts`.
+#[allow(clippy::too_many_arguments)]
 fn blocks_to_markdown_with_images(
     blocks: &[DocxBlock],
     footnote_map: &HashMap<String, String>,
@@ -471,7 +473,7 @@ fn blocks_to_markdown_with_images(
     rels_map: &HashMap<String, String>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<&[u8]>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> String {
     let mut out = String::new();
     let mut footnote_queue: Vec<(String, String)> = Vec::new();
@@ -647,28 +649,41 @@ fn blocks_to_markdown_with_images(
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
 
-
-fn read_aux(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<
-    (
-        HashMap<String, String>, // footnote_map
-        HashMap<String, String>, // endnote_map
-        HashMap<u32, bool>,      // num_id_map
-        HashMap<String, String>, // rels_map
-        HashMap<String, String>, // image_rids_map
-        String,                  // header_text
-    ),
+/// The auxiliary parts `read_aux` pulls out of a DOCX, in order: footnote map,
+/// endnote map, `numId` → is-ordered map, relationship map, image-rId map, and
+/// the rendered header text.
+type DocxAuxParts = (
+    HashMap<String, String>,
+    HashMap<String, String>,
+    HashMap<u32, bool>,
+    HashMap<String, String>,
+    HashMap<String, String>,
     String,
-> {
+);
+
+fn read_aux(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<DocxAuxParts, String> {
     let footnotes_xml = read_zip_entry(archive, "word/footnotes.xml", MAX_AUX_XML_BYTES)?;
     let endnotes_xml = read_zip_entry(archive, "word/endnotes.xml", MAX_AUX_XML_BYTES)?;
     let numbering_xml = read_zip_entry(archive, "word/numbering.xml", MAX_AUX_XML_BYTES)?;
     let rels_xml = read_zip_entry(archive, "word/_rels/document.xml.rels", MAX_AUX_XML_BYTES)?;
 
-    let footnote_map = footnotes_xml.as_deref().map(|x| extract_notes_map(x, "footnote")).unwrap_or_default();
-    let endnote_map = endnotes_xml.as_deref().map(|x| extract_notes_map(x, "endnote")).unwrap_or_default();
-    let num_id_map = numbering_xml.as_deref().map(parse_numbering_xml).unwrap_or_default();
+    let footnote_map = footnotes_xml
+        .as_deref()
+        .map(|x| extract_notes_map(x, "footnote"))
+        .unwrap_or_default();
+    let endnote_map = endnotes_xml
+        .as_deref()
+        .map(|x| extract_notes_map(x, "endnote"))
+        .unwrap_or_default();
+    let num_id_map = numbering_xml
+        .as_deref()
+        .map(parse_numbering_xml)
+        .unwrap_or_default();
     let (rels_map, header_paths) = rels_xml.as_deref().map(parse_rels_xml).unwrap_or_default();
-    let image_rids_map = rels_xml.as_deref().map(parse_rels_xml_images).unwrap_or_default();
+    let image_rids_map = rels_xml
+        .as_deref()
+        .map(parse_rels_xml_images)
+        .unwrap_or_default();
 
     let mut parts: Vec<String> = Vec::new();
     for path in &header_paths {
@@ -680,14 +695,22 @@ fn read_aux(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<
         }
     }
     let header_text = parts.join(" | ");
-    Ok((footnote_map, endnote_map, num_id_map, rels_map, image_rids_map, header_text))
+    Ok((
+        footnote_map,
+        endnote_map,
+        num_id_map,
+        rels_map,
+        image_rids_map,
+        header_text,
+    ))
 }
 
 pub(super) fn to_markdown(bytes: &[u8]) -> Result<String, String> {
     let blocks = parse_docx_blocks(bytes)?;
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor).map_err(|e| format!("Not a valid DOCX zip: {e}"))?;
-    let (footnote_map, endnote_map, num_id_map, rels_map, _img, header_text) = read_aux(&mut archive)?;
+    let (footnote_map, endnote_map, num_id_map, rels_map, _img, header_text) =
+        read_aux(&mut archive)?;
     let body = blocks_to_markdown(&blocks, &footnote_map, &endnote_map, &num_id_map, &rels_map);
     Ok(if header_text.is_empty() {
         body
@@ -696,15 +719,24 @@ pub(super) fn to_markdown(bytes: &[u8]) -> Result<String, String> {
     })
 }
 
-pub(super) fn to_markdown_with_images(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     let blocks = parse_docx_blocks(bytes)?;
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor).map_err(|e| format!("Not a valid DOCX zip: {e}"))?;
-    let (footnote_map, endnote_map, num_id_map, rels_map, image_rids_map, header_text) = read_aux(&mut archive)?;
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let (footnote_map, endnote_map, num_id_map, rels_map, image_rids_map, header_text) =
+        read_aux(&mut archive)?;
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let body = blocks_to_markdown_with_images(
-        &blocks, &footnote_map, &endnote_map, &num_id_map, &rels_map, &image_rids_map,
-        &mut archive, &mut image_out,
+        &blocks,
+        &footnote_map,
+        &endnote_map,
+        &num_id_map,
+        &rels_map,
+        &image_rids_map,
+        &mut archive,
+        &mut image_out,
     );
     let md = if header_text.is_empty() {
         body

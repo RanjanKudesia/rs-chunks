@@ -13,7 +13,9 @@ use std::thread;
 use csv::ReaderBuilder;
 use serde_json::json;
 
-use super::common::{detect_delimiter, serialize_row_kv, serialize_row_values, CT_ROW_GROUP, CT_ROW_WINDOW};
+use super::common::{
+    detect_delimiter, serialize_row_kv, serialize_row_values, CT_ROW_GROUP, CT_ROW_WINDOW,
+};
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 
@@ -288,6 +290,9 @@ fn open_csv_reader(
     Ok((reader, delimiter))
 }
 
+// Eight independent values with no natural grouping; bundling them into a
+// struct would add a type whose only purpose is to satisfy the lint.
+#[allow(clippy::too_many_arguments)]
 fn build_row_group_chunk(
     headers: &[String],
     has_header: bool,
@@ -369,7 +374,14 @@ fn build_row_streaming(
         buffer.push(row);
         if buffer.len() == rows_per_chunk {
             let chunk = build_row_group_chunk(
-                &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+                &headers,
+                has_header,
+                &buffer,
+                include_headers,
+                used_delimiter,
+                encoding,
+                chunk_index,
+                row_start,
             );
             sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
             row_start += buffer.len();
@@ -380,7 +392,14 @@ fn build_row_streaming(
 
     if !buffer.is_empty() {
         let chunk = build_row_group_chunk(
-            &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+            &headers,
+            has_header,
+            &buffer,
+            include_headers,
+            used_delimiter,
+            encoding,
+            chunk_index,
+            row_start,
         );
         sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
     }
@@ -388,6 +407,9 @@ fn build_row_streaming(
     Ok(())
 }
 
+// Mirrors the public `csv::chunk` parameter list one-for-one; regrouping here
+// would only move the argument count to the call site.
+#[allow(clippy::too_many_arguments)]
 fn build_sliding_window_streaming(
     file_path: &str,
     window_size: usize,
@@ -453,19 +475,19 @@ fn build_sliding_window_streaming(
                     content,
                     content_type: CT_ROW_WINDOW,
                     metadata: json!({
-                        "window_index": window_index,
-                        "window_size": window_size,
-                        "overlap": overlap,
-                        "row_start": row_start,
-                        "row_end": row_end,
-                        "actual_row_count": rows.len(),
-                        "header_row": headers,
-            "has_header": has_header,
-                        "col_count": headers.len(),
-                        "delimiter_detected": char::from(used_delimiter).to_string(),
-                        "encoding": encoding.to_ascii_lowercase(),
-                        "chunk_index": chunk_index,
-                    }),
+                                "window_index": window_index,
+                                "window_size": window_size,
+                                "overlap": overlap,
+                                "row_start": row_start,
+                                "row_end": row_end,
+                                "actual_row_count": rows.len(),
+                                "header_row": headers,
+                    "has_header": has_header,
+                                "col_count": headers.len(),
+                                "delimiter_detected": char::from(used_delimiter).to_string(),
+                                "encoding": encoding.to_ascii_lowercase(),
+                                "chunk_index": chunk_index,
+                            }),
                 }))
                 .map_err(|err| err.to_string())?;
 
@@ -498,19 +520,19 @@ fn build_sliding_window_streaming(
                 content,
                 content_type: CT_ROW_WINDOW,
                 metadata: json!({
-                    "window_index": window_index,
-                    "window_size": window_size,
-                    "overlap": overlap,
-                    "row_start": row_start,
-                    "row_end": row_end,
-                    "actual_row_count": rows.len(),
-                    "header_row": headers,
-            "has_header": has_header,
-                    "col_count": headers.len(),
-                    "delimiter_detected": char::from(used_delimiter).to_string(),
-                    "encoding": encoding.to_ascii_lowercase(),
-                    "chunk_index": chunk_index,
-                }),
+                        "window_index": window_index,
+                        "window_size": window_size,
+                        "overlap": overlap,
+                        "row_start": row_start,
+                        "row_end": row_end,
+                        "actual_row_count": rows.len(),
+                        "header_row": headers,
+                "has_header": has_header,
+                        "col_count": headers.len(),
+                        "delimiter_detected": char::from(used_delimiter).to_string(),
+                        "encoding": encoding.to_ascii_lowercase(),
+                        "chunk_index": chunk_index,
+                    }),
             }))
             .map_err(|err| err.to_string())?;
     }
@@ -518,6 +540,8 @@ fn build_sliding_window_streaming(
     Ok(())
 }
 
+// Owns one thread's copy of the public parameter list — see the note above.
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     file_path: String,
     mode: String,
@@ -532,10 +556,22 @@ fn run_worker(
 ) -> std::result::Result<(), String> {
     match mode.as_str() {
         "row" | "default" | "page_aware" => build_row_streaming(
-            &file_path, rows_per_chunk, include_headers, delimiter, &encoding, skip_empty_rows, sender,
+            &file_path,
+            rows_per_chunk,
+            include_headers,
+            delimiter,
+            &encoding,
+            skip_empty_rows,
+            sender,
         ),
         "sliding_window" => build_sliding_window_streaming(
-            &file_path, window_size, overlap, include_headers, delimiter, &encoding, skip_empty_rows,
+            &file_path,
+            window_size,
+            overlap,
+            include_headers,
+            delimiter,
+            &encoding,
+            skip_empty_rows,
             sender,
         ),
         _ => Err(
@@ -568,18 +604,25 @@ pub fn stream(
         "row" | "default" | "sliding_window" | "page_aware" => {}
         _ => {
             return Err(ChunkError::InvalidArg(
-                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV".to_string(),
+                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV"
+                    .to_string(),
             ))
         }
     }
     if rows_per_chunk == 0 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".to_string(),
+        ));
     }
     if window_size == 0 {
-        return Err(ChunkError::InvalidArg("window_size must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "window_size must be greater than 0".to_string(),
+        ));
     }
     if overlap >= window_size {
-        return Err(ChunkError::InvalidArg("overlap must be less than window_size".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "overlap must be less than window_size".to_string(),
+        ));
     }
 
     let (sender, receiver) = mpsc::channel();
@@ -589,8 +632,16 @@ pub fn stream(
     let encoding = encoding.to_string();
     let thread = thread::spawn(move || {
         let result = run_worker(
-            file_path, mode, rows_per_chunk, window_size, overlap, include_headers, delimiter,
-            encoding, skip_empty_rows, worker_sender,
+            file_path,
+            mode,
+            rows_per_chunk,
+            window_size,
+            overlap,
+            include_headers,
+            delimiter,
+            encoding,
+            skip_empty_rows,
+            worker_sender,
         );
         if let Err(err) = result {
             let _ = sender.send(Err(err));

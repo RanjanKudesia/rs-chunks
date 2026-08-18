@@ -131,12 +131,14 @@ fn ppt_chunks_carry_slide_metadata() {
         for c in &chunks {
             let m = &c.metadata;
             assert_eq!(
-                m.get("document_metadata").and_then(|d| d.get("source_type")),
+                m.get("document_metadata")
+                    .and_then(|d| d.get("source_type")),
                 Some(&serde_json::json!("ppt")),
                 "{name}: missing document_metadata.source_type"
             );
             assert_eq!(
-                m.get("document_metadata").and_then(|d| d.get("total_slides")),
+                m.get("document_metadata")
+                    .and_then(|d| d.get("total_slides")),
                 Some(&serde_json::json!(expected_slides)),
                 "{name}: wrong total_slides"
             );

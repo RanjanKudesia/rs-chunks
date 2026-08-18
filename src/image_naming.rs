@@ -71,7 +71,9 @@ pub fn name_with_ext(bytes: &[u8], ext: &str) -> Option<String> {
 /// own copy of the hash.
 pub fn name_for_path(bytes: &[u8], path: &str) -> Option<String> {
     let lower = path.to_ascii_lowercase();
-    let ext = SUPPORTED.iter().find(|e| lower.ends_with(&format!(".{e}")))?;
+    let ext = SUPPORTED
+        .iter()
+        .find(|e| lower.ends_with(&format!(".{e}")))?;
     name_with_ext(bytes, ext)
 }
 
@@ -125,7 +127,10 @@ mod tests {
         let a = name_with_ext(b"x", "PNG").unwrap();
         let b = name_with_ext(b"x", ".png").unwrap();
         assert_eq!(a, b);
-        assert!(a.ends_with(".png"), "the extension is normalised to lower case");
+        assert!(
+            a.ends_with(".png"),
+            "the extension is normalised to lower case"
+        );
     }
 
     #[test]

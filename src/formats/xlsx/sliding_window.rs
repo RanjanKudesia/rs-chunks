@@ -1,4 +1,3 @@
-
 use calamine::{Data, Reader};
 use serde_json::json;
 
@@ -50,8 +49,7 @@ pub fn build_sliding_window_chunks(
         return Err("overlap must be less than window_size".to_string());
     }
 
-    let mut workbook =
-        super::common::open_spreadsheet_from_bytes(data, ext)?;
+    let mut workbook = super::common::open_spreadsheet_from_bytes(data, ext)?;
 
     let workbook_sheet_names = workbook.sheet_names().to_vec();
     let selected_sheets = if sheet_names.is_empty() {
@@ -180,4 +178,3 @@ pub fn build_sliding_window_chunks(
     super::common::stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
-

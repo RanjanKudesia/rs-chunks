@@ -14,7 +14,10 @@ pub struct Fmt {
 }
 
 impl Fmt {
-    pub const NONE: Fmt = Fmt { bold: false, italic: false };
+    pub const NONE: Fmt = Fmt {
+        bold: false,
+        italic: false,
+    };
 
     fn is_none(self) -> bool {
         self == Fmt::NONE

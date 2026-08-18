@@ -68,7 +68,11 @@ fn decode_parms(doc: &Document, stream: &Stream, count: usize) -> Vec<Option<Dic
         Some(Object::Dictionary(d)) => vec![Some(d)],
         Some(Object::Array(items)) => items
             .iter()
-            .map(|o| doc.dereference(o).ok().and_then(|(_, o)| o.as_dict().ok().cloned()))
+            .map(|o| {
+                doc.dereference(o)
+                    .ok()
+                    .and_then(|(_, o)| o.as_dict().ok().cloned())
+            })
             .collect(),
         _ => vec![None; count],
     }
@@ -79,7 +83,11 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     // Zlib first; a stream missing its two-byte header is common enough in the
     // wild that raw deflate is worth the second attempt.
-    if flate2::read::ZlibDecoder::new(data).read_to_end(&mut out).is_ok() && !out.is_empty() {
+    if flate2::read::ZlibDecoder::new(data)
+        .read_to_end(&mut out)
+        .is_ok()
+        && !out.is_empty()
+    {
         return Ok(out);
     }
     out.clear();
@@ -101,7 +109,9 @@ fn lzw(data: &[u8], parms: Option<&Dictionary>, doc: &Document) -> Result<Vec<u8
     } else {
         weezl::decode::Decoder::new(weezl::BitOrder::Msb, 8)
     };
-    decoder.decode(data).map_err(|e| format!("LZWDecode failed: {e}"))
+    decoder
+        .decode(data)
+        .map_err(|e| format!("LZWDecode failed: {e}"))
 }
 
 fn ascii85(data: &[u8]) -> Vec<u8> {
@@ -140,7 +150,9 @@ fn ascii85(data: &[u8]) -> Vec<u8> {
 }
 
 fn push_group(out: &mut Vec<u8>, group: &[u8; 5], n: usize) {
-    let value = group.iter().fold(0u32, |acc, d| acc.wrapping_mul(85).wrapping_add(*d as u32));
+    let value = group
+        .iter()
+        .fold(0u32, |acc, d| acc.wrapping_mul(85).wrapping_add(*d as u32));
     let bytes = value.to_be_bytes();
     out.extend_from_slice(&bytes[..n - 1]);
 }
@@ -159,7 +171,10 @@ fn ascii_hex(data: &[u8]) -> Vec<u8> {
     if nibbles.len() % 2 == 1 {
         nibbles.push(0);
     }
-    nibbles.chunks_exact(2).map(|c| (c[0] << 4) | c[1]).collect()
+    nibbles
+        .chunks_exact(2)
+        .map(|c| (c[0] << 4) | c[1])
+        .collect()
 }
 
 fn run_length(data: &[u8]) -> Vec<u8> {
@@ -241,9 +256,17 @@ fn png_predictor(data: &[u8], row_bytes: usize, pixel_bytes: usize) -> Result<Ve
         pos += take;
 
         for i in 0..row_bytes {
-            let left = if i >= pixel_bytes { current[i - pixel_bytes] } else { 0 };
+            let left = if i >= pixel_bytes {
+                current[i - pixel_bytes]
+            } else {
+                0
+            };
             let up = previous[i];
-            let up_left = if i >= pixel_bytes { previous[i - pixel_bytes] } else { 0 };
+            let up_left = if i >= pixel_bytes {
+                previous[i - pixel_bytes]
+            } else {
+                0
+            };
             current[i] = match tag {
                 0 => current[i],
                 1 => current[i].wrapping_add(left),
@@ -261,7 +284,11 @@ fn png_predictor(data: &[u8], row_bytes: usize, pixel_bytes: usize) -> Result<Ve
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let p = a as i16 + b as i16 - c as i16;
-    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
+    let (pa, pb, pc) = (
+        (p - a as i16).abs(),
+        (p - b as i16).abs(),
+        (p - c as i16).abs(),
+    );
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
@@ -291,7 +318,10 @@ mod tests {
     #[test]
     fn run_length_expands_runs_and_stops_at_the_marker() {
         // 2 -> copy 3 literals; 254 -> repeat the next byte 3 times; 128 -> end.
-        assert_eq!(run_length(&[2, b'a', b'b', b'c', 254, b'z', 128, b'x']), b"abczzz");
+        assert_eq!(
+            run_length(&[2, b'a', b'b', b'c', 254, b'z', 128, b'x']),
+            b"abczzz"
+        );
     }
 
     #[test]
@@ -299,7 +329,10 @@ mod tests {
         // Two 3-byte rows, both filtered with "Up"; the second is all zeros so
         // it must come back identical to the first.
         let data = [2, 10, 20, 30, 2, 0, 0, 0];
-        assert_eq!(png_predictor(&data, 3, 1).unwrap(), vec![10, 20, 30, 10, 20, 30]);
+        assert_eq!(
+            png_predictor(&data, 3, 1).unwrap(),
+            vec![10, 20, 30, 10, 20, 30]
+        );
     }
 
     #[test]

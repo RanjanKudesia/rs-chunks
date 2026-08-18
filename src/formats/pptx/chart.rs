@@ -58,7 +58,9 @@ pub fn resolve_chart_parts(
     let mut parts = Vec::new();
     for rid in rids {
         for rel in content.split("<Relationship ") {
-            let Some(ty) = attr(rel, "Type") else { continue };
+            let Some(ty) = attr(rel, "Type") else {
+                continue;
+            };
             if !ty.ends_with(CHART_REL_SUFFIX) {
                 continue;
             }
@@ -83,7 +85,7 @@ fn attr(fragment: &str, name: &str) -> Option<String> {
     let rest = &fragment[start..];
     // Attribute values are escaped in the file; decode before use.
     Some(crate::entities::decode_attr_value(
-        rest[..rest.find('"')?].as_bytes(),
+        &rest.as_bytes()[..rest.find('"')?],
     ))
 }
 
@@ -145,10 +147,8 @@ pub fn parse_chart_xml(xml_bytes: &[u8]) -> Vec<Vec<String>> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_v {
-                    text.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_v => {
+                text.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
                 b"v" if in_v => {
@@ -213,7 +213,13 @@ fn build_rows(mut categories: Vec<(usize, String)>, series: Vec<Series>) -> Vec<
             // Duplicate series names are real — sample.pptx has two both called
             // "Graph information" — so disambiguate rather than emit two
             // identical headers.
-            Some(name) if series.iter().filter(|o| o.name.as_ref() == Some(name)).count() > 1 => {
+            Some(name)
+                if series
+                    .iter()
+                    .filter(|o| o.name.as_ref() == Some(name))
+                    .count()
+                    > 1 =>
+            {
                 format!("{name} ({})", n + 1)
             }
             Some(name) => name.clone(),

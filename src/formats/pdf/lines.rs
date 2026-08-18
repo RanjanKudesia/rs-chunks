@@ -21,7 +21,6 @@ const WORD_GAP_EM: f32 = 0.2;
 /// whitespace between two cells of a table row.
 const CELL_GAP_EM: f32 = 1.3;
 
-
 /// How far a baseline may sit from its line's, in ems, and still belong to it.
 const BASELINE_TOLERANCE_EM: f32 = 0.5;
 
@@ -93,9 +92,9 @@ pub(crate) fn build(glyphs: &[Glyph]) -> Vec<Line> {
         // Top-down, then left-to-right, so the sweep below only ever compares a
         // glyph against the band it is closest to.
         frame.sort_by(|a, b| {
-            b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal).then(
-                a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal),
-            )
+            b.y.partial_cmp(&a.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
         });
         out.extend(band(&frame, turn));
     }
@@ -142,10 +141,14 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
     for g in glyphs.iter() {
         let gap = g.x - previous_end;
         // A cell-sized gap opens a new segment, and so does the first glyph.
-        let opens_segment = segments.is_empty()
-            || (previous_end.is_finite() && gap > CELL_GAP_EM * g.size);
+        let opens_segment =
+            segments.is_empty() || (previous_end.is_finite() && gap > CELL_GAP_EM * g.size);
         if opens_segment {
-            segments.push(Segment { text: String::new(), left: g.x, right: g.x });
+            segments.push(Segment {
+                text: String::new(),
+                left: g.x,
+                right: g.x,
+            });
         }
         // Judge the gap against the *larger* of the two ems, so a size change
         // mid-word does not shrink the threshold and invent a word break.
@@ -171,7 +174,14 @@ fn assemble(glyphs: &mut Vec<&Glyph>, baseline: f32, turn: u8) -> Line {
                 }
             }
         }
-        push(&mut spans, &mut text, &g.text, g.bold, g.italic, g.link.clone());
+        push(
+            &mut spans,
+            &mut text,
+            &g.text,
+            g.bold,
+            g.italic,
+            g.link.clone(),
+        );
         if let Some(seg) = segments.last_mut() {
             seg.text.push_str(&g.text);
             seg.right = g.x + g.width;
@@ -210,7 +220,12 @@ fn push(
         Some(last) if last.bold == bold && last.italic == italic && last.link == link => {
             last.text.push_str(piece)
         }
-        _ => spans.push(Span { text: piece.to_string(), bold, italic, link }),
+        _ => spans.push(Span {
+            text: piece.to_string(),
+            bold,
+            italic,
+            link,
+        }),
     }
 }
 
@@ -256,7 +271,11 @@ mod tests {
     #[test]
     fn a_wide_gap_becomes_a_space_and_a_narrow_one_does_not() {
         // "on" then "e" butted up, then "two" after a 4pt gap at 10pt type.
-        let glyphs = vec![glyph("on", 0.0, 100.0, 10.0), glyph("e", 10.0, 100.0, 10.0), glyph("two", 19.0, 100.0, 10.0)];
+        let glyphs = vec![
+            glyph("on", 0.0, 100.0, 10.0),
+            glyph("e", 10.0, 100.0, 10.0),
+            glyph("two", 19.0, 100.0, 10.0),
+        ];
         let lines = build(&glyphs);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "one two");
@@ -272,10 +291,16 @@ mod tests {
 
     #[test]
     fn a_new_baseline_starts_a_new_line() {
-        let glyphs = vec![glyph("first", 0.0, 100.0, 10.0), glyph("second", 0.0, 88.0, 10.0)];
+        let glyphs = vec![
+            glyph("first", 0.0, 100.0, 10.0),
+            glyph("second", 0.0, 88.0, 10.0),
+        ];
         let lines = build(&glyphs);
         assert_eq!(lines.len(), 2);
-        assert_eq!((lines[0].text.as_str(), lines[1].text.as_str()), ("first", "second"));
+        assert_eq!(
+            (lines[0].text.as_str(), lines[1].text.as_str()),
+            ("first", "second")
+        );
     }
 
     #[test]
@@ -297,12 +322,21 @@ mod tests {
             glyph("O(1)", 240.0, 100.0, 10.0),
         ];
         let line = &build(&glyphs)[0];
-        assert_eq!(line.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["Recurrent", "O(n)", "O(1)"]);
+        assert_eq!(
+            line.segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Recurrent", "O(n)", "O(1)"]
+        );
     }
 
     #[test]
     fn ordinary_word_spacing_leaves_one_segment() {
-        let glyphs = vec![glyph("one", 0.0, 100.0, 10.0), glyph("two", 19.0, 100.0, 10.0)];
+        let glyphs = vec![
+            glyph("one", 0.0, 100.0, 10.0),
+            glyph("two", 19.0, 100.0, 10.0),
+        ];
         assert_eq!(build(&glyphs)[0].segments.len(), 1);
     }
 

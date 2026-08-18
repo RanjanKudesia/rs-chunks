@@ -14,7 +14,7 @@ use super::common::{
 };
 
 fn clean_range_ref(raw: &str) -> Option<String> {
-    let after_exclaim = raw.trim().split('!').last()?;
+    let after_exclaim = raw.trim().split('!').next_back()?;
     let clean = after_exclaim.replace('$', "");
     if clean.is_empty() {
         None
@@ -76,9 +76,11 @@ fn row_slice_with_fill(row: &[Data], start_col: usize, end_col: usize) -> Vec<Da
         .collect()
 }
 
-fn parse_print_areas_for_workbook(
-    data: &[u8],
-) -> Result<HashMap<usize, Vec<(usize, usize, usize, usize)>>, String> {
+/// Print areas per sheet index. Each entry is one rectangle as
+/// `(first_row, first_col, last_row, last_col)`; a sheet may declare several.
+type PrintAreasBySheet = HashMap<usize, Vec<(usize, usize, usize, usize)>>;
+
+fn parse_print_areas_for_workbook(data: &[u8]) -> Result<PrintAreasBySheet, String> {
     let mut archive = match ZipArchive::new(std::io::Cursor::new(data.to_vec())) {
         Ok(a) => a,
         Err(_) => return Ok(HashMap::new()), // Not a ZIP archive (e.g. XLS) — no print areas
@@ -142,10 +144,8 @@ fn parse_print_areas_for_workbook(
                     }
                 }
             }
-            Ok(Event::Text(t)) => {
-                if in_print_area_defined_name {
-                    text_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
-                }
+            Ok(Event::Text(t)) if in_print_area_defined_name => {
+                text_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
             }
             Ok(Event::End(ref e)) => {
                 let name_bytes = e.name().as_ref().to_vec();
@@ -191,8 +191,7 @@ pub fn build_page_aware_chunks(
     }
     let print_areas = parse_print_areas_for_workbook(data)?;
 
-    let mut workbook =
-        super::common::open_spreadsheet_from_bytes(data, ext)?;
+    let mut workbook = super::common::open_spreadsheet_from_bytes(data, ext)?;
 
     let workbook_sheet_names = workbook.sheet_names().to_vec();
     let selected_sheets = if sheet_names.is_empty() {
@@ -406,4 +405,3 @@ pub fn build_page_aware_chunks(
     super::common::stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
-

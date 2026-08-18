@@ -51,7 +51,11 @@ fn render_kv(key: &str, value: &Value, indent: usize, depth: usize, out: &mut Ve
     match value {
         v if is_scalar(v) => out.push(format!("{pad}- **{key}:** {}", scalar_to_string(v))),
         Value::Array(arr) if arr.iter().all(is_scalar) => {
-            let joined = arr.iter().map(scalar_to_string).collect::<Vec<_>>().join(", ");
+            let joined = arr
+                .iter()
+                .map(scalar_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             out.push(format!("{pad}- **{key}:** {joined}"));
         }
         Value::Array(arr) => {
@@ -219,10 +223,14 @@ mod tests {
         }
         let mut checked = 0;
         for sub in ["json", "jsonl"] {
-            let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
+            let Ok(entries) = std::fs::read_dir(dir.join(sub)) else {
+                continue;
+            };
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                let Ok(raw) = std::fs::read(&path) else { continue };
+                let Ok(raw) = std::fs::read(&path) else {
+                    continue;
+                };
                 let name = path.to_string_lossy().to_ascii_lowercase();
                 let doc = if name.ends_with(".jsonl") || name.ends_with(".ndjson") {
                     parse_lines(&raw)

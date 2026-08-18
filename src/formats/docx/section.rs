@@ -1,9 +1,6 @@
 use serde_json::{json, Value};
 
-use super::common::{
-    image_hash_name, parse_docx_blocks, DocxBlock,
-    DocxBlockKind,
-};
+use super::common::{image_hash_name, parse_docx_blocks, DocxBlock, DocxBlockKind};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
@@ -52,7 +49,7 @@ fn build_section_chunks_with_images(
     blocks: Vec<DocumentBlock>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<(String, String, serde_json::Value)> {
     let mut result: Vec<(String, String, serde_json::Value)> = Vec::new();
     let section_chunks = build_section_chunks(blocks.clone());
@@ -338,7 +335,9 @@ fn split_text_by_max_chars(text: &str, max_chars: usize) -> Vec<String> {
                 end = crate::shared::floor_char_boundary(line, end);
                 if end <= start {
                     // max_chars smaller than a single char; advance one whole char.
-                    end = crate::shared::floor_char_boundary(line, start + 4).max(start + 1).min(line.len());
+                    end = crate::shared::floor_char_boundary(line, start + 4)
+                        .max(start + 1)
+                        .min(line.len());
                 }
                 out.push(line[start..end].trim().to_string());
                 start = end;
@@ -373,7 +372,6 @@ fn split_text_by_max_chars(text: &str, max_chars: usize) -> Vec<String> {
     }
 }
 
-
 pub(super) fn chunk(bytes: &[u8]) -> Result<Vec<crate::chunk::Chunk>, String> {
     let raw_blocks = parse_docx_blocks(bytes)?;
     let blocks = lower_blocks(raw_blocks);
@@ -383,10 +381,17 @@ pub(super) fn chunk(bytes: &[u8]) -> Result<Vec<crate::chunk::Chunk>, String> {
         .collect())
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(bytes: &[u8]) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let blocks = lower_blocks(parse_docx_blocks(bytes)?);
     let mut image_out = Vec::new();
-    let combined = build_section_chunks_with_images(blocks, &image_rids_map, &mut archive, &mut image_out);
-    Ok((combined.into_iter().map(|(ct, c, m)| crate::chunk::Chunk::new(c, ct, m)).collect(), image_out))
+    let combined =
+        build_section_chunks_with_images(blocks, &image_rids_map, &mut archive, &mut image_out);
+    Ok((
+        combined
+            .into_iter()
+            .map(|(ct, c, m)| crate::chunk::Chunk::new(c, ct, m))
+            .collect(),
+        image_out,
+    ))
 }

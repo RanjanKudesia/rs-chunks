@@ -11,7 +11,6 @@
 ///   paragraph_range  — [start_block_index, end_block_index]
 ///   section_heading  — heading context at the start of the window
 ///   heading_path     — full ancestor breadcrumb at window start
-
 use serde_json::json;
 
 use super::common::{
@@ -90,8 +89,12 @@ pub fn build_sliding_window_chunks(
         });
     }
 
+    // Same contract as the structural builders (TECH_DEBT T6): a document that
+    // parsed cleanly but holds no content blocks is EMPTY, not broken. Returning
+    // an error here is what made epub's per-chapter swallow necessary — an
+    // image-only cover page hit this path (L14).
     if units.is_empty() {
-        return Err("No content blocks found".to_string());
+        return Ok(Vec::new());
     }
 
     let step = window_size - overlap;
@@ -111,24 +114,27 @@ pub fn build_sliding_window_chunks(
 
         if !content.is_empty() {
             let span = Some((window[0].block, window[window.len() - 1].block));
-            result.push(SpannedRecord::spanning(ChunkRecordInput {
-                content_type: ContentType::SlidingWindow,
-                content,
-                metadata: json!({
-                    "window_size":      window_size,
-                    "overlap":          overlap,
-                    "window_index":     window_index,
-                    "paragraph_range":  [start, end.saturating_sub(1)],
-                    "block_count":      window.len(),
-                    "section_heading":  window[0].section_heading,
-                    "heading_path":     window[0].heading_path,
-                    "chunk_index":      window_index,
-                    "document_metadata": {
-                        "source_type":        "md",
-                        "total_input_blocks": total_input_blocks,
-                    }
-                }),
-            }, span));
+            result.push(SpannedRecord::spanning(
+                ChunkRecordInput {
+                    content_type: ContentType::SlidingWindow,
+                    content,
+                    metadata: json!({
+                        "window_size":      window_size,
+                        "overlap":          overlap,
+                        "window_index":     window_index,
+                        "paragraph_range":  [start, end.saturating_sub(1)],
+                        "block_count":      window.len(),
+                        "section_heading":  window[0].section_heading,
+                        "heading_path":     window[0].heading_path,
+                        "chunk_index":      window_index,
+                        "document_metadata": {
+                            "source_type":        "md",
+                            "total_input_blocks": total_input_blocks,
+                        }
+                    }),
+                },
+                span,
+            ));
             window_index += 1;
         }
 
@@ -138,11 +144,14 @@ pub fn build_sliding_window_chunks(
         start += step;
     }
 
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No sliding-window chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

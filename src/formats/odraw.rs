@@ -7,7 +7,6 @@
 //! module provides a header walker plus a BLIP payload decoder shared by the
 //! `.doc` and `.ppt` image extractors.
 
-
 /// recVer value that marks a container record.
 pub const REC_VER_CONTAINER: u16 = 0xF;
 
@@ -115,6 +114,11 @@ fn looks_like_png(bytes: &[u8]) -> bool {
     bytes.len() > 8 && bytes[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 }
 
+/// How one blip record type decodes: the file extension, the `recInstance`
+/// value that signals a second 16-byte uid is present, and the magic-byte
+/// validator for that raster format.
+type BlipDecoding = (&'static str, u16, fn(&[u8]) -> bool);
+
 /// Decode a bitmap blip body (the bytes after the 8-byte record header) into
 /// raw image bytes. Only JPEG and PNG blips are supported — the same raster
 /// formats the DOCX/PPTX extractors accept; EMF/WMF/PICT/TIFF/DIB are skipped
@@ -125,7 +129,7 @@ fn looks_like_png(bytes: &[u8]) -> bool {
 /// than trusting recInstance blindly, both possible offsets are validated
 /// against the image magic bytes.
 pub fn decode_blip(rec_type: u16, rec_instance: u16, body: &[u8]) -> Option<DecodedBlip> {
-    let (ext, double_uid_instance, check): (&'static str, u16, fn(&[u8]) -> bool) = match rec_type {
+    let (ext, double_uid_instance, check): BlipDecoding = match rec_type {
         RT_BLIP_JPEG | RT_BLIP_JPEG_CMYK => (".jpg", 0x46B, looks_like_jpeg),
         RT_BLIP_PNG => (".png", 0x6E1, looks_like_png),
         _ => return None,
@@ -356,7 +360,7 @@ mod tests {
     #[test]
     fn find_record_descends_containers() {
         let inner = record(0, RT_FBSE, &[0u8; 4]);
-        let container = record((0 << 4) | REC_VER_CONTAINER, RT_BSTORE_CONTAINER, &inner);
+        let container = record(REC_VER_CONTAINER, RT_BSTORE_CONTAINER, &inner);
         let found = find_record(&container, 0, container.len(), RT_FBSE);
         assert!(found.is_some());
     }

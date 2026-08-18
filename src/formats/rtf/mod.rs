@@ -32,8 +32,22 @@ fn load(file_path: &str) -> Result<Loaded> {
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    pipeline::chunk(
+        &load_bytes(data)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
@@ -48,7 +62,12 @@ fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
         "title": doc.title,
         "author": doc.author,
     });
-    Ok(Loaded { markdown, images: Vec::new(), metadata, records: None })
+    Ok(Loaded {
+        markdown,
+        images: Vec::new(),
+        metadata,
+        records: None,
+    })
 }
 
 pub fn chunk(
@@ -59,7 +78,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -78,7 +104,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

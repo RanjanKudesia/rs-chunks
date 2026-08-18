@@ -49,7 +49,11 @@ pub(crate) fn read_page(extractor: &mut Extractor, doc: &Document, page_id: Obje
         extractor.run(doc, &data, &resources, base, &mut content);
     }
     apply_links(&mut content.glyphs, &links(doc, page_id, base));
-    Page { content, width, height }
+    Page {
+        content,
+        width,
+        height,
+    }
 }
 
 /// A page's effective resource dictionary: its own entries, then any category
@@ -135,9 +139,18 @@ fn links(doc: &Document, page_id: ObjectId, transform: Matrix) -> Vec<Link> {
     };
     let mut out = Vec::new();
     for entry in annots {
-        let Ok((_, object)) = doc.dereference(entry) else { continue };
-        let Ok(annot) = object.as_dict() else { continue };
-        if annot.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"") != b"Link" {
+        let Ok((_, object)) = doc.dereference(entry) else {
+            continue;
+        };
+        let Ok(annot) = object.as_dict() else {
+            continue;
+        };
+        if annot
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .unwrap_or(b"")
+            != b"Link"
+        {
             continue;
         }
         let uri = annot
@@ -147,8 +160,13 @@ fn links(doc: &Document, page_id: ObjectId, transform: Matrix) -> Vec<Link> {
             .and_then(Object::as_str)
             .map(|b| String::from_utf8_lossy(b).to_string())
             .ok();
-        let area = annot.get_deref(b"Rect", doc).ok().and_then(|o| rect(doc, o));
-        let (Some(uri), Some(area)) = (uri, area) else { continue };
+        let area = annot
+            .get_deref(b"Rect", doc)
+            .ok()
+            .and_then(|o| rect(doc, o));
+        let (Some(uri), Some(area)) = (uri, area) else {
+            continue;
+        };
         let rect = area;
         if uri.trim().is_empty() {
             continue;

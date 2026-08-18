@@ -36,9 +36,16 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }
 
 /// Map the internal record type onto the public [`Chunk`].
@@ -72,7 +79,9 @@ pub(crate) fn build_records_from_bytes(
         "semantic" => semantic::build_semantic_chunks(bytes),
         "sentence" => sentence::build_sentence_chunks(bytes, sentences_per_chunk),
         "page_aware" => page_aware::build_page_aware_chunks(bytes, paragraphs_per_page),
-        "sliding_window" => sliding_window::build_sliding_window_chunks(bytes, window_size, overlap),
+        "sliding_window" => {
+            sliding_window::build_sliding_window_chunks(bytes, window_size, overlap)
+        }
         other => return Err(ChunkError::InvalidArg(format!("Unknown MD mode: {other}"))),
     };
     res.map_err(ChunkError::Parse)
@@ -104,7 +113,14 @@ pub fn chunk(
         )));
     }
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry: chunk Markdown from raw bytes (used by the wasm/browser
@@ -131,7 +147,9 @@ pub fn chunk_from_bytes(
         paragraphs_per_page,
     )?;
     // A `.md` file has no records to point at, so the spans are dropped here.
-    Ok(records_to_chunks(records.into_iter().map(|s| s.record).collect()))
+    Ok(records_to_chunks(
+        records.into_iter().map(|s| s.record).collect(),
+    ))
 }
 
 /// No-filesystem Markdown passthrough (a `.md` document is already Markdown).

@@ -6,8 +6,8 @@
 //! - [`stream`] — a native streaming [`CsvStreamIterator`].
 //! - [`to_markdown`] — CSV → Markdown pipe table.
 
-pub mod common;
 mod chunker;
+pub mod common;
 mod sliding_window;
 mod stream;
 mod to_markdown;
@@ -56,21 +56,38 @@ pub fn chunk(
         "row" | "default" | "sliding_window" | "page_aware" => {}
         _ => {
             return Err(ChunkError::InvalidArg(
-                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV".to_string(),
+                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV"
+                    .to_string(),
             ))
         }
     }
     if rows_per_chunk == 0 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".to_string(),
+        ));
     }
     if window_size == 0 {
-        return Err(ChunkError::InvalidArg("window_size must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "window_size must be greater than 0".to_string(),
+        ));
     }
     if overlap >= window_size {
-        return Err(ChunkError::InvalidArg("overlap must be less than window_size".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "overlap must be less than window_size".to_string(),
+        ));
     }
     let data = std::fs::read(file_path).map_err(ChunkError::Io)?;
-    build_chunks(&data, mode, rows_per_chunk, window_size, overlap, include_headers, delimiter, encoding, skip_empty_rows)
+    build_chunks(
+        &data,
+        mode,
+        rows_per_chunk,
+        window_size,
+        overlap,
+        include_headers,
+        delimiter,
+        encoding,
+        skip_empty_rows,
+    )
 }
 
 /// No-filesystem entry (wasm/browser). `delimiter=None` auto-detects; for `.tsv`
@@ -89,22 +106,43 @@ pub fn chunk_from_bytes(
 ) -> Result<Vec<Chunk>> {
     match mode {
         "row" | "default" | "sliding_window" | "page_aware" => {}
-        _ => return Err(ChunkError::InvalidArg("mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV".to_string())),
+        _ => {
+            return Err(ChunkError::InvalidArg(
+                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV"
+                    .to_string(),
+            ))
+        }
     }
     // The same range checks `chunk` runs. They were missing here, so the
     // no-filesystem entry point — the only one js-chunks ever calls — let
     // `overlap >= window_size` fall through to the builder and come back as
     // `Parse` instead of `InvalidArg`.
     if rows_per_chunk == 0 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".to_string(),
+        ));
     }
     if window_size == 0 {
-        return Err(ChunkError::InvalidArg("window_size must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "window_size must be greater than 0".to_string(),
+        ));
     }
     if overlap >= window_size {
-        return Err(ChunkError::InvalidArg("overlap must be less than window_size".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "overlap must be less than window_size".to_string(),
+        ));
     }
-    build_chunks(data, mode, rows_per_chunk, window_size, overlap, include_headers, delimiter, encoding, skip_empty_rows)
+    build_chunks(
+        data,
+        mode,
+        rows_per_chunk,
+        window_size,
+        overlap,
+        include_headers,
+        delimiter,
+        encoding,
+        skip_empty_rows,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -120,11 +158,33 @@ fn build_chunks(
     skip_empty_rows: bool,
 ) -> Result<Vec<Chunk>> {
     let records = if mode == "page_aware" {
-        chunker::build_page_aware_chunks(data, rows_per_chunk, include_headers, delimiter, encoding, skip_empty_rows)
+        chunker::build_page_aware_chunks(
+            data,
+            rows_per_chunk,
+            include_headers,
+            delimiter,
+            encoding,
+            skip_empty_rows,
+        )
     } else if mode == "sliding_window" {
-        sliding_window::build_sliding_window_chunks(data, window_size, overlap, include_headers, delimiter, encoding, skip_empty_rows)
+        sliding_window::build_sliding_window_chunks(
+            data,
+            window_size,
+            overlap,
+            include_headers,
+            delimiter,
+            encoding,
+            skip_empty_rows,
+        )
     } else {
-        chunker::build_row_chunks(data, rows_per_chunk, include_headers, delimiter, encoding, skip_empty_rows)
+        chunker::build_row_chunks(
+            data,
+            rows_per_chunk,
+            include_headers,
+            delimiter,
+            encoding,
+            skip_empty_rows,
+        )
     }
     .map_err(ChunkError::Parse)?;
 

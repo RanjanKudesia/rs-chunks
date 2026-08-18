@@ -16,10 +16,14 @@ pub fn build_sentence_chunks(
     bytes: &[u8],
     sentences_per_chunk: usize,
 ) -> Result<Vec<ChunkRecordInput>, String> {
-    if sentences_per_chunk == 0 { return Err("sentences_per_chunk must be greater than 0".to_string()); }
+    if sentences_per_chunk == 0 {
+        return Err("sentences_per_chunk must be greater than 0".to_string());
+    }
 
     let text = crate::text_encoding::decode_text(bytes).0;
-    if text.trim().is_empty() { return Err("TXT file is empty".to_string()); }
+    if text.trim().is_empty() {
+        return Err("TXT file is empty".to_string());
+    }
 
     let blocks = parse_txt_blocks(&text);
     let total = blocks.len();
@@ -38,7 +42,11 @@ pub fn build_sentence_chunks(
         while i < sentences.len() {
             let end = (i + spc).min(sentences.len());
             let window = &sentences[i..end];
-            let content = window.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+            let content = window
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             if !content.is_empty() {
                 result.push(ChunkRecordInput {
                     content_type: ContentType::Sentence,
@@ -60,14 +68,24 @@ pub fn build_sentence_chunks(
         sentences.clear();
     };
 
-    let is_prose = |ct: ContentType| matches!(
-        ct,
-        ContentType::PlainParagraph | ContentType::LongSingleParagraph | ContentType::ShortDisconnectedParagraph
-    );
+    let is_prose = |ct: ContentType| {
+        matches!(
+            ct,
+            ContentType::PlainParagraph
+                | ContentType::LongSingleParagraph
+                | ContentType::ShortDisconnectedParagraph
+        )
+    };
 
     for block in &blocks {
         if block.content_type == ContentType::HeadingSection {
-            flush_sentences(&mut sentences, &mut result, &mut chunk_index, sentences_per_chunk, total);
+            flush_sentences(
+                &mut sentences,
+                &mut result,
+                &mut chunk_index,
+                sentences_per_chunk,
+                total,
+            );
             let level = heading_level_txt(&block.content);
             let text = extract_heading_text(&block.content);
             update_heading_stack(&mut heading_stack, level, text.clone());
@@ -83,8 +101,16 @@ pub fn build_sentence_chunks(
                 }),
             });
             chunk_index += 1;
-        } else if block.content_type == ContentType::CodeBlock || block.content_type == ContentType::Table {
-            flush_sentences(&mut sentences, &mut result, &mut chunk_index, sentences_per_chunk, total);
+        } else if block.content_type == ContentType::CodeBlock
+            || block.content_type == ContentType::Table
+        {
+            flush_sentences(
+                &mut sentences,
+                &mut result,
+                &mut chunk_index,
+                sentences_per_chunk,
+                total,
+            );
             result.push(ChunkRecordInput {
                 content_type: block.content_type,
                 content: block.content.clone(),
@@ -120,15 +146,28 @@ pub fn build_sentence_chunks(
             let pi = para_index;
             for s in split_sentences(&block.content) {
                 sentences.push(IndexedSentence {
-                    text: s, paragraph_index: pi,
-                    section_heading: sh.clone(), heading_path: hp.clone(),
+                    text: s,
+                    paragraph_index: pi,
+                    section_heading: sh.clone(),
+                    heading_path: hp.clone(),
                 });
             }
             para_index += 1;
         }
     }
-    flush_sentences(&mut sentences, &mut result, &mut chunk_index, sentences_per_chunk, total);
-    if result.is_empty() { return Err("No sentence chunks generated".to_string()); }
+    flush_sentences(
+        &mut sentences,
+        &mut result,
+        &mut chunk_index,
+        sentences_per_chunk,
+        total,
+    );
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
+    if result.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(result)
 }
-

@@ -119,10 +119,16 @@ fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
         return (lossy_utf8(rest), DetectedEncoding::Utf8Bom);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return (UTF_16LE.decode(rest).0.into_owned(), DetectedEncoding::Utf16Le);
+        return (
+            UTF_16LE.decode(rest).0.into_owned(),
+            DetectedEncoding::Utf16Le,
+        );
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return (UTF_16BE.decode(rest).0.into_owned(), DetectedEncoding::Utf16Be);
+        return (
+            UTF_16BE.decode(rest).0.into_owned(),
+            DetectedEncoding::Utf16Be,
+        );
     }
     // The UTF-16 sniff has to come BEFORE the UTF-8 check, not after: ASCII
     // encoded as UTF-16LE is "T\0h\0e\0", and NUL is a perfectly valid UTF-8
@@ -248,7 +254,8 @@ mod tests {
     fn cp1252_punctuation_survives_instead_of_becoming_replacement_chars() {
         // 0x93/0x94 smart quotes, 0x97 em dash, 0xE9 e-acute, 0xA3 pound.
         let bytes = [
-            b'S', b'a', b'y', b' ', 0x93, b'h', b'i', 0x94, b' ', 0x97, b' ', 0xE9, b' ', 0xA3, b'5',
+            b'S', b'a', b'y', b' ', 0x93, b'h', b'i', 0x94, b' ', 0x97, b' ', 0xE9, b' ', 0xA3,
+            b'5',
         ];
         let (text, enc) = decode_text(&bytes);
         assert_eq!(text, "Say “hi” — é £5");
@@ -259,7 +266,9 @@ mod tests {
     #[test]
     fn a_nul_heavy_binary_blob_is_not_mistaken_for_utf16() {
         // NULs in both parity classes — the sniff must decline.
-        let bytes: Vec<u8> = (0..512u16).map(|i| if i % 3 == 0 { 0 } else { 0xC3 }).collect();
+        let bytes: Vec<u8> = (0..512u16)
+            .map(|i| if i % 3 == 0 { 0 } else { 0xC3 })
+            .collect();
         assert!(sniff_utf16(&bytes).is_none());
     }
 

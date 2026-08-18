@@ -11,7 +11,6 @@
 //! order, so the nth one is slide n. Notes and masters are skipped, so the
 //! ordinal is the slide number a reader would count.
 
-
 use crate::formats::doc::text_extractor::DocParagraph;
 use crate::formats::odraw::{
     blip_hash_name, decode_blip_record_at, decode_fbse_blip, find_record, is_blip_record,
@@ -19,8 +18,9 @@ use crate::formats::odraw::{
 };
 
 use super::cfb_reader;
-use super::records::{parse_header, RT_MAIN_MASTER, RT_NOTES_CONTAINER, RT_SLIDE_CONTAINER,
-    REC_VER_CONTAINER};
+use super::records::{
+    parse_header, REC_VER_CONTAINER, RT_MAIN_MASTER, RT_NOTES_CONTAINER, RT_SLIDE_CONTAINER,
+};
 
 /// One image occurrence in the presentation. `slide_idx` is the 0-based
 /// SlideContainer ordinal, or `None` for images recovered from the Pictures
@@ -100,9 +100,7 @@ fn decode_pictures_stream(pictures: &[u8]) -> Vec<DecodedBlip> {
         } else if hdr.rec_type == RT_FBSE {
             // Some writers store the FBSE header inline in the Pictures
             // stream with the blip record embedded right after it.
-            if let Some(decoded) =
-                decode_fbse_blip(&pictures[hdr.body_start..hdr.body_end], None)
-            {
+            if let Some(decoded) = decode_fbse_blip(&pictures[hdr.body_start..hdr.body_end], None) {
                 out.push(decoded);
             }
         }
@@ -120,8 +118,12 @@ pub fn extract_ppt_images(file_path: &str) -> Result<Vec<PptImage>, String> {
 }
 
 pub fn extract_ppt_images_bytes(bytes: &[u8]) -> Result<Vec<PptImage>, String> {
-    let doc_stream = cfb_reader::read_powerpoint_document_stream(bytes)?;
-    let pictures = cfb_reader::read_pictures_stream(bytes)?;
+    // One open, two streams. Reading each through the free functions re-parsed
+    // the whole CFB directory tree a second time for every image-bearing deck
+    // (TECH_DEBT X9).
+    let mut cfb = cfb_reader::PptCfb::open(bytes)?;
+    let doc_stream = cfb.powerpoint_document_stream()?;
+    let pictures = cfb.pictures_stream()?;
 
     let bstore = decode_bstore(&doc_stream, pictures.as_deref());
 
@@ -169,6 +171,67 @@ pub fn extract_ppt_images_bytes(bytes: &[u8]) -> Result<Vec<PptImage>, String> {
     Ok(out)
 }
 
+/// Native `(chunks, images)` builder for `.ppt` `_with_images` modes: image
+/// chunks first (page_number = slide index + 1), then text chunks, indices
+/// renumbered across the combined list. Reuses the `.doc` chunk record type.
+pub(super) fn chunk_with_images_impl(
+    file_path: &str,
+    build: impl FnOnce(Vec<DocParagraph>) -> Vec<crate::formats::doc::structural::ChunkRecord>,
+) -> Result<crate::chunk::ChunksWithImages, String> {
+    super::structural::validate_ppt_path(file_path)?;
+    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .ppt file: {e}"))?;
+    chunk_with_images_impl_bytes(&bytes, file_path, build)
+}
+
+/// No-filesystem variant of [`chunk_with_images_impl`] (wasm/browser). `source`
+/// is the filename recorded in each chunk's `source` metadata field.
+pub(super) fn chunk_with_images_impl_bytes(
+    bytes: &[u8],
+    source: &str,
+    build: impl FnOnce(Vec<DocParagraph>) -> Vec<crate::formats::doc::structural::ChunkRecord>,
+) -> Result<crate::chunk::ChunksWithImages, String> {
+    let file_path = source;
+    let paragraphs = super::structural::load_ppt_paragraphs_bytes(bytes)?;
+    let paragraphs_for_meta = paragraphs.clone();
+    let images = extract_ppt_images_bytes(bytes).unwrap_or_default();
+    let text_chunks = build(paragraphs);
+
+    let total = images.len() + text_chunks.len();
+    let mut chunk_list: Vec<crate::chunk::Chunk> = Vec::with_capacity(total);
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
+
+    for (i, img) in images.iter().enumerate() {
+        if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
+            image_out.push((img.hash_name.clone(), img.bytes.clone()));
+        }
+        chunk_list.push(crate::chunk::Chunk::new(
+            img.hash_name.clone(),
+            "image",
+            serde_json::json!({
+                "source": file_path,
+                "chunk_index": i,
+                "total_chunks": total,
+                "paragraph_type": "image",
+                "heading_level": serde_json::Value::Null,
+                "page_number": img.slide_idx.map(|s| s + 1),
+                "image_name": img.hash_name,
+            }),
+        ));
+    }
+
+    // Text chunks carry the same slide metadata the plain `chunk` path emits,
+    // so a caller does not lose provenance by asking for images (TECH_DEBT #18).
+    let deck = super::DeckInfo::of(&paragraphs_for_meta);
+    let offset = images.len();
+    for chunk in &text_chunks {
+        chunk_list.push(crate::chunk::Chunk::new(
+            chunk.content.clone(),
+            chunk.content_type,
+            deck.chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
+        ));
+    }
+    Ok((chunk_list, image_out))
+}
 
 #[cfg(test)]
 mod tests {
@@ -234,66 +297,4 @@ mod tests {
         let decoded = decode_pictures_stream(&stream);
         assert_eq!(decoded.len(), 2);
     }
-}
-
-/// Native `(chunks, images)` builder for `.ppt` `_with_images` modes: image
-/// chunks first (page_number = slide index + 1), then text chunks, indices
-/// renumbered across the combined list. Reuses the `.doc` chunk record type.
-pub(super) fn chunk_with_images_impl(
-    file_path: &str,
-    build: impl FnOnce(Vec<DocParagraph>) -> Vec<crate::formats::doc::structural::ChunkRecord>,
-) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
-    super::structural::validate_ppt_path(file_path)?;
-    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .ppt file: {e}"))?;
-    chunk_with_images_impl_bytes(&bytes, file_path, build)
-}
-
-/// No-filesystem variant of [`chunk_with_images_impl`] (wasm/browser). `source`
-/// is the filename recorded in each chunk's `source` metadata field.
-pub(super) fn chunk_with_images_impl_bytes(
-    bytes: &[u8],
-    source: &str,
-    build: impl FnOnce(Vec<DocParagraph>) -> Vec<crate::formats::doc::structural::ChunkRecord>,
-) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
-    let file_path = source;
-    let paragraphs = super::structural::load_ppt_paragraphs_bytes(bytes)?;
-    let paragraphs_for_meta = paragraphs.clone();
-    let images = extract_ppt_images_bytes(bytes).unwrap_or_default();
-    let text_chunks = build(paragraphs);
-
-    let total = images.len() + text_chunks.len();
-    let mut chunk_list: Vec<crate::chunk::Chunk> = Vec::with_capacity(total);
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
-
-    for (i, img) in images.iter().enumerate() {
-        if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
-            image_out.push((img.hash_name.clone(), img.bytes.clone()));
-        }
-        chunk_list.push(crate::chunk::Chunk::new(
-            img.hash_name.clone(),
-            "image",
-            serde_json::json!({
-                "source": file_path,
-                "chunk_index": i,
-                "total_chunks": total,
-                "paragraph_type": "image",
-                "heading_level": serde_json::Value::Null,
-                "page_number": img.slide_idx.map(|s| s + 1),
-                "image_name": img.hash_name,
-            }),
-        ));
-    }
-
-    // Text chunks carry the same slide metadata the plain `chunk` path emits,
-    // so a caller does not lose provenance by asking for images (TECH_DEBT #18).
-    let deck = super::DeckInfo::of(&paragraphs_for_meta);
-    let offset = images.len();
-    for chunk in &text_chunks {
-        chunk_list.push(crate::chunk::Chunk::new(
-            chunk.content.clone(),
-            chunk.content_type,
-            deck.chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
-        ));
-    }
-    Ok((chunk_list, image_out))
 }

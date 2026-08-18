@@ -78,7 +78,7 @@ fn local(name: &[u8]) -> &[u8] {
     name.rsplit(|b| *b == b':').next().unwrap_or(name)
 }
 
-fn attr<'a>(e: &'a quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
+fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if a.key.as_ref() == key || local(a.key.as_ref()) == local(key) {
             // Escaped in the file like every attribute value; `xlink:href` is
@@ -146,7 +146,9 @@ impl Walker {
     }
 
     fn flush_table(&mut self) {
-        let Some(mut t) = self.table.take() else { return };
+        let Some(mut t) = self.table.take() else {
+            return;
+        };
         if !t.current_row.is_empty() {
             t.rows.push(std::mem::take(&mut t.current_row));
         }
@@ -205,9 +207,13 @@ fn ordered_list_styles(content_xml: &str) -> std::collections::HashMap<String, b
     let mut rest = content_xml;
     while let Some(start) = rest.find("<text:list-style") {
         let after = &rest[start..];
-        let Some(name_at) = after.find("style:name=\"") else { break };
+        let Some(name_at) = after.find("style:name=\"") else {
+            break;
+        };
         let name_rest = &after[name_at + 12..];
-        let Some(name_end) = name_rest.find('"') else { break };
+        let Some(name_end) = name_rest.find('"') else {
+            break;
+        };
         let name = name_rest[..name_end].to_string();
         let body_end = after.find("</text:list-style>").unwrap_or(after.len());
         let numbered = after[..body_end].contains("<text:list-level-style-number");
@@ -240,9 +246,11 @@ pub fn content_to_markdown(
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 match local(name.as_ref()) {
-                    b"h" => w.heading_level = attr(&e, b"text:outline-level")
-                        .and_then(|s| s.parse::<u8>().ok())
-                        .or(Some(1)),
+                    b"h" => {
+                        w.heading_level = attr(&e, b"text:outline-level")
+                            .and_then(|s| s.parse::<u8>().ok())
+                            .or(Some(1))
+                    }
                     // An image contributes nothing to the text otherwise, so a
                     // reader cannot tell one was there. Same `[Image]`
                     // placeholder docx, pptx and Markdown already emit. (#53)

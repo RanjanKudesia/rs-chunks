@@ -51,7 +51,15 @@ pub fn get_chunks_from_bytes(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     catch_parser_panics(|| {
-        get_chunks_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+        get_chunks_from_bytes_inner(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        )
     })
 }
 
@@ -68,34 +76,175 @@ fn get_chunks_from_bytes_inner(
     match ext.as_str() {
         "csv" | "tsv" => {
             let csv_mode = if mode == "default" { "row" } else { mode };
-            let rows_per_chunk = if csv_mode == "page_aware" { paragraphs_per_page } else { csv_rows_per_chunk(sentences_per_chunk) };
+            let rows_per_chunk = if csv_mode == "page_aware" {
+                paragraphs_per_page
+            } else {
+                csv_rows_per_chunk(sentences_per_chunk)
+            };
             let delimiter = if ext == "tsv" { Some(b'\t') } else { None };
-            formats::csv::chunk_from_bytes(data, csv_mode, rows_per_chunk, window_size, overlap, true, delimiter, "utf-8", true)
+            formats::csv::chunk_from_bytes(
+                data,
+                csv_mode,
+                rows_per_chunk,
+                window_size,
+                overlap,
+                true,
+                delimiter,
+                "auto",
+                true,
+            )
         }
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
             let xmode = if mode == "default" { "row" } else { mode };
             check_spreadsheet_page_arg(xmode, paragraphs_per_page)?;
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. See `get_chunks`.
-            let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
-            formats::xlsx::chunk_from_bytes(data, &ext, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000)
+            let rows_per_chunk = if sentences_per_chunk == 3 {
+                1
+            } else {
+                sentences_per_chunk
+            };
+            formats::xlsx::chunk_from_bytes(
+                data,
+                &ext,
+                xmode,
+                rows_per_chunk,
+                window_size,
+                overlap,
+                true,
+                Vec::new(),
+                true,
+                2000,
+            )
         }
-        "md" => formats::md::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "txt" => formats::txt::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "html" | "htm" => formats::html::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "docx" | "docm" | "dotx" | "dotm" => formats::docx::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "json" | "jsonl" | "ndjson" => formats::json::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "eml" | "mbox" => formats::eml::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "odt" | "odp" => formats::odf::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "ipynb" => formats::ipynb::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "rtf" => formats::rtf::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "epub" => formats::epub::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "msg" => formats::msg::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "doc" => formats::doc::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "ppt" => formats::ppt::chunk_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pdf" => formats::pdf::chunk_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        other => Err(ChunkError::Unsupported(format!("Unsupported file type '.{other}'"))),
+        "md" => formats::md::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "txt" => formats::txt::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "html" | "htm" => formats::html::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "docx" | "docm" | "dotx" | "dotm" => formats::docx::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "json" | "jsonl" | "ndjson" => formats::json::chunk_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "eml" | "mbox" => formats::eml::chunk_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "odt" | "odp" => formats::odf::chunk_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "ipynb" => formats::ipynb::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "rtf" => formats::rtf::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "epub" => formats::epub::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "msg" => formats::msg::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "doc" => formats::doc::chunk_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "ppt" => formats::ppt::chunk_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pdf" => formats::pdf::chunk_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        other => Err(ChunkError::Unsupported(format!(
+            "Unsupported file type '.{other}'"
+        ))),
     }
 }
 
@@ -107,9 +256,11 @@ pub fn get_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
 fn get_markdown_from_bytes_inner(data: &[u8], filename: &str) -> Result<String> {
     let ext = ext_of(filename);
     match ext.as_str() {
-        "csv" => formats::csv::to_markdown_from_bytes(data, None, "utf-8"),
-        "tsv" => formats::csv::to_markdown_from_bytes(data, Some(b'\t'), "utf-8"),
-        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => formats::xlsx::to_markdown_from_bytes(data, &ext),
+        "csv" => formats::csv::to_markdown_from_bytes(data, None, "auto"),
+        "tsv" => formats::csv::to_markdown_from_bytes(data, Some(b'\t'), "auto"),
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
+            formats::xlsx::to_markdown_from_bytes(data, &ext)
+        }
         "md" => formats::md::to_markdown_from_bytes(data),
         "txt" => formats::txt::to_markdown_from_bytes(data),
         "html" | "htm" => formats::html::to_markdown_from_bytes(data),
@@ -125,7 +276,9 @@ fn get_markdown_from_bytes_inner(data: &[u8], filename: &str) -> Result<String> 
         "doc" => formats::doc::to_markdown_from_bytes(data),
         "ppt" => formats::ppt::to_markdown_from_bytes(data),
         "pdf" => formats::pdf::to_markdown_from_bytes(data),
-        other => Err(ChunkError::Unsupported(format!("get_markdown does not support '.{other}'"))),
+        other => Err(ChunkError::Unsupported(format!(
+            "get_markdown does not support '.{other}'"
+        ))),
     }
 }
 
@@ -141,9 +294,17 @@ pub fn get_chunks_with_images_from_bytes(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     catch_parser_panics(|| {
-        get_chunks_with_images_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+        get_chunks_with_images_from_bytes_inner(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        )
     })
 }
 
@@ -156,7 +317,7 @@ fn get_chunks_with_images_from_bytes_inner(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     let ext = ext_of(filename);
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
@@ -164,37 +325,156 @@ fn get_chunks_with_images_from_bytes_inner(
             check_spreadsheet_page_arg(xmode, paragraphs_per_page)?;
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. See `get_chunks`.
-            let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
-            formats::xlsx::chunk_with_images_from_bytes(data, &ext, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000)
+            let rows_per_chunk = if sentences_per_chunk == 3 {
+                1
+            } else {
+                sentences_per_chunk
+            };
+            formats::xlsx::chunk_with_images_from_bytes(
+                data,
+                &ext,
+                xmode,
+                rows_per_chunk,
+                window_size,
+                overlap,
+                true,
+                Vec::new(),
+                true,
+                2000,
+            )
         }
-        "html" | "htm" => formats::html::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "docx" | "docm" | "dotx" | "dotm" => formats::docx::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "eml" | "mbox" => formats::eml::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "msg" => formats::msg::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "odt" | "odp" => formats::odf::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "ipynb" => formats::ipynb::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "epub" => formats::epub::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "doc" => formats::doc::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "ppt" => formats::ppt::chunk_with_images_from_bytes(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pdf" => formats::pdf::chunk_with_images_from_bytes(data, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
+        "html" | "htm" => formats::html::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "docx" | "docm" | "dotx" | "dotm" => formats::docx::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "eml" | "mbox" => formats::eml::chunk_with_images_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "msg" => formats::msg::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "odt" | "odp" => formats::odf::chunk_with_images_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "ipynb" => formats::ipynb::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "epub" => formats::epub::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "doc" => formats::doc::chunk_with_images_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "ppt" => formats::ppt::chunk_with_images_from_bytes(
+            data,
+            filename,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pdf" => formats::pdf::chunk_with_images_from_bytes(
+            data,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
         // No embedded-image support: chunks only, empty image list.
-        _ => Ok((get_chunks_from_bytes_inner(data, filename, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?, Vec::new())),
+        _ => Ok((
+            get_chunks_from_bytes_inner(
+                data,
+                filename,
+                mode,
+                window_size,
+                overlap,
+                sentences_per_chunk,
+                paragraphs_per_page,
+            )?,
+            Vec::new(),
+        )),
     }
 }
 
 /// Convert bytes to Markdown and return extracted image bytes (`list_images=True`).
-pub fn get_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn get_markdown_with_images_from_bytes(
+    data: &[u8],
+    filename: &str,
+) -> Result<crate::chunk::MarkdownWithImages> {
     catch_parser_panics(|| get_markdown_with_images_from_bytes_inner(data, filename))
 }
 
-fn get_markdown_with_images_from_bytes_inner(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+fn get_markdown_with_images_from_bytes_inner(
+    data: &[u8],
+    filename: &str,
+) -> Result<crate::chunk::MarkdownWithImages> {
     let ext = ext_of(filename);
     match ext.as_str() {
-        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => formats::xlsx::to_markdown_with_images_from_bytes(data, &ext),
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
+            formats::xlsx::to_markdown_with_images_from_bytes(data, &ext)
+        }
         "html" | "htm" => formats::html::to_markdown_with_images_from_bytes(data),
-        "docx" | "docm" | "dotx" | "dotm" => formats::docx::to_markdown_with_images_from_bytes(data),
-        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::to_markdown_with_images_from_bytes(data),
+        "docx" | "docm" | "dotx" | "dotm" => {
+            formats::docx::to_markdown_with_images_from_bytes(data)
+        }
+        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => {
+            formats::pptx::to_markdown_with_images_from_bytes(data)
+        }
         "eml" | "mbox" => formats::eml::to_markdown_with_images_from_bytes(data, filename),
         "msg" => formats::msg::to_markdown_with_images_from_bytes(data),
         "odt" | "odp" => formats::odf::to_markdown_with_images_from_bytes(data, filename),
@@ -263,7 +543,14 @@ pub fn get_chunks(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     catch_parser_panics(|| {
-        get_chunks_inner(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+        get_chunks_inner(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        )
     })
 }
 
@@ -294,7 +581,7 @@ fn get_chunks_inner(
                 overlap,
                 true,
                 delimiter,
-                "utf-8",
+                "auto",
                 true,
             )
         }
@@ -305,33 +592,148 @@ fn get_chunks_inner(
             // Sentinel (parity with the Python default): 3 == "caller left the
             // default", mapped to rows_per_chunk = 1. A deliberate 3 is
             // unreachable here — see the doc comment on `get_chunks`.
-            let rows_per_chunk = if sentences_per_chunk == 3 { 1 } else { sentences_per_chunk };
+            let rows_per_chunk = if sentences_per_chunk == 3 {
+                1
+            } else {
+                sentences_per_chunk
+            };
             formats::xlsx::chunk(
-                file_path, xmode, rows_per_chunk, window_size, overlap, true, Vec::new(), true, 2000,
+                file_path,
+                xmode,
+                rows_per_chunk,
+                window_size,
+                overlap,
+                true,
+                Vec::new(),
+                true,
+                2000,
             )
         }
-        "doc" => formats::doc::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
+        "doc" => formats::doc::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
         // ── Word OOXML ──────────────────────────────────────────────────
-        "docx" | "docm" | "dotx" | "dotm" => {
-            formats::docx::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
-        }
+        "docx" | "docm" | "dotx" | "dotm" => formats::docx::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
         // ── Prose / markdown-pipeline formats ───────────────────────────
-        "ppt" => formats::ppt::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => {
-            formats::pptx::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
-        }
-        "md" => formats::md::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "txt" => formats::txt::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "html" | "htm" => formats::html::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "json" | "jsonl" | "ndjson" => formats::json::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "eml" | "mbox" => formats::eml::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "odt" | "odp" => formats::odf::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "msg" => formats::msg::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "ipynb" => formats::ipynb::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "rtf" => formats::rtf::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "pdf" => formats::pdf::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        "epub" => formats::epub::chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page),
-        other => Err(ChunkError::Unsupported(format!("Unsupported file type '.{other}'"))),
+        "ppt" => formats::ppt::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pptx" | "potx" | "potm" | "ppsx" | "ppsm" => formats::pptx::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "md" => formats::md::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "txt" => formats::txt::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "html" | "htm" => formats::html::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "json" | "jsonl" | "ndjson" => formats::json::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "eml" | "mbox" => formats::eml::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "odt" | "odp" => formats::odf::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "msg" => formats::msg::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "ipynb" => formats::ipynb::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "rtf" => formats::rtf::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "pdf" => formats::pdf::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        "epub" => formats::epub::chunk(
+            file_path,
+            mode,
+            window_size,
+            overlap,
+            sentences_per_chunk,
+            paragraphs_per_page,
+        ),
+        other => Err(ChunkError::Unsupported(format!(
+            "Unsupported file type '.{other}'"
+        ))),
     }
 }
 
@@ -345,9 +747,11 @@ fn get_markdown_inner(file_path: &str) -> Result<String> {
     match ext.as_str() {
         "csv" | "tsv" => {
             let delimiter = if ext == "tsv" { Some(b'\t') } else { None };
-            formats::csv::to_markdown(file_path, delimiter, "utf-8")
+            formats::csv::to_markdown(file_path, delimiter, "auto")
         }
-        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => formats::xlsx::to_markdown(file_path),
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" | "xltx" | "xltm" => {
+            formats::xlsx::to_markdown(file_path)
+        }
         "doc" => formats::doc::to_markdown(file_path),
         "docx" | "docm" | "dotx" | "dotm" => formats::docx::to_markdown(file_path),
         "ppt" => formats::ppt::to_markdown(file_path),
@@ -363,7 +767,9 @@ fn get_markdown_inner(file_path: &str) -> Result<String> {
         "rtf" => formats::rtf::to_markdown(file_path),
         "pdf" => formats::pdf::to_markdown(file_path),
         "epub" => formats::epub::to_markdown(file_path),
-        other => Err(ChunkError::Unsupported(format!("get_markdown does not support '.{other}'"))),
+        other => Err(ChunkError::Unsupported(format!(
+            "get_markdown does not support '.{other}'"
+        ))),
     }
 }
 
@@ -376,7 +782,10 @@ mod tests {
         let err = catch_parser_panics::<()>(|| panic!("boom at offset 42")).unwrap_err();
         match err {
             ChunkError::Parse(m) => {
-                assert!(m.contains("internal parser panic"), "unexpected message: {m}");
+                assert!(
+                    m.contains("internal parser panic"),
+                    "unexpected message: {m}"
+                );
                 assert!(m.contains("boom at offset 42"), "payload lost: {m}");
             }
             other => panic!("expected Parse, got {other:?}"),

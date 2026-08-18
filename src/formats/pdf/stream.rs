@@ -112,7 +112,8 @@ struct Incremental {
 
 impl Incremental {
     fn open(bytes: &[u8]) -> Result<Incremental> {
-        let reader = parse::Reader::open(bytes, parse::Headings::PerPage).map_err(ChunkError::Parse)?;
+        let reader =
+            parse::Reader::open(bytes, parse::Headings::PerPage).map_err(ChunkError::Parse)?;
         let total_pages = reader.total_pages();
         Ok(Incremental {
             reader,
@@ -133,7 +134,11 @@ impl Incremental {
 
     /// Consume the buffered markdown, emitting whatever it completed.
     fn drain(&mut self, flush: bool) {
-        let cut = if flush { self.pending.len() } else { resume_point(&self.pending) };
+        let cut = if flush {
+            self.pending.len()
+        } else {
+            resume_point(&self.pending)
+        };
         if cut == 0 {
             return;
         }
@@ -154,7 +159,11 @@ impl Incremental {
                 self.builder.advance(block);
             }
         }
-        let finished = if flush { self.builder.finish() } else { self.builder.take() };
+        let finished = if flush {
+            self.builder.finish()
+        } else {
+            self.builder.take()
+        };
         for record in finished {
             if let Some(out) = self.merger.push(record, MIN_CHUNK_CHARS) {
                 self.emit(out);
@@ -169,7 +178,11 @@ impl Incremental {
 
     fn emit(&mut self, record: crate::formats::md::common::SpannedRecord) {
         let rec = pipeline::stamp(record, &self.metadata, None);
-        self.queue.push_back(Chunk::new(rec.content, rec.content_type.as_str(), rec.metadata));
+        self.queue.push_back(Chunk::new(
+            rec.content,
+            rec.content_type.as_str(),
+            rec.metadata,
+        ));
     }
 
     /// Read pages until at least one chunk is ready, or the document ends.
@@ -290,7 +303,9 @@ fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
             }
         }
     });
-    PdfChunkStream { backend: Backend::Threaded(rx) }
+    PdfChunkStream {
+        backend: Backend::Threaded(rx),
+    }
 }
 
 /// No threads on wasm, so the same work runs on the calling thread, one page
@@ -298,8 +313,12 @@ fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
 #[cfg(target_arch = "wasm32")]
 fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
     match Incremental::open(&bytes) {
-        Ok(work) => PdfChunkStream { backend: Backend::Incremental(Box::new(work)) },
-        Err(error) => PdfChunkStream { backend: Backend::Failed(Some(error)) },
+        Ok(work) => PdfChunkStream {
+            backend: Backend::Incremental(Box::new(work)),
+        },
+        Err(error) => PdfChunkStream {
+            backend: Backend::Failed(Some(error)),
+        },
     }
 }
 
@@ -360,7 +379,9 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str) -> std::path::PathBuf {
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name].iter().collect()
+        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name]
+            .iter()
+            .collect()
     }
 
     /// The whole point of [#87](TECH_DEBT.md), stated as a number.
@@ -377,13 +398,21 @@ mod tests {
         }
         let bytes = std::fs::read(&path).expect("read");
         let mut work = Incremental::open(&bytes).expect("open");
-        assert_eq!(work.reader.pages_rendered(), 0, "opening a stream must render nothing");
+        assert_eq!(
+            work.reader.pages_rendered(),
+            0,
+            "opening a stream must render nothing"
+        );
         assert_eq!(work.total_pages, 5_000, "fixture changed");
 
         let first = work.pump().expect("a chunk").expect("chunked");
         assert!(!first.content.is_empty());
         let pages = work.reader.pages_rendered();
-        assert!(pages < 10, "the first chunk cost {pages} pages of {}", work.total_pages);
+        assert!(
+            pages < 10,
+            "the first chunk cost {pages} pages of {}",
+            work.total_pages
+        );
     }
 
     /// A text-less PDF must still raise, and must not raise until it is certain

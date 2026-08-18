@@ -2,9 +2,9 @@
 ///
 /// Since Markdown has no real page concept, boundaries are approximated in
 /// priority order:
-///   1. Heading boundary  — any heading always starts a new chunk.
-///   2. Paragraph count   — once `paragraphs_per_page` prose blocks have
-///                          accumulated, flush and start a new chunk.
+///   1. Heading boundary — any heading always starts a new chunk.
+///   2. Paragraph count — once `paragraphs_per_page` prose blocks have
+///      accumulated, flush and start a new chunk.
 ///
 /// Code blocks and tables count as one block each toward the paragraph quota,
 /// but are never split across chunks.
@@ -19,8 +19,8 @@ use serde_json::json;
 
 use super::common::{
     current_section_heading, current_section_level, extract_heading_text, heading_level,
-    heading_path_strings, parse_markdown_blocks, split_at_paragraph_boundary_spanned, strip_block_content,
-    update_heading_stack, ChunkRecordInput, ContentType, MdBlockType,
+    heading_path_strings, parse_markdown_blocks, split_at_paragraph_boundary_spanned,
+    strip_block_content, update_heading_stack, ChunkRecordInput, ContentType, MdBlockType,
     SpannedRecord,
 };
 const MAX_PAGE_AWARE_CHUNK_CHARS: usize = 2000;
@@ -107,22 +107,25 @@ pub fn build_page_aware_chunks(
                 for (part, span) in
                     split_at_paragraph_boundary_spanned(&tagged, MAX_PAGE_AWARE_CHUNK_CHARS)
                 {
-                    result.push(SpannedRecord::spanning(ChunkRecordInput {
-                        content_type: ContentType::PageAware,
-                        content: part,
-                        metadata: json!({
-                            "page_break_type":    break_type,
-                            "paragraph_count":    paragraph_count,
-                            "section_heading":    section_heading,
-                            "section_level":      section_level,
-                            "heading_path":       heading_path,
-                            "chunk_index":        *chunk_index,
-                            "document_metadata": {
-                                "source_type":        "md",
-                                "total_input_blocks": total,
-                            }
-                        }),
-                    }, span));
+                    result.push(SpannedRecord::spanning(
+                        ChunkRecordInput {
+                            content_type: ContentType::PageAware,
+                            content: part,
+                            metadata: json!({
+                                "page_break_type":    break_type,
+                                "paragraph_count":    paragraph_count,
+                                "section_heading":    section_heading,
+                                "section_level":      section_level,
+                                "heading_path":       heading_path,
+                                "chunk_index":        *chunk_index,
+                                "document_metadata": {
+                                    "source_type":        "md",
+                                    "total_input_blocks": total,
+                                }
+                            }),
+                        },
+                        span,
+                    ));
                     *chunk_index += 1;
                 }
             }
@@ -145,22 +148,25 @@ pub fn build_page_aware_chunks(
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
                 // Emit heading as its own chunk.
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::HeadingSection,
-                    content: text.clone(),
-                    metadata: json!({
-                        "page_break_type":    "heading_boundary",
-                        "paragraph_count":    0,
-                        "section_heading":    text,
-                        "section_level":      level,
-                        "heading_path":       heading_path_strings(&heading_stack),
-                        "chunk_index":        chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::HeadingSection,
+                        content: text.clone(),
+                        metadata: json!({
+                            "page_break_type":    "heading_boundary",
+                            "paragraph_count":    0,
+                            "section_heading":    text,
+                            "section_level":      level,
+                            "heading_path":       heading_path_strings(&heading_stack),
+                            "chunk_index":        chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
 
                 // Start accumulator for content under this heading.
@@ -269,11 +275,14 @@ pub fn build_page_aware_chunks(
         total_input_blocks,
     );
 
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No page-aware chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

@@ -26,13 +26,13 @@ pub(crate) mod glyph_names;
 pub(crate) mod images;
 pub(crate) mod lines;
 pub(crate) mod markdown;
+pub(crate) mod page_render;
 pub(crate) mod parse;
+#[cfg(feature = "pdf-native")]
+pub(crate) mod pdfium_render;
 pub(crate) mod regions;
 pub mod stream;
 pub(crate) mod type1;
-pub(crate) mod page_render;
-#[cfg(feature = "pdf-native")]
-pub(crate) mod pdfium_render;
 
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
@@ -41,7 +41,11 @@ use crate::options::ChunkOptions;
 
 /// Single funnel for every entry style, so they cannot drift: whatever
 /// normalisation PDF markdown needs happens here once.
-fn pdf_loaded(markdown: String, images: Vec<(String, Vec<u8>)>, total_pages: usize) -> Loaded {
+fn pdf_loaded(
+    markdown: String,
+    images: crate::chunk::ExtractedImages,
+    total_pages: usize,
+) -> Loaded {
     Loaded {
         markdown: author_block::normalize(&markdown),
         images,
@@ -62,22 +66,39 @@ pub fn chunk_pdf_markdown(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     let loaded = pdf_loaded(markdown.to_string(), Vec::new(), total_pages);
-    pipeline::chunk(&loaded, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(
+        &loaded,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// Like [`chunk_pdf_markdown`] but with caller-supplied images.
+// Public API: the signature is mirrored by py-chunks and js-chunks, so it is
+// fixed by the cross-SDK contract and cannot be regrouped unilaterally.
+#[allow(clippy::too_many_arguments)]
 pub fn chunk_pdf_markdown_with_images(
     markdown: &str,
-    images: Vec<(String, Vec<u8>)>,
+    images: crate::chunk::ExtractedImages,
     total_pages: usize,
     mode: &str,
     window_size: usize,
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     let loaded = pdf_loaded(markdown.to_string(), images, total_pages);
-    pipeline::chunk_with_images(&loaded, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk_with_images(
+        &loaded,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────────────
@@ -99,7 +120,11 @@ fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Lo
     // A document with pictures and no prose renders as nothing but `![](…)`
     // references. That is not text, and reporting it as such would hide a
     // scanned PDF behind a page of image links.
-    let markdown = if parsed.has_text { parsed.markdown } else { String::new() };
+    let markdown = if parsed.has_text {
+        parsed.markdown
+    } else {
+        String::new()
+    };
 
     // Say what actually happened. A scanned or otherwise text-less PDF used to
     // fall through to the Markdown chunker and surface as "Markdown file is
@@ -122,7 +147,9 @@ fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Lo
 
 fn read(file_path: &str) -> Result<Vec<u8>> {
     if !file_path.to_ascii_lowercase().ends_with(".pdf") {
-        return Err(ChunkError::InvalidArg(format!("Expected .pdf file path, got: {file_path}")));
+        return Err(ChunkError::InvalidArg(format!(
+            "Expected .pdf file path, got: {file_path}"
+        )));
     }
     std::fs::read(file_path).map_err(|e| ChunkError::Parse(format!("Failed to read PDF: {e}")))
 }
@@ -135,7 +162,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    chunk_from_bytes(&read(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &read(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_from_bytes(
@@ -146,7 +180,14 @@ pub fn chunk_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load(bytes, false, headings_for(mode))?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(
+        &load(bytes, false, headings_for(mode))?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -163,8 +204,15 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    chunk_with_images_from_bytes(&read(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    chunk_with_images_from_bytes(
+        &read(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_images_from_bytes(
@@ -174,8 +222,15 @@ pub fn chunk_with_images_from_bytes(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load(bytes, true, headings_for(mode))?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load(bytes, true, headings_for(mode))?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
@@ -186,11 +241,13 @@ pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
     Ok(load(bytes, false, parse::Headings::Ranked)?.markdown)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown_with_images_from_bytes(&read(file_path)?)
 }
 
-pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages> {
     let loaded = load(bytes, true, parse::Headings::Ranked)?;
     Ok((loaded.markdown, loaded.images))
 }
@@ -206,7 +263,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<stream::PdfChunkStream> {
-    Ok(stream_from_bytes(read(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page))
+    Ok(stream_from_bytes(
+        read(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    ))
 }
 
 /// Stream a PDF's chunks from bytes.
@@ -218,5 +282,12 @@ pub fn stream_from_bytes(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> stream::PdfChunkStream {
-    stream::stream_from_bytes(bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    stream::stream_from_bytes(
+        bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }

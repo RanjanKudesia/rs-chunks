@@ -34,8 +34,19 @@ pub(crate) fn undecodable(doc: &Document, id: ObjectId) -> Option<String> {
     for name in filter_names(doc, stream) {
         if !matches!(
             name.as_str(),
-            "FlateDecode" | "Fl" | "LZWDecode" | "LZW" | "ASCII85Decode" | "A85" | "ASCIIHexDecode"
-                | "AHx" | "RunLengthDecode" | "RL" | "DCTDecode" | "DCT" | "JPXDecode"
+            "FlateDecode"
+                | "Fl"
+                | "LZWDecode"
+                | "LZW"
+                | "ASCII85Decode"
+                | "A85"
+                | "ASCIIHexDecode"
+                | "AHx"
+                | "RunLengthDecode"
+                | "RL"
+                | "DCTDecode"
+                | "DCT"
+                | "JPXDecode"
         ) {
             return Some(format!("{name} images are not decoded"));
         }
@@ -45,7 +56,9 @@ pub(crate) fn undecodable(doc: &Document, id: ObjectId) -> Option<String> {
 
 /// The file extension the image will be written with.
 pub(crate) fn extension_of(doc: &Document, id: ObjectId) -> &'static str {
-    let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else { return "png" };
+    let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
+        return "png";
+    };
     match filter_names(doc, stream).last().map(String::as_str) {
         Some("DCTDecode") | Some("DCT") => "jpg",
         Some("JPXDecode") => "jp2",
@@ -54,7 +67,11 @@ pub(crate) fn extension_of(doc: &Document, id: ObjectId) -> &'static str {
 }
 
 fn filter_names(doc: &Document, stream: &Stream) -> Vec<String> {
-    match stream.dict.get(b"Filter").or_else(|_| stream.dict.get(b"F")) {
+    match stream
+        .dict
+        .get(b"Filter")
+        .or_else(|_| stream.dict.get(b"F"))
+    {
         Ok(Object::Name(n)) => vec![String::from_utf8_lossy(n).to_string()],
         Ok(Object::Array(a)) => a
             .iter()
@@ -74,10 +91,19 @@ pub(crate) fn extract(doc: &Document, id: ObjectId) -> Result<Image, String> {
         .map_err(|e| format!("image object unreadable: {e}"))?;
     let (data, codec) = filters::decode(doc, stream)?;
     match codec {
-        Codec::Jpeg => Ok(Image { extension: "jpg", bytes: data }),
-        Codec::Jpeg2000 => Ok(Image { extension: "jp2", bytes: data }),
+        Codec::Jpeg => Ok(Image {
+            extension: "jpg",
+            bytes: data,
+        }),
+        Codec::Jpeg2000 => Ok(Image {
+            extension: "jp2",
+            bytes: data,
+        }),
         Codec::Unsupported(name) => Err(format!("{name} images are not decoded")),
-        Codec::Samples => to_png(doc, stream, &data).map(|bytes| Image { extension: "png", bytes }),
+        Codec::Samples => to_png(doc, stream, &data).map(|bytes| Image {
+            extension: "png",
+            bytes,
+        }),
     }
 }
 
@@ -96,9 +122,22 @@ fn to_png(doc: &Document, stream: &Stream, samples: &[u8]) -> Result<Vec<u8>, St
         .get(b"ImageMask")
         .and_then(Object::as_bool)
         .unwrap_or(false);
-    let bpc = if stencil { 1 } else { integer(doc, &stream.dict, b"BitsPerComponent").unwrap_or(8).clamp(1, 16) as usize };
+    let bpc = if stencil {
+        1
+    } else {
+        integer(doc, &stream.dict, b"BitsPerComponent")
+            .unwrap_or(8)
+            .clamp(1, 16) as usize
+    };
     let space = ColorSpace::of(doc, stream, stencil)?;
-    let mut rgb = to_rgb(samples, width, height, bpc, &space, decode_inverted(doc, stream))?;
+    let mut rgb = to_rgb(
+        samples,
+        width,
+        height,
+        bpc,
+        &space,
+        decode_inverted(doc, stream),
+    )?;
 
     match alpha(doc, stream, width, height) {
         Some(alpha) => {
@@ -116,7 +155,12 @@ fn to_png(doc: &Document, stream: &Stream, samples: &[u8]) -> Result<Vec<u8>, St
     }
 }
 
-fn encode(data: &[u8], width: u32, height: u32, kind: ExtendedColorType) -> Result<Vec<u8>, String> {
+fn encode(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    kind: ExtendedColorType,
+) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     PngEncoder::new(&mut out)
         .write_image(data, width, height, kind)
@@ -155,7 +199,10 @@ impl ColorSpace {
                 b"DeviceGray" | b"G" | b"CalGray" => Ok(ColorSpace::Gray),
                 b"DeviceRGB" | b"RGB" | b"CalRGB" | b"Lab" => Ok(ColorSpace::Rgb),
                 b"DeviceCMYK" | b"CMYK" => Ok(ColorSpace::Cmyk),
-                other => Err(format!("unsupported colour space /{}", String::from_utf8_lossy(other))),
+                other => Err(format!(
+                    "unsupported colour space /{}",
+                    String::from_utf8_lossy(other)
+                )),
             },
             Object::Array(items) if !items.is_empty() => {
                 let family = items[0].as_name().unwrap_or(b"");
@@ -171,7 +218,10 @@ impl ColorSpace {
                     b"DeviceGray" => Ok(ColorSpace::Gray),
                     b"DeviceRGB" => Ok(ColorSpace::Rgb),
                     b"DeviceCMYK" => Ok(ColorSpace::Cmyk),
-                    other => Err(format!("unsupported colour space /{}", String::from_utf8_lossy(other))),
+                    other => Err(format!(
+                        "unsupported colour space /{}",
+                        String::from_utf8_lossy(other)
+                    )),
                 }
             }
             _ => Err("unreadable colour space".into()),
@@ -198,7 +248,11 @@ impl ColorSpace {
     /// per-pixel path is a table lookup.
     fn indexed(doc: &Document, items: &[Object]) -> Result<ColorSpace, String> {
         let base_object = items.get(1).ok_or("indexed colour space has no base")?;
-        let base = doc.dereference(base_object).map_err(|e| e.to_string())?.1.clone();
+        let base = doc
+            .dereference(base_object)
+            .map_err(|e| e.to_string())?
+            .1
+            .clone();
         let base = Self::from_object(doc, &base)?;
         let components = base.components();
         let lookup = match items.get(3).and_then(|o| doc.dereference(o).ok()) {
@@ -233,14 +287,13 @@ impl ColorSpace {
             ColorSpace::Rgb => [values[0], values[1], values[2]],
             ColorSpace::Cmyk => {
                 let f = |i: usize, k: u8| {
-                    (255u16.saturating_sub(values[i] as u16) * 255u16.saturating_sub(k as u16) / 255) as u8
+                    (255u16.saturating_sub(values[i] as u16) * 255u16.saturating_sub(k as u16)
+                        / 255) as u8
                 };
                 let k = values[3];
                 [f(0, k), f(1, k), f(2, k)]
             }
-            ColorSpace::Indexed(palette) => {
-                *palette.get(values[0] as usize).unwrap_or(&[0, 0, 0])
-            }
+            ColorSpace::Indexed(palette) => *palette.get(values[0] as usize).unwrap_or(&[0, 0, 0]),
         }
     }
 }
@@ -272,7 +325,13 @@ fn to_rgb(
         for x in 0..width as usize {
             for (c, slot) in values.iter_mut().enumerate() {
                 let index = (x * components + c) * bpc;
-                *slot = sample(samples, row, index, bpc, matches!(space, ColorSpace::Indexed(_)));
+                *slot = sample(
+                    samples,
+                    row,
+                    index,
+                    bpc,
+                    matches!(space, ColorSpace::Indexed(_)),
+                );
             }
             let mut rgb = space.to_rgb(&values);
             if inverted {
@@ -309,11 +368,22 @@ fn sample(data: &[u8], row: usize, bit_index: usize, bpc: usize, raw_index: bool
 /// the common `[1 0]` stencil form is honoured; partial ranges are rare and
 /// guessing at them would distort colours.
 fn decode_inverted(doc: &Document, stream: &Stream) -> bool {
-    let Ok(array) = stream.dict.get(b"Decode").or_else(|_| stream.dict.get(b"D")).and_then(Object::as_array) else {
+    let Ok(array) = stream
+        .dict
+        .get(b"Decode")
+        .or_else(|_| stream.dict.get(b"D"))
+        .and_then(Object::as_array)
+    else {
         return false;
     };
-    let first = array.first().and_then(|o| doc.dereference(o).ok()).and_then(|(_, o)| o.as_float().ok());
-    let second = array.get(1).and_then(|o| doc.dereference(o).ok()).and_then(|(_, o)| o.as_float().ok());
+    let first = array
+        .first()
+        .and_then(|o| doc.dereference(o).ok())
+        .and_then(|(_, o)| o.as_float().ok());
+    let second = array
+        .get(1)
+        .and_then(|o| doc.dereference(o).ok())
+        .and_then(|(_, o)| o.as_float().ok());
     matches!((first, second), (Some(a), Some(b)) if a > b)
 }
 
@@ -327,11 +397,21 @@ fn alpha(doc: &Document, stream: &Stream, width: u32, height: u32) -> Option<Vec
     }
     let mw = integer(doc, &mask.dict, b"Width")? as u32;
     let mh = integer(doc, &mask.dict, b"Height")? as u32;
-    let bpc = integer(doc, &mask.dict, b"BitsPerComponent").unwrap_or(8).clamp(1, 16) as usize;
+    let bpc = integer(doc, &mask.dict, b"BitsPerComponent")
+        .unwrap_or(8)
+        .clamp(1, 16) as usize;
     if mw == 0 || mh == 0 {
         return None;
     }
-    let gray = to_rgb(&data, mw, mh, bpc, &ColorSpace::Gray, decode_inverted(doc, mask)).ok()?;
+    let gray = to_rgb(
+        &data,
+        mw,
+        mh,
+        bpc,
+        &ColorSpace::Gray,
+        decode_inverted(doc, mask),
+    )
+    .ok()?;
 
     // Nearest-neighbour is enough: a soft mask is a coverage map, and its
     // resolution usually matches the image it belongs to already.
@@ -347,7 +427,12 @@ fn alpha(doc: &Document, stream: &Stream, width: u32, height: u32) -> Option<Vec
 }
 
 fn integer(doc: &Document, dict: &Dictionary, key: &[u8]) -> Option<i64> {
-    dict.get(key).and_then(|o| doc.dereference(o)).map(|(_, o)| o).ok()?.as_i64().ok()
+    dict.get(key)
+        .and_then(|o| doc.dereference(o))
+        .map(|(_, o)| o)
+        .ok()?
+        .as_i64()
+        .ok()
 }
 
 #[cfg(test)]

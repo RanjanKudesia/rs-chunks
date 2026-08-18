@@ -28,7 +28,9 @@ fn is_list_style(style: &str) -> bool {
     false
 }
 
-pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<DocxBlock>, String> {
+pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
+    reader_src: R,
+) -> Result<Vec<DocxBlock>, String> {
     let mut reader = Reader::from_reader(BufReader::new(reader_src));
 
     let mut buf = Vec::new();
@@ -659,7 +661,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                                 rendered_page_break: para_has_rendered_break,
                                 image_alt: para_image_alt.take(),
                                 image_rid: para_image_rid.take(),
-                            images: std::mem::take(&mut para_images),
+                                images: std::mem::take(&mut para_images),
                                 footnote_refs: std::mem::take(&mut para_footnote_refs),
                                 endnote_refs: std::mem::take(&mut para_endnote_refs),
                                 num_id: para_num_id,
@@ -750,20 +752,16 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                     }
                 }
             }
-            Ok(Event::Text(t)) => {
-                if in_text {
-                    let txt = match t.decode() {
-                        Ok(v) => v.into_owned(),
-                        Err(_) => String::new(),
-                    };
-                    wt_buf.push_str(&txt);
-                }
+            Ok(Event::Text(t)) if in_text => {
+                let txt = match t.decode() {
+                    Ok(v) => v.into_owned(),
+                    Err(_) => String::new(),
+                };
+                wt_buf.push_str(&txt);
             }
-            Ok(Event::CData(t)) => {
-                if in_text {
-                    let txt = String::from_utf8_lossy(t.as_ref());
-                    wt_buf.push_str(&txt);
-                }
+            Ok(Event::CData(t)) if in_text => {
+                let txt = String::from_utf8_lossy(t.as_ref());
+                wt_buf.push_str(&txt);
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse word/document.xml stream: {e}")),

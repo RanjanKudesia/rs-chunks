@@ -124,11 +124,8 @@ impl ParsedDoc {
             let Ok((story, _)) = self.story(from, to as i32) else {
                 continue;
             };
-            let extracted = text_extractor::extract_paragraphs(
-                &story.text,
-                &story.props,
-                &self.stylesheet,
-            );
+            let extracted =
+                text_extractor::extract_paragraphs(&story.text, &story.props, &self.stylesheet);
             let has_content = extracted.iter().any(|p| !p.content.trim().is_empty());
             if !has_content {
                 continue;

@@ -93,7 +93,7 @@ fn resolve_local_file(src: &str, html_dir: &Path) -> Option<(Vec<u8>, String)> {
 pub fn collect_html_images(
     html: &str,
     file_path: &str,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<HtmlImageInfo> {
     let html_dir = Path::new(file_path)
         .parent()
@@ -103,7 +103,9 @@ pub fn collect_html_images(
 
     while i < html.len() {
         // Look for the next `<img` (case-insensitive).
-        let Some(tag_start) = find_img_start(html, i) else { break };
+        let Some(tag_start) = find_img_start(html, i) else {
+            break;
+        };
 
         // Find the closing `>` of this tag.
         let Some(tag_end) = find_tag_close(html, tag_start) else {
@@ -123,12 +125,18 @@ pub fn collect_html_images(
         let (img_bytes, ext): (Vec<u8>, String) = if src.starts_with("data:") {
             match decode_data_uri(&src) {
                 Some((b, e)) => (b, e.to_string()),
-                None => { i = tag_end; continue; }
+                None => {
+                    i = tag_end;
+                    continue;
+                }
             }
         } else {
             match resolve_local_file(&src, html_dir) {
                 Some(pair) => pair,
-                None => { i = tag_end; continue; }
+                None => {
+                    i = tag_end;
+                    continue;
+                }
             }
         };
 
@@ -141,7 +149,10 @@ pub fn collect_html_images(
             image_out.push((hash_name.clone(), img_bytes));
         }
 
-        result.push(HtmlImageInfo { hash_name, alt_text: alt });
+        result.push(HtmlImageInfo {
+            hash_name,
+            alt_text: alt,
+        });
         i = tag_end;
     }
 
@@ -161,10 +172,18 @@ fn find_tag_close(html: &str, start: usize) -> Option<usize> {
     let mut in_quote: Option<u8> = None;
     while i < bytes.len() {
         match (in_quote, bytes[i]) {
-            (None, b'"') | (None, b'\'') => { in_quote = Some(bytes[i]); i += 1; }
-            (Some(q), c) if c == q => { in_quote = None; i += 1; }
+            (None, b'"') | (None, b'\'') => {
+                in_quote = Some(bytes[i]);
+                i += 1;
+            }
+            (Some(q), c) if c == q => {
+                in_quote = None;
+                i += 1;
+            }
             (None, b'>') => return Some(i + 1),
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     None

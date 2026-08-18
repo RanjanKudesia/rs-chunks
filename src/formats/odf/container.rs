@@ -16,7 +16,7 @@ pub struct OdfContainer {
     pub content_xml: String,
     pub meta_xml: Option<String>,
     /// (basename, bytes) for each `Pictures/` image, in archive order.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
     /// Original `Pictures/…` basename → hashed key, so `content.xml`'s
     /// `xlink:href` can be turned into a reference the caller can resolve.
     pub image_names: std::collections::HashMap<String, String>,
@@ -31,10 +31,7 @@ fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
     crate::image_naming::name_for_path(bytes, zip_path)
 }
 
-fn read_entry<R: Read + std::io::Seek>(
-    archive: &mut ZipArchive<R>,
-    name: &str,
-) -> Option<Vec<u8>> {
+fn read_entry<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
     let mut file = archive.by_name(name).ok()?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).ok()?;
@@ -72,12 +69,13 @@ pub fn load(bytes: &[u8], expected: OdfKind) -> Result<OdfContainer, String> {
         }
     }
 
-    let meta_xml = read_entry(&mut archive, "meta.xml")
-        .map(|b| String::from_utf8_lossy(&b).into_owned());
+    let meta_xml =
+        read_entry(&mut archive, "meta.xml").map(|b| String::from_utf8_lossy(&b).into_owned());
 
     // Collect Pictures/ images.
-    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut image_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut images: crate::chunk::ExtractedImages = Vec::new();
+    let mut image_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
     for name in names {
         if name.starts_with("Pictures/") && !name.ends_with('/') {

@@ -6,7 +6,7 @@ use quick_xml::events::Event as XmlEvent;
 use quick_xml::Reader as XmlReader;
 
 use super::md_blocks::{
-    attr_local_name, collapse_ws, decode_attr, push_text, BlockKind, SlideBlock,
+    attr_local_name, collapse_ws, decode_attr, push_entity_text, push_text, BlockKind, SlideBlock,
     SlideMarkdownContent,
 };
 
@@ -53,6 +53,12 @@ pub(super) fn parse_slide_for_markdown(
 
     // <a:t> tracking
     let mut in_t = false;
+    // True until the first text event of the current <a:t> has been appended.
+    // Text inside ONE element must concatenate verbatim — an entity reference
+    // splits it into several events, and space-joining them produced `AT & T`
+    // from `AT&amp;T` (TECH_DEBT L6). Spacing belongs between elements, not
+    // inside one.
+    let mut t_first = true;
 
     // Table tracking
     let mut in_tbl = false;
@@ -66,6 +72,7 @@ pub(super) fn parse_slide_for_markdown(
     let mut in_tc_para = false;
     let mut tc_para_text = String::new();
     let mut in_tc_t = false;
+    let mut tc_t_first = true;
 
     // Shape paragraphs accumulation
     let mut shape_paragraphs: Vec<SlideBlock> = Vec::new();
@@ -189,6 +196,7 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_para && !in_tc_para => {
                         in_t = true;
+                        t_first = true;
                     }
                     b"pic" => {
                         in_pic = true;
@@ -287,6 +295,7 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_tc_para => {
                         in_tc_t = true;
+                        tc_t_first = true;
                     }
                     _ => {}
                 }
@@ -472,17 +481,32 @@ pub(super) fn parse_slide_for_markdown(
                 }
             }
             Ok(XmlEvent::Text(ref e)) => {
+                // `is_entity` is set by read_event_folding_entities! when this
+                // event came from a reference. A reference splits one element's
+                // text into several events, so space-joining them turns
+                // `AT&amp;T` into `AT & T` — append verbatim instead (L6).
                 if in_t && in_para && !in_tc_para {
                     let txt = e.decode().unwrap_or_default().to_string();
-                    if in_run {
-                        push_text(&mut cur_run_text, &txt);
+                    let dst = if in_run {
+                        &mut cur_run_text
                     } else {
-                        push_text(&mut para_text, &txt);
+                        &mut para_text
+                    };
+                    if t_first {
+                        push_text(dst, &txt);
+                    } else {
+                        push_entity_text(dst, &txt);
                     }
+                    t_first = false;
                 }
                 if in_tc_t {
                     let txt = e.decode().unwrap_or_default().to_string();
-                    push_text(&mut tc_para_text, &txt);
+                    if tc_t_first {
+                        push_text(&mut tc_para_text, &txt);
+                    } else {
+                        push_entity_text(&mut tc_para_text, &txt);
+                    }
+                    tc_t_first = false;
                 }
             }
             Ok(XmlEvent::CData(ref e)) => {
@@ -581,7 +605,7 @@ pub(super) fn parse_slide_for_markdown(
                                     slide.title = Some(title_parts.join(" "));
                                 }
                             } else {
-                                slide.blocks.extend(shape_paragraphs.drain(..));
+                                slide.blocks.append(&mut shape_paragraphs);
                             }
                             shape_paragraphs.clear();
                             sp_is_title = false;
@@ -619,10 +643,8 @@ pub(super) fn parse_slide_for_markdown(
                         tbl_current_row.push(tc_text.trim().to_string());
                         tc_text.clear();
                     }
-                    b"tr" if in_tbl => {
-                        if !tbl_current_row.is_empty() {
-                            tbl_rows.push(std::mem::take(&mut tbl_current_row));
-                        }
+                    b"tr" if in_tbl && !tbl_current_row.is_empty() => {
+                        tbl_rows.push(std::mem::take(&mut tbl_current_row));
                     }
                     b"tbl" if in_tbl => {
                         in_tbl = false;

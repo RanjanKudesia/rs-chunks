@@ -10,19 +10,19 @@ mod md_blocks;
 mod md_rels;
 mod md_render;
 mod md_slide_parse;
-mod presentation;
-mod slide_images;
-mod slide_model;
-mod slide_xml;
-mod text_split;
-mod xml_util;
 mod page_aware;
+mod presentation;
 mod section;
 mod semantic;
 mod sentence;
+mod slide_images;
+mod slide_model;
+mod slide_xml;
 mod sliding_window;
 mod structural;
+mod text_split;
 mod to_markdown;
+mod xml_util;
 
 use std::fs;
 
@@ -59,37 +59,63 @@ pub fn chunk(
 ) -> Result<Vec<Chunk>> {
     ensure_pptx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
+pub fn chunk_from_bytes(
+    bytes: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
     let res = match mode {
         "default" | "structural" => structural::build_structural_chunks(bytes),
         "section" => section::build_section_chunks(bytes),
         "semantic" => semantic::build_semantic_chunks(bytes),
         "sentence" => {
             if sentences_per_chunk == 0 {
-                return Err(ChunkError::InvalidArg("sentences_per_chunk must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "sentences_per_chunk must be greater than 0".into(),
+                ));
             }
             sentence::build_sentence_chunks(bytes, sentences_per_chunk)
         }
         "page_aware" => {
             if paragraphs_per_page == 0 {
-                return Err(ChunkError::InvalidArg("paragraphs_per_page must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "paragraphs_per_page must be greater than 0".into(),
+                ));
             }
             page_aware::build_page_aware_chunks(bytes, paragraphs_per_page)
         }
         "sliding_window" => {
             if window_size == 0 {
-                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "window_size must be greater than 0".into(),
+                ));
             }
             if overlap >= window_size {
-                return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
+                return Err(ChunkError::InvalidArg(
+                    "overlap must be less than window_size".into(),
+                ));
             }
             sliding_window::build_sliding_window_chunks(bytes, window_size, overlap)
         }
-        other => return Err(ChunkError::InvalidArg(format!("Unknown PPTX mode: {other}"))),
+        other => {
+            return Err(ChunkError::InvalidArg(format!(
+                "Unknown PPTX mode: {other}"
+            )))
+        }
     };
     res.map(to_chunks).map_err(ChunkError::Parse)
 }
@@ -134,19 +160,34 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     ensure_pptx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_with_images_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_with_images_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+pub fn chunk_with_images_from_bytes(
+    bytes: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
     let mut archive = common::open_pptx(bytes).map_err(ChunkError::Parse)?;
     let slide_names = common::collect_slide_names(&archive);
     let total_slides = slide_names.len();
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
-    let image_infos = common::collect_all_slide_images(&mut archive, &slide_names, total_slides, &mut image_out);
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
+    let image_infos =
+        common::collect_all_slide_images(&mut archive, &slide_names, total_slides, &mut image_out);
 
     let mut chunks: Vec<Chunk> = image_infos
         .into_iter()
@@ -163,7 +204,14 @@ pub fn chunk_with_images_from_bytes(bytes: &[u8], mode: &str, window_size: usize
             )
         })
         .collect();
-    chunks.extend(chunk_from_bytes(bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?);
+    chunks.extend(chunk_from_bytes(
+        bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?);
     Ok((chunks, image_out))
 }
 
@@ -173,13 +221,15 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
     to_markdown::to_markdown(&bytes).map_err(ChunkError::Parse)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     ensure_pptx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
     to_markdown_with_images_from_bytes(&bytes)
 }
 
-pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown::to_markdown_with_images(bytes).map_err(ChunkError::Parse)
 }
 
@@ -191,7 +241,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

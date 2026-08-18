@@ -125,7 +125,9 @@ pub(super) fn append_chart_blocks(
         if let Ok(bytes) = read_zip_entry(archive, &part) {
             let rows = super::chart::parse_chart_xml(&bytes);
             if !rows.is_empty() {
-                slide.blocks.push(SlideBlock::paragraph("Chart".to_string()));
+                slide
+                    .blocks
+                    .push(SlideBlock::paragraph("Chart".to_string()));
                 slide.blocks.push(SlideBlock::table(rows, true));
             }
         }
@@ -141,6 +143,23 @@ pub(super) fn push_text(dst: &mut String, text: &str) {
         dst.push(' ');
     }
     dst.push_str(trimmed);
+}
+
+/// Append text that came from an entity reference, with no separator.
+///
+/// A reference splits one element's text into several events: `AT&amp;T`
+/// arrives as `"AT"`, `"&"`, `"T"`. [`push_text`] space-joins successive events,
+/// which is right when each event *was* a whole element and wrong here — it
+/// produced `AT & T` in `get_markdown` while `get_chunks` (which does not use
+/// this walker) correctly produced `AT&T` (TECH_DEBT L6).
+///
+/// The text is appended verbatim: no trim, no separator. Trimming would eat the
+/// spacing of an entity like `&nbsp;`, and a separator is the bug itself.
+pub(super) fn push_entity_text(dst: &mut String, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    dst.push_str(text);
 }
 
 pub(super) fn attr_local_name(key: &[u8]) -> &[u8] {

@@ -51,7 +51,13 @@ impl ChunkRecord {
         heading_level: Option<u8>,
         context: ChunkContext,
     ) -> Self {
-        ChunkRecord::new(content, content_type, paragraph_type, heading_level, context)
+        ChunkRecord::new(
+            content,
+            content_type,
+            paragraph_type,
+            heading_level,
+            context,
+        )
     }
 }
 
@@ -117,7 +123,9 @@ fn split_oversized(text: &str, max_chars: usize) -> Vec<String> {
             end = floor_char_boundary(&piece, end);
             if end <= start {
                 // max_chars smaller than a single char; advance to next boundary.
-                end = floor_char_boundary(&piece, start + 4).max(start + 1).min(piece.len());
+                end = floor_char_boundary(&piece, start + 4)
+                    .max(start + 1)
+                    .min(piece.len());
             }
             let slice = piece[start..end].trim();
             if !slice.is_empty() {
@@ -169,7 +177,8 @@ pub(crate) fn build_structural_chunks(paragraphs: Vec<DocParagraph>) -> Vec<Chun
             continue;
         }
 
-        let is_short_normal = matches!(p.paragraph_type, ParagraphType::Normal) && trimmed.len() < 80;
+        let is_short_normal =
+            matches!(p.paragraph_type, ParagraphType::Normal) && trimmed.len() < 80;
         if is_short_normal {
             let buf_was_empty = short_buf.is_empty();
             let candidate = if buf_was_empty {
@@ -241,7 +250,11 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
         if joined.is_empty() {
             return;
         }
-        let paragraph_type = if heading == "Preamble" { "normal" } else { "heading" };
+        let paragraph_type = if heading == "Preamble" {
+            "normal"
+        } else {
+            "heading"
+        };
 
         if joined.len() <= MAX_SECTION_CHARS {
             out.push(ChunkRecord::aggregate(
@@ -280,7 +293,13 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
     for item in position(paragraphs) {
         let p = &item.paragraph;
         if matches!(p.paragraph_type, ParagraphType::PageBreak) {
-            flush(&mut out, &current_heading, current_level, &mut lines, &section_ctx);
+            flush(
+                &mut out,
+                &current_heading,
+                current_level,
+                &mut lines,
+                &section_ctx,
+            );
             section_ctx = ChunkContext::default();
             continue;
         }
@@ -291,7 +310,13 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
         }
 
         if let ParagraphType::Heading(level) = p.paragraph_type {
-            flush(&mut out, &current_heading, current_level, &mut lines, &section_ctx);
+            flush(
+                &mut out,
+                &current_heading,
+                current_level,
+                &mut lines,
+                &section_ctx,
+            );
             current_heading = content.to_string();
             current_level = Some(level);
             section_ctx = item.context.clone();
@@ -304,7 +329,13 @@ pub(crate) fn build_section_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkRe
         }
     }
 
-    flush(&mut out, &current_heading, current_level, &mut lines, &section_ctx);
+    flush(
+        &mut out,
+        &current_heading,
+        current_level,
+        &mut lines,
+        &section_ctx,
+    );
 
     number(&mut out);
     out
@@ -357,7 +388,8 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
         let keys = keyword_set(text);
 
         let is_heading = matches!(p.paragraph_type, ParagraphType::Heading(_));
-        let overlaps = !current_keywords.is_empty() && current_keywords.intersection(&keys).next().is_some();
+        let overlaps =
+            !current_keywords.is_empty() && current_keywords.intersection(&keys).next().is_some();
         let starts_reference = {
             let lower = text.to_ascii_lowercase();
             ["this ", "it ", "they ", "these ", "that ", "those "]
@@ -372,7 +404,13 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
                 && current.len() + 2 + text.len() > MAX_CHUNK_CHARS);
 
         if should_split {
-            flush(&mut out, &mut current, current_heading_level, current_para_type, &current_ctx);
+            flush(
+                &mut out,
+                &mut current,
+                current_heading_level,
+                current_para_type,
+                &current_ctx,
+            );
             current_keywords.clear();
         }
 
@@ -387,7 +425,13 @@ pub(crate) fn build_semantic_chunks(paragraphs: Vec<DocParagraph>) -> Vec<ChunkR
         current_para_type = paragraph_type_str(&p.paragraph_type);
     }
 
-    flush(&mut out, &mut current, current_heading_level, current_para_type, &current_ctx);
+    flush(
+        &mut out,
+        &mut current,
+        current_heading_level,
+        current_para_type,
+        &current_ctx,
+    );
 
     number(&mut out);
     out
@@ -691,10 +735,15 @@ mod breadcrumb_tests {
             ("semantic", build_semantic_chunks(document())),
             ("sentence", build_sentence_chunks(document(), 1)),
             ("page_aware", build_page_aware_chunks(document(), 1)),
-            ("sliding_window", build_sliding_window_chunks(document(), 1, 0)),
+            (
+                "sliding_window",
+                build_sliding_window_chunks(document(), 1, 0),
+            ),
         ];
         for (mode, records) in cases {
-            let last = records.last().unwrap_or_else(|| panic!("{mode}: expected chunks"));
+            let last = records
+                .last()
+                .unwrap_or_else(|| panic!("{mode}: expected chunks"));
             assert_eq!(
                 last.context.heading_path_string().as_deref(),
                 Some("Procedure > Final Stage"),

@@ -7,7 +7,7 @@ use zip::ZipArchive;
 
 use super::common::image_hash_name;
 use super::structural_build::{
-    base_chunk_metadata, collect_element_refs, flush_outside_shorts, flush_section,
+    base_chunk_metadata, collect_element_refs, flush_outside_shorts, flush_section, NoteSlices,
 };
 use super::structural_model::{
     ChunkRecordInput, ContentType, DocumentElement, SEMANTIC_SPLIT_MAX_BYTES,
@@ -21,7 +21,7 @@ pub(super) fn build_chunks_from_elements_with_images(
     endnote_map: &HashMap<String, String>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<ChunkRecordInput> {
     let mut chunks = Vec::new();
     let mut section_heading: Option<String> = None;
@@ -210,12 +210,11 @@ pub(super) fn build_chunks_from_elements_with_images(
                     let mut ens = Vec::new();
                     collect_element_refs(element, footnote_map, endnote_map, &mut fns, &mut ens);
                     for (idx, s) in split.into_iter().enumerate() {
-                        let (chunk_fns, chunk_ens): (&[(String, String)], &[(String, String)]) =
-                            if idx == 0 {
-                                (fns.as_slice(), ens.as_slice())
-                            } else {
-                                (&[], &[])
-                            };
+                        let (chunk_fns, chunk_ens): NoteSlices = if idx == 0 {
+                            (fns.as_slice(), ens.as_slice())
+                        } else {
+                            (&[], &[])
+                        };
                         chunks.push(ChunkRecordInput {
                             content_type: element.content_type,
                             content: s,
@@ -298,7 +297,19 @@ pub(super) fn build_chunks_from_elements_with_images(
                             }
                         }
                     }
-                    // Unsupported format (.emf etc.) or missing rid — skip silently
+                    // Unsupported format (.emf etc.) or missing rid — skip silently.
+
+                    // Keep the element's own text in the prose stream, exactly as
+                    // the in-a-section branch does via `section_parts.push`.
+                    // Without this, a document whose images all sit outside any
+                    // heading lost that text entirely when `list_images=True`,
+                    // so the text chunks differed from the `list_images=False`
+                    // path — the very invariant
+                    // `test_text_chunk_quality_unchanged` asserts (TECH_DEBT L5).
+                    outside_short_parts.push(element.clone());
+                    if outside_short_first_page.is_none() {
+                        outside_short_first_page = element.page_number;
+                    }
                 }
             }
         }

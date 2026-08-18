@@ -19,8 +19,9 @@ const MODES: &[&str] = &[
 ];
 
 fn fixture(name: &str) -> String {
-    let path: std::path::PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", name].iter().collect();
+    let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", name]
+        .iter()
+        .collect();
     path.to_string_lossy().to_string()
 }
 
@@ -29,7 +30,10 @@ fn ranges(name: &str, mode: &str) -> Vec<(u64, u64)> {
         .expect("chunk")
         .into_iter()
         .map(|c| {
-            let range = c.metadata.get("record_range").expect("every json chunk names its records");
+            let range = c
+                .metadata
+                .get("record_range")
+                .expect("every json chunk names its records");
             let array = range.as_array().expect("record_range is a pair");
             (array[0].as_u64().unwrap(), array[1].as_u64().unwrap())
         })
@@ -44,10 +48,21 @@ fn every_mode_names_the_records_a_chunk_came_from() {
         assert!(!ranges.is_empty(), "{mode}: no chunks");
         for (first, last) in &ranges {
             assert!(first <= last, "{mode}: reversed range {first}..{last}");
-            assert!(*last < 25, "{mode}: record {last} is past the end of a 25-record file");
+            assert!(
+                *last < 25,
+                "{mode}: record {last} is past the end of a 25-record file"
+            );
         }
-        assert_eq!(ranges.first().unwrap().0, 0, "{mode}: the first chunk skips record 0");
-        assert_eq!(ranges.last().unwrap().1, 24, "{mode}: the last chunk stops short");
+        assert_eq!(
+            ranges.first().unwrap().0,
+            0,
+            "{mode}: the first chunk skips record 0"
+        );
+        assert_eq!(
+            ranges.last().unwrap().1,
+            24,
+            "{mode}: the last chunk stops short"
+        );
     }
 }
 
@@ -69,7 +84,11 @@ fn element_level_modes_map_one_record_to_one_chunk() {
 fn grouping_modes_partition_the_records_without_gaps() {
     for mode in ["section", "semantic", "page_aware"] {
         let ranges = ranges("jsonl/elastic_products.ndjson", mode);
-        assert!(ranges.len() > 1, "{mode}: expected several groups, got {}", ranges.len());
+        assert!(
+            ranges.len() > 1,
+            "{mode}: expected several groups, got {}",
+            ranges.len()
+        );
         for pair in ranges.windows(2) {
             assert_eq!(
                 pair[1].0,
@@ -87,7 +106,12 @@ fn grouping_modes_partition_the_records_without_gaps() {
 fn sliding_window_ranges_overlap_by_the_overlap() {
     let ranges = ranges("jsonl/elastic_products.ndjson", "sliding_window");
     for pair in ranges.windows(2) {
-        assert!(pair[1].0 <= pair[0].1, "windows {:?} and {:?} do not overlap", pair[0], pair[1]);
+        assert!(
+            pair[1].0 <= pair[0].1,
+            "windows {:?} and {:?} do not overlap",
+            pair[0],
+            pair[1]
+        );
     }
 }
 
@@ -107,13 +131,17 @@ fn a_json_array_document_is_mapped_too() {
 #[test]
 fn a_chunk_does_not_shadow_the_documents_record_count() {
     for mode in MODES {
-        for chunk in json::chunk(&fixture("jsonl/elastic_products.ndjson"), mode, 3, 1, 3, 15).unwrap() {
+        for chunk in
+            json::chunk(&fixture("jsonl/elastic_products.ndjson"), mode, 3, 1, 3, 15).unwrap()
+        {
             assert!(
                 chunk.metadata.get("record_count").is_none(),
                 "{mode}: a chunk-level record_count would shadow the document's"
             );
             assert_eq!(
-                chunk.metadata["document_metadata"]["record_count"].as_u64().unwrap(),
+                chunk.metadata["document_metadata"]["record_count"]
+                    .as_u64()
+                    .unwrap(),
                 25,
                 "{mode}: the document's own record count changed meaning"
             );
@@ -130,9 +158,13 @@ fn formats_without_records_gain_no_key() {
         ("md/prose_heavy.md", "md"),
         ("rtf/conv_libreoffice_heading123.rtf", "rtf"),
     ] {
-        let path: std::path::PathBuf =
-            [env!("CARGO_MANIFEST_DIR"), "..", "test_files", name].iter().collect();
-        assert!(path.exists(), "{name} is missing — the check would silently pass");
+        let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", name]
+            .iter()
+            .collect();
+        assert!(
+            path.exists(),
+            "{name} is missing — the check would silently pass"
+        );
         let path = path.to_string_lossy().to_string();
         let chunks = match chunker {
             "md" => chunks_rs::formats::md::chunk(&path, "section", 3, 1, 3, 15),

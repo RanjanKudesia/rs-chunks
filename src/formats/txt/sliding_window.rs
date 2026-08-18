@@ -16,11 +16,17 @@ pub fn build_sliding_window_chunks(
     window_size: usize,
     overlap: usize,
 ) -> Result<Vec<ChunkRecordInput>, String> {
-    if window_size == 0 { return Err("window_size must be greater than 0".to_string()); }
-    if overlap >= window_size { return Err("overlap must be less than window_size".to_string()); }
+    if window_size == 0 {
+        return Err("window_size must be greater than 0".to_string());
+    }
+    if overlap >= window_size {
+        return Err("overlap must be less than window_size".to_string());
+    }
 
     let text = crate::text_encoding::decode_text(bytes).0;
-    if text.trim().is_empty() { return Err("TXT file is empty".to_string()); }
+    if text.trim().is_empty() {
+        return Err("TXT file is empty".to_string());
+    }
 
     let blocks = parse_txt_blocks(&text);
     let total = blocks.len();
@@ -36,7 +42,9 @@ pub fn build_sliding_window_chunks(
         } else {
             block.content.trim().to_string()
         };
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
         units.push(BlockUnit {
             content,
             section_heading: current_section_heading(&heading_stack),
@@ -44,7 +52,13 @@ pub fn build_sliding_window_chunks(
         });
     }
 
-    if units.is_empty() { return Err("No content blocks found".to_string()); }
+    // Same contract as the structural builders (TECH_DEBT T6): a document that
+    // parsed cleanly but holds no content blocks is EMPTY, not broken. Returning
+    // an error here is what made epub's per-chapter swallow necessary — an
+    // image-only cover page hit this path (L14).
+    if units.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let step = window_size - overlap;
     let mut result: Vec<ChunkRecordInput> = Vec::new();
@@ -54,7 +68,11 @@ pub fn build_sliding_window_chunks(
     loop {
         let end = (start + window_size).min(units.len());
         let window = &units[start..end];
-        let content = window.iter().map(|u| u.content.as_str()).collect::<Vec<_>>().join("\n\n");
+        let content = window
+            .iter()
+            .map(|u| u.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         if !content.is_empty() {
             result.push(ChunkRecordInput {
                 content_type: ContentType::SlidingWindow,
@@ -73,11 +91,18 @@ pub fn build_sliding_window_chunks(
             });
             window_index += 1;
         }
-        if end >= units.len() { break; }
+        if end >= units.len() {
+            break;
+        }
         start += step;
     }
 
-    if result.is_empty() { return Err("No sliding-window chunks generated".to_string()); }
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
+    if result.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(result)
 }
-

@@ -59,25 +59,24 @@ fn parse_grpprl(grpprl: &[u8], prop: &mut ParagraphProp) {
         p += 2;
 
         let spra = (opcode >> 13) & 0x7;
-        let operand_len: usize;
         let variable = spra == 6;
 
-        if variable {
+        let operand_len = if variable {
             if p >= grpprl.len() {
                 break;
             }
             let cb_var = grpprl[p] as usize;
             p += 1;
-            operand_len = cb_var;
+            cb_var
         } else {
-            operand_len = match spra {
+            match spra {
                 0 | 1 => 1,
                 2 | 4 | 5 => 2,
                 3 => 4,
                 7 => 3,
                 _ => 0,
-            };
-        }
+            }
+        };
 
         let end = match p.checked_add(operand_len) {
             Some(v) => v,
@@ -300,10 +299,10 @@ mod tests {
         let mut body = istd.to_le_bytes().to_vec();
         body.extend_from_slice(sprms);
         // Record is 2·cb-1 bytes, so pad to an odd length.
-        if body.len() % 2 == 0 {
+        if body.len().is_multiple_of(2) {
             body.push(0);
         }
-        let cb = (body.len() + 1) / 2;
+        let cb = body.len().div_ceil(2);
         let mut out = vec![cb as u8];
         out.extend_from_slice(&body);
         out
@@ -369,7 +368,10 @@ mod tests {
         let props = parse_paragraph_props(&word_doc, &plcf, 0, plcf.len() as u32).unwrap();
         // page_break_before is the *last* sprm, so it only decodes when the
         // whole grpprl is in range.
-        assert!(props[0].page_break_before, "trailing sprm was truncated away");
+        assert!(
+            props[0].page_break_before,
+            "trailing sprm was truncated away"
+        );
         assert_eq!(props[0].ilvl, 4);
     }
 
@@ -378,7 +380,7 @@ mod tests {
         let sprms = sprm_u8(SPRM_P_ILVL, 5);
         let mut body = 3u16.to_le_bytes().to_vec();
         body.extend_from_slice(&sprms);
-        if body.len() % 2 != 0 {
+        if !body.len().is_multiple_of(2) {
             body.push(0);
         }
         let mut record = vec![0u8, (body.len() / 2) as u8];
@@ -409,9 +411,21 @@ mod tests {
         assert_eq!(story.paragraph_start_cps, vec![0, 4, 8, 12]);
 
         let props = vec![
-            ParagraphProp { start_fc: 0, istd: 1, ..Default::default() },
-            ParagraphProp { start_fc: 4, istd: 2, ..Default::default() },
-            ParagraphProp { start_fc: 8, istd: 3, ..Default::default() },
+            ParagraphProp {
+                start_fc: 0,
+                istd: 1,
+                ..Default::default()
+            },
+            ParagraphProp {
+                start_fc: 4,
+                istd: 2,
+                ..Default::default()
+            },
+            ParagraphProp {
+                start_fc: 8,
+                istd: 3,
+                ..Default::default()
+            },
         ];
         let indexed = index_by_paragraph(&props, &pieces, &story);
         let istds: Vec<Option<u16>> = indexed.iter().map(|p| p.as_ref().map(|p| p.istd)).collect();
@@ -430,7 +444,11 @@ mod tests {
             compressed: true,
         }];
         let story = super::super::piece_table::reconstruct_from_pieces(&word_doc, &pieces);
-        let props = vec![ParagraphProp { start_fc: 9_000, istd: 4, ..Default::default() }];
+        let props = vec![ParagraphProp {
+            start_fc: 9_000,
+            istd: 4,
+            ..Default::default()
+        }];
         let indexed = index_by_paragraph(&props, &pieces, &story);
         assert!(indexed.iter().all(Option::is_none));
     }

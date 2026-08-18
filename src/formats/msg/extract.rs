@@ -76,7 +76,7 @@ pub struct MsgDocument {
     pub item_fields: Vec<(String, String)>,
     pub attachments: Vec<Attachment>,
     /// Attached images as (filename, bytes) for `list_images`, mirroring `.eml`.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 // ── Low-level CFB / property access ───────────────────────────────────────────
@@ -145,7 +145,12 @@ fn read_binary(cfb: &mut Cfb<'_>, prefix: &str, pid: u16) -> Option<Vec<u8>> {
 /// Fixed-width property lookup in `<prefix>/__properties_version1.0`. Entries are
 /// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. `header` is 32 at the top
 /// level, 24 inside recipient/attachment/embedded sub-storages.
-fn read_fixed_prop(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<(u16, [u8; 8])> {
+fn read_fixed_prop(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    pid: u16,
+    header: usize,
+) -> Option<(u16, [u8; 8])> {
     let data = read_stream(cfb, &format!("{prefix}/__properties_version1.0"))?;
     let mut off = header;
     while off + 16 <= data.len() {
@@ -313,7 +318,9 @@ fn read_recipients(cfb: &mut Cfb<'_>, codepage: u32, doc: &mut MsgDocument) {
 fn image_ext_for(mime: Option<&str>, filename: Option<&str>) -> Option<&'static str> {
     if let Some(name) = filename {
         let lower = name.to_ascii_lowercase();
-        for ext in [".png", ".jpeg", ".jpg", ".gif", ".webp", ".bmp", ".tiff", ".tif"] {
+        for ext in [
+            ".png", ".jpeg", ".jpg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+        ] {
             if lower.ends_with(ext) {
                 return Some(match ext {
                     ".jpg" => ".jpg",
@@ -356,7 +363,8 @@ fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"BM") {
         return Some(".bmp");
     }
-    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A]) {
+    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+    {
         return Some(".tiff");
     }
     None
@@ -508,7 +516,12 @@ fn task_status_label(v: u32) -> &'static str {
 
 /// Item-type-specific fields, resolved via the named-property map for
 /// appointments/tasks and standard `0x3A**` properties for contacts.
-fn read_item_fields(cfb: &mut Cfb<'_>, nameid: &super::nameid::NameIdMap, codepage: u32, doc: &mut MsgDocument) {
+fn read_item_fields(
+    cfb: &mut Cfb<'_>,
+    nameid: &super::nameid::NameIdMap,
+    codepage: u32,
+    doc: &mut MsgDocument,
+) {
     use super::nameid::{PSETID_APPOINTMENT, PSETID_TASK};
     let class = doc.message_class.to_ascii_lowercase();
 
@@ -547,8 +560,10 @@ fn read_item_fields(cfb: &mut Cfb<'_>, nameid: &super::nameid::NameIdMap, codepa
         }
         if let Some(pid) = nameid.lid(&PSETID_TASK, 0x8102) {
             if let Some(p) = read_double(cfb, pid) {
-                doc.item_fields
-                    .push(("% Complete".to_string(), format!("{}", (p * 100.0).round() as i64)));
+                doc.item_fields.push((
+                    "% Complete".to_string(),
+                    format!("{}", (p * 100.0).round() as i64),
+                ));
             }
         }
     } else if class.starts_with("ipm.contact") {
@@ -691,7 +706,10 @@ pub fn document_to_markdown(doc: &MsgDocument) -> String {
     if !named.is_empty() {
         out.push_str("## Attachments\n\n");
         for att in named {
-            let name = att.filename.clone().unwrap_or_else(|| "(unnamed)".to_string());
+            let name = att
+                .filename
+                .clone()
+                .unwrap_or_else(|| "(unnamed)".to_string());
             let mime = att
                 .mime
                 .as_ref()

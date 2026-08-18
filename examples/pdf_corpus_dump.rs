@@ -33,7 +33,11 @@ fn main() {
                     .map(|(n, b)| format!("{n}\t{}\t{:016x}", b.len(), fnv(b)))
                     .collect();
                 inv.sort();
-                fs::write(Path::new(&out).join(format!("{name}.images")), inv.join("\n")).unwrap();
+                fs::write(
+                    Path::new(&out).join(format!("{name}.images")),
+                    inv.join("\n"),
+                )
+                .unwrap();
                 index.push_str(&format!(
                     "{name}\tOK\tmd_chars={}\timages={}\n",
                     md.chars().count(),

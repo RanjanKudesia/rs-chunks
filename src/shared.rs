@@ -383,7 +383,11 @@ mod tests {
     #[test]
     fn tokenize_keywords_filters_stopwords() {
         let kws = tokenize_keywords("the and for are with");
-        assert!(kws.is_empty(), "expected no keywords from stopwords, got {:?}", kws);
+        assert!(
+            kws.is_empty(),
+            "expected no keywords from stopwords, got {:?}",
+            kws
+        );
     }
 
     #[test]
@@ -519,7 +523,9 @@ mod oversized_line_tests {
         assert!(parts.iter().all(|p| p.chars().count() <= CAP), "{parts:?}");
         for word in ["alpha", "epsilon", "lambda", "theta"] {
             assert!(
-                parts.iter().any(|p| p.split_whitespace().any(|w| w == word)),
+                parts
+                    .iter()
+                    .any(|p| p.split_whitespace().any(|w| w == word)),
                 "{word} was cut in half: {parts:?}"
             );
         }

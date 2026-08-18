@@ -24,4 +24,3 @@ pub(crate) fn load_ppt_paragraphs_bytes(bytes: &[u8]) -> Result<Vec<DocParagraph
     let stream = cfb_reader::read_powerpoint_document_stream(bytes)?;
     Ok(text_extractor::extract_paragraphs(&stream))
 }
-

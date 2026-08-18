@@ -148,12 +148,17 @@ pub(crate) fn read_header_with_lookahead<R: std::io::Read>(
     Ok(Some((headers, has_header, lookahead)))
 }
 
+/// A parsed delimited file: the header cells, the data rows, the delimiter byte
+/// actually used (which may have been sniffed), and whether the first record was
+/// treated as a header.
+pub(crate) type ParsedCsv = (Vec<String>, Vec<Vec<String>>, u8, bool);
+
 pub(crate) fn parse_csv_to_rows(
     data: &[u8],
     delimiter: Option<u8>,
     encoding: &str,
     skip_empty_rows: bool,
-) -> Result<(Vec<String>, Vec<Vec<String>>, u8, bool), String> {
+) -> Result<ParsedCsv, String> {
     let delimiter = delimiter_byte(delimiter, data, encoding)?;
     let text = decode_to_utf8(data, encoding)?;
     let mut reader = ReaderBuilder::new()
@@ -171,7 +176,10 @@ pub(crate) fn parse_csv_to_rows(
         None => return Ok((Vec::new(), Vec::new(), delimiter, false)),
     };
 
-    let mut headers: Vec<String> = header_record.iter().map(|value| value.to_string()).collect();
+    let mut headers: Vec<String> = header_record
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
     let mut data_rows: Vec<Vec<String>> = Vec::new();
     let mut max_width = headers.len();
 
@@ -196,7 +204,9 @@ pub(crate) fn parse_csv_to_rows(
     let sniff = &data_rows[..data_rows.len().min(HEADER_SNIFF_ROWS)];
     let has_header = first_row_is_header(&headers, sniff);
     if !has_header {
-        let width = headers.len().max(sniff.iter().map(Vec::len).max().unwrap_or(0));
+        let width = headers
+            .len()
+            .max(sniff.iter().map(Vec::len).max().unwrap_or(0));
         data_rows.insert(0, std::mem::take(&mut headers));
         headers = synthetic_headers(width);
     }

@@ -102,15 +102,19 @@ pub(super) fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
     crate::image_naming::name_for_path(bytes, &path)
 }
 
+/// An opened DOCX archive paired with its `r:embed` → image-part-path map.
+pub(super) type DocxArchiveWithRids = (
+    zip::ZipArchive<std::io::Cursor<Vec<u8>>>,
+    std::collections::HashMap<String, String>,
+);
 
 /// Open a DOCX zip from bytes and read the `r:embed` → image-part-path map from
 /// `word/_rels/document.xml.rels`. Shared by the `*_with_images` chunkers.
-pub(super) fn open_docx_archive_with_rids(
-    bytes: &[u8],
-) -> Result<(zip::ZipArchive<std::io::Cursor<Vec<u8>>>, std::collections::HashMap<String, String>), String> {
+pub(super) fn open_docx_archive_with_rids(bytes: &[u8]) -> Result<DocxArchiveWithRids, String> {
     use std::io::Read;
     let cursor = std::io::Cursor::new(bytes.to_vec());
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Not a valid DOCX ZIP: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("Not a valid DOCX ZIP: {e}"))?;
     let image_rids_map = match archive.by_name("word/_rels/document.xml.rels") {
         Ok(mut f) => {
             let mut xml = String::new();
@@ -129,12 +133,17 @@ pub(super) fn collect_image_chunks_from_items(
     image_items: Vec<(Option<String>, Option<String>)>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-) -> (Vec<(String, serde_json::Value)>, Vec<(String, Vec<u8>)>) {
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+) -> (
+    Vec<(String, serde_json::Value)>,
+    crate::chunk::ExtractedImages,
+) {
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let mut entries: Vec<(String, serde_json::Value)> = Vec::new();
     for (rid, alt) in image_items {
         let Some(rid) = rid else { continue };
-        let Some(zip_path) = image_rids_map.get(&rid) else { continue };
+        let Some(zip_path) = image_rids_map.get(&rid) else {
+            continue;
+        };
         if let Ok(mut entry) = archive.by_name(zip_path) {
             let mut img_bytes = Vec::new();
             if entry.read_to_end(&mut img_bytes).is_ok() {

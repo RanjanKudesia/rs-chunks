@@ -1,8 +1,6 @@
 use serde_json::{json, Value};
 
-use super::common::{
-    parse_docx_indexed_paragraphs, IndexedParagraph,
-};
+use super::common::{parse_docx_indexed_paragraphs, IndexedParagraph};
 
 #[derive(Debug, Clone)]
 struct ChunkRecordInput {
@@ -76,16 +74,25 @@ fn build_sliding_window_chunks(
     chunks
 }
 
-
-pub(super) fn chunk(bytes: &[u8], window_size: usize, overlap: usize) -> Result<Vec<crate::chunk::Chunk>, String> {
+pub(super) fn chunk(
+    bytes: &[u8],
+    window_size: usize,
+    overlap: usize,
+) -> Result<Vec<crate::chunk::Chunk>, String> {
     let paragraphs = parse_docx_indexed_paragraphs(bytes)?;
-    Ok(build_sliding_window_chunks(paragraphs, window_size, overlap)
-        .into_iter()
-        .map(|c| crate::chunk::Chunk::new(c.content, "sliding_window", c.metadata))
-        .collect())
+    Ok(
+        build_sliding_window_chunks(paragraphs, window_size, overlap)
+            .into_iter()
+            .map(|c| crate::chunk::Chunk::new(c.content, "sliding_window", c.metadata))
+            .collect(),
+    )
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8], window_size: usize, overlap: usize) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(
+    bytes: &[u8],
+    window_size: usize,
+    overlap: usize,
+) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let items = super::common::parse_docx_indexed_items_with_images(bytes)?;
     let mut text_paragraphs: Vec<IndexedParagraph> = Vec::new();
@@ -95,8 +102,12 @@ pub(super) fn chunk_with_images(bytes: &[u8], window_size: usize, overlap: usize
         match item {
             super::common::ParaOrImage::Para(ev) => {
                 text_paragraphs.push(IndexedParagraph {
-                    index: para_index, text: ev.text, is_heading: ev.is_heading,
-                    heading_level: ev.heading_level, is_list: ev.is_list, is_table: ev.is_table,
+                    index: para_index,
+                    text: ev.text,
+                    is_heading: ev.is_heading,
+                    heading_level: ev.heading_level,
+                    is_list: ev.is_list,
+                    is_table: ev.is_table,
                 });
                 para_index += 1;
             }
@@ -104,8 +115,18 @@ pub(super) fn chunk_with_images(bytes: &[u8], window_size: usize, overlap: usize
         }
     }
     let text_chunks = build_sliding_window_chunks(text_paragraphs, window_size, overlap);
-    let (entries, image_out) = super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
-    let mut chunks: Vec<crate::chunk::Chunk> = entries.into_iter().map(|(n, m)| crate::chunk::Chunk::new(n, "image", m)).collect();
-    for c in text_chunks { chunks.push(crate::chunk::Chunk::new(c.content, "sliding_window", c.metadata)); }
+    let (entries, image_out) =
+        super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
+    let mut chunks: Vec<crate::chunk::Chunk> = entries
+        .into_iter()
+        .map(|(n, m)| crate::chunk::Chunk::new(n, "image", m))
+        .collect();
+    for c in text_chunks {
+        chunks.push(crate::chunk::Chunk::new(
+            c.content,
+            "sliding_window",
+            c.metadata,
+        ));
+    }
     Ok((chunks, image_out))
 }

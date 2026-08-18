@@ -4,8 +4,8 @@
 
 pub mod common;
 pub mod images;
-pub mod repair;
 mod page_aware;
+pub mod repair;
 mod semantic;
 mod sheet;
 mod sliding_window;
@@ -66,7 +66,18 @@ pub fn chunk(
     ensure_spreadsheet(file_path)?;
     let data = std::fs::read(file_path).map_err(ChunkError::Io)?;
     let ext = ext_of(file_path);
-    chunk_from_bytes(&data, &ext, mode, rows_per_chunk, window_size, overlap, include_headers, sheet_names, skip_empty_rows, max_chunk_chars)
+    chunk_from_bytes(
+        &data,
+        &ext,
+        mode,
+        rows_per_chunk,
+        window_size,
+        overlap,
+        include_headers,
+        sheet_names,
+        skip_empty_rows,
+        max_chunk_chars,
+    )
 }
 
 fn ext_of(file_path: &str) -> String {
@@ -93,10 +104,14 @@ pub fn chunk_from_bytes(
     max_chunk_chars: usize,
 ) -> Result<Vec<Chunk>> {
     if rows_per_chunk < 1 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".into()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".into(),
+        ));
     }
     if max_chunk_chars < 1 {
-        return Err(ChunkError::InvalidArg("max_chunk_chars must be greater than 0".into()));
+        return Err(ChunkError::InvalidArg(
+            "max_chunk_chars must be greater than 0".into(),
+        ));
     }
     let res = match mode {
         "row" | "default" => build_row_chunks(data, ext, rows_per_chunk, include_headers, sheet_names, skip_empty_rows),
@@ -114,7 +129,7 @@ pub fn chunk_from_bytes(
             sliding_window::build_sliding_window_chunks(data, ext, window_size, overlap, include_headers, sheet_names, skip_empty_rows)
         }
         other => return Err(ChunkError::InvalidArg(format!(
-            "mode must be one of [page_aware, row, semantic, sheet, sliding_window, table] for XLSX, got: '{other}'"
+            "mode must be one of [default, page_aware, row, semantic, sheet, sliding_window, table] for XLSX, got: '{other}'"
         ))),
     };
     res.map(to_chunks).map_err(build_err)
@@ -142,7 +157,11 @@ pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Ch
             "paragraphs_per_page must be greater than 0".to_string(),
         ));
     }
-    let rows_per_chunk = if opts.sentences_per_chunk == 3 { 1 } else { opts.sentences_per_chunk };
+    let rows_per_chunk = if opts.sentences_per_chunk == 3 {
+        1
+    } else {
+        opts.sentences_per_chunk
+    };
     chunk(
         file_path,
         mode,
@@ -169,11 +188,22 @@ pub fn chunk_with_images(
     sheet_names: Vec<String>,
     skip_empty_rows: bool,
     max_chunk_chars: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     ensure_spreadsheet(file_path)?;
     let data = std::fs::read(file_path).map_err(ChunkError::Io)?;
     let ext = ext_of(file_path);
-    chunk_with_images_from_bytes(&data, &ext, mode, rows_per_chunk, window_size, overlap, include_headers, sheet_names, skip_empty_rows, max_chunk_chars)
+    chunk_with_images_from_bytes(
+        &data,
+        &ext,
+        mode,
+        rows_per_chunk,
+        window_size,
+        overlap,
+        include_headers,
+        sheet_names,
+        skip_empty_rows,
+        max_chunk_chars,
+    )
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
@@ -189,12 +219,16 @@ pub fn chunk_with_images_from_bytes(
     sheet_names: Vec<String>,
     skip_empty_rows: bool,
     max_chunk_chars: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     if rows_per_chunk < 1 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".into()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".into(),
+        ));
     }
     if max_chunk_chars < 1 {
-        return Err(ChunkError::InvalidArg("max_chunk_chars must be greater than 0".into()));
+        return Err(ChunkError::InvalidArg(
+            "max_chunk_chars must be greater than 0".into(),
+        ));
     }
     let workbook = common::open_spreadsheet_from_bytes(data, ext).map_err(ChunkError::Parse)?;
     let all_sheet_names = workbook.sheet_names().to_vec();
@@ -202,26 +236,78 @@ pub fn chunk_with_images_from_bytes(
 
     let normalized = if mode == "default" { "row" } else { mode };
     let text_records = match normalized {
-        "row" => build_row_chunks(data, ext, rows_per_chunk, include_headers, sheet_names, skip_empty_rows),
-        "table" => table_region::build_table_chunks(data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars),
-        "sheet" => sheet::build_sheet_chunks(data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars),
-        "semantic" => semantic::build_semantic_chunks(data, ext, rows_per_chunk, include_headers, sheet_names, skip_empty_rows),
-        "page_aware" => page_aware::build_page_aware_chunks(data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars),
+        "row" => build_row_chunks(
+            data,
+            ext,
+            rows_per_chunk,
+            include_headers,
+            sheet_names,
+            skip_empty_rows,
+        ),
+        "table" => table_region::build_table_chunks(
+            data,
+            ext,
+            include_headers,
+            sheet_names,
+            skip_empty_rows,
+            max_chunk_chars,
+        ),
+        "sheet" => sheet::build_sheet_chunks(
+            data,
+            ext,
+            include_headers,
+            sheet_names,
+            skip_empty_rows,
+            max_chunk_chars,
+        ),
+        "semantic" => semantic::build_semantic_chunks(
+            data,
+            ext,
+            rows_per_chunk,
+            include_headers,
+            sheet_names,
+            skip_empty_rows,
+        ),
+        "page_aware" => page_aware::build_page_aware_chunks(
+            data,
+            ext,
+            include_headers,
+            sheet_names,
+            skip_empty_rows,
+            max_chunk_chars,
+        ),
         "sliding_window" => {
             if window_size < 1 {
-                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "window_size must be greater than 0".into(),
+                ));
             }
             if overlap >= window_size {
-                return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
+                return Err(ChunkError::InvalidArg(
+                    "overlap must be less than window_size".into(),
+                ));
             }
-            sliding_window::build_sliding_window_chunks(data, ext, window_size, overlap, include_headers, sheet_names, skip_empty_rows)
+            sliding_window::build_sliding_window_chunks(
+                data,
+                ext,
+                window_size,
+                overlap,
+                include_headers,
+                sheet_names,
+                skip_empty_rows,
+            )
         }
-        other => return Err(ChunkError::InvalidArg(format!("Unknown XLSX mode: {other}"))),
+        other => {
+            return Err(ChunkError::InvalidArg(format!(
+                "Unknown XLSX mode: {other}"
+            )))
+        }
     }
     .map_err(build_err)?;
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
-    let image_infos = images::collect_spreadsheet_images(data, ext, &all_sheet_names, &mut image_out);
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
+    let image_infos =
+        images::collect_spreadsheet_images(data, ext, &all_sheet_names, &mut image_out);
     let mut chunks: Vec<Chunk> = image_infos
         .into_iter()
         .map(|info| {
@@ -237,7 +323,11 @@ pub fn chunk_with_images_from_bytes(
             )
         })
         .collect();
-    chunks.extend(text_records.into_iter().map(|r| Chunk::new(r.content, r.content_type, r.metadata)));
+    chunks.extend(
+        text_records
+            .into_iter()
+            .map(|r| Chunk::new(r.content, r.content_type, r.metadata)),
+    );
     Ok((chunks, image_out))
 }
 
@@ -251,13 +341,16 @@ pub fn to_markdown_from_bytes(data: &[u8], ext: &str) -> Result<String> {
     to_markdown::to_markdown(data, ext).map_err(ChunkError::Parse)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     ensure_spreadsheet(file_path)?;
     let data = std::fs::read(file_path).map_err(ChunkError::Io)?;
     to_markdown::to_markdown_with_images(&data, &ext_of(file_path)).map_err(ChunkError::Parse)
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8], ext: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    data: &[u8],
+    ext: &str,
+) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown::to_markdown_with_images(data, ext).map_err(ChunkError::Parse)
 }
 

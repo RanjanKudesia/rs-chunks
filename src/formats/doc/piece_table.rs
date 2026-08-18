@@ -258,8 +258,7 @@ pub fn reconstruct_story(
     if cp_to <= cp_from {
         return None;
     }
-    let pieces =
-        parse_pieces_range(table_stream, fc_clx, lcb_clx, cp_from, cp_to as i32).ok()?;
+    let pieces = parse_pieces_range(table_stream, fc_clx, lcb_clx, cp_from, cp_to as i32).ok()?;
     let text = reconstruct_from_pieces(word_doc, &pieces).text;
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -284,7 +283,8 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
     // cell mark `\x07` ends a Word paragraph, so the next CP starts one — CPs
     // are counted over *source* characters, including the ones
     // `normalize_doc_char` drops, because that is the space the PAPX FKPs index.
-    let mut paragraph_start_cps: Vec<u32> = pieces.first().map(|p| vec![p.cp_start]).unwrap_or_default();
+    let mut paragraph_start_cps: Vec<u32> =
+        pieces.first().map(|p| vec![p.cp_start]).unwrap_or_default();
     let mut push_char = |ch: char, cp: u32, text: &mut String, cp_to_byte: &mut Vec<usize>| {
         if let Some(ch) = normalize_doc_char(ch) {
             cp_to_byte.push(text.len());
@@ -341,14 +341,9 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
                 k += 2;
             }
 
-            for (i, decoded) in char::decode_utf16(units.into_iter()).enumerate() {
+            for (i, decoded) in char::decode_utf16(units).enumerate() {
                 let ch = decoded.unwrap_or('\u{FFFD}');
-                push_char(
-                    ch,
-                    piece.cp_start + i as u32,
-                    &mut text,
-                    &mut cp_to_byte,
-                );
+                push_char(ch, piece.cp_start + i as u32, &mut text, &mut cp_to_byte);
             }
         }
     }

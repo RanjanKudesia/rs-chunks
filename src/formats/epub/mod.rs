@@ -82,14 +82,41 @@ pub fn chunk(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     ensure_epub(file_path)?;
-    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    validate_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let pkg = load(file_path)?;
-    chunk_pkg(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_pkg(
+        &pkg,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
-fn chunk_pkg(pkg: &EpubPackage, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    let records = chunk_package(pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
-        .map_err(ChunkError::Parse)?;
+fn chunk_pkg(
+    pkg: &EpubPackage,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    let records = chunk_package(
+        pkg,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
+    .map_err(ChunkError::Parse)?;
     Ok(records
         .into_iter()
         .map(|r| Chunk::new(r.content, r.content_type.as_str(), r.metadata))
@@ -97,10 +124,30 @@ fn chunk_pkg(pkg: &EpubPackage, mode: &str, window_size: usize, overlap: usize, 
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+pub fn chunk_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    validate_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let pkg = parse(data.to_vec()).map_err(ChunkError::Parse)?;
-    chunk_pkg(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_pkg(
+        &pkg,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
@@ -141,12 +188,25 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     ensure_epub(file_path)?;
-    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    validate_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let pkg = load(file_path)?;
-    let records = chunk_package(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
-        .map_err(ChunkError::Parse)?;
+    let records = chunk_package(
+        &pkg,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
+    .map_err(ChunkError::Parse)?;
 
     let mut chunks: Vec<Chunk> = pkg
         .images
@@ -165,7 +225,11 @@ pub fn chunk_with_images(
             .into_iter()
             .map(|r| Chunk::new(r.content, r.content_type.as_str(), r.metadata)),
     );
-    let images = pkg.images.iter().map(|(href, b)| (image_key(href), b.clone())).collect();
+    let images = pkg
+        .images
+        .iter()
+        .map(|(href, b)| (image_key(href), b.clone()))
+        .collect();
     Ok((chunks, images))
 }
 
@@ -173,29 +237,76 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
     Ok(package_to_markdown(&load(file_path)?))
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     let pkg = load(file_path)?;
     let md = package_to_markdown(&pkg);
-    let images = pkg.images.iter().map(|(href, b)| (image_key(href), b.clone())).collect();
+    let images = pkg
+        .images
+        .iter()
+        .map(|(href, b)| (image_key(href), b.clone()))
+        .collect();
     Ok((md, images))
 }
 
-
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    validate_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+pub fn chunk_with_images_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
+    validate_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let pkg = parse(data.to_vec()).map_err(ChunkError::Parse)?;
-    let records = chunk_package(&pkg, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page).map_err(ChunkError::Parse)?;
-    let mut chunks: Vec<Chunk> = pkg.images.iter().map(|(href, _)| { let key = image_key(href); Chunk::new(key.clone(), "image", serde_json::json!({"image_name": key, "href": href})) }).collect();
-    chunks.extend(records.into_iter().map(|r| Chunk::new(r.content, r.content_type.as_str(), r.metadata)));
-    let images = pkg.images.iter().map(|(href, b)| (image_key(href), b.clone())).collect();
+    let records = chunk_package(
+        &pkg,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
+    .map_err(ChunkError::Parse)?;
+    let mut chunks: Vec<Chunk> = pkg
+        .images
+        .iter()
+        .map(|(href, _)| {
+            let key = image_key(href);
+            Chunk::new(
+                key.clone(),
+                "image",
+                serde_json::json!({"image_name": key, "href": href}),
+            )
+        })
+        .collect();
+    chunks.extend(
+        records
+            .into_iter()
+            .map(|r| Chunk::new(r.content, r.content_type.as_str(), r.metadata)),
+    );
+    let images = pkg
+        .images
+        .iter()
+        .map(|(href, b)| (image_key(href), b.clone()))
+        .collect();
     Ok((chunks, images))
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<crate::chunk::MarkdownWithImages> {
     let pkg = parse(data.to_vec()).map_err(ChunkError::Parse)?;
     let md = package_to_markdown(&pkg);
-    let images = pkg.images.iter().map(|(href, b)| (image_key(href), b.clone())).collect();
+    let images = pkg
+        .images
+        .iter()
+        .map(|(href, b)| (image_key(href), b.clone()))
+        .collect();
     Ok((md, images))
 }
 
@@ -207,7 +318,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

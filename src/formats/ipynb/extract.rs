@@ -21,7 +21,7 @@ pub struct IpynbDoc {
     pub markdown_cell_count: usize,
     pub markdown: String,
     /// Extracted images: name → bytes.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// A cell `source`/`text` is a list of line strings (or occasionally one string).
@@ -51,15 +51,13 @@ fn strip_ansi(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                let mut j = i + 2;
-                while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
-                    j += 1;
-                }
-                i = (j + 1).min(bytes.len());
-                continue;
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
+                j += 1;
             }
+            i = (j + 1).min(bytes.len());
+            continue;
         }
         // copy this UTF-8 char whole
         let ch_len = utf8_len(bytes[i]);
@@ -120,9 +118,13 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
         .map_err(|e| format!("Not a valid .ipynb (JSON) file: {e}"))?;
 
     let mut doc = IpynbDoc {
-        nbformat: root
-            .get("nbformat")
-            .map(|v| format!("{}.{}", v, root.get("nbformat_minor").unwrap_or(&Value::from(0)))),
+        nbformat: root.get("nbformat").map(|v| {
+            format!(
+                "{}.{}",
+                v,
+                root.get("nbformat_minor").unwrap_or(&Value::from(0))
+            )
+        }),
         ..Default::default()
     };
 
@@ -178,10 +180,7 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
                                     if let Some(img) = data.as_str().and_then(decode_b64_image) {
                                         let ext = mime.rsplit('/').next().unwrap_or("png");
                                         let fname = format!("attachment_{name}.{ext}");
-                                        body = body.replace(
-                                            &format!("attachment:{name}"),
-                                            &fname,
-                                        );
+                                        body = body.replace(&format!("attachment:{name}"), &fname);
                                         doc.images.push((fname, img));
                                     }
                                 }
@@ -222,14 +221,17 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
 fn render_outputs(
     cell: &Value,
     md: &mut String,
-    images: &mut Vec<(String, Vec<u8>)>,
+    images: &mut crate::chunk::ExtractedImages,
     image_counter: &mut usize,
 ) {
     let Some(outputs) = cell.get("outputs").and_then(|v| v.as_array()) else {
         return;
     };
     for out in outputs {
-        let otype = out.get("output_type").and_then(|v| v.as_str()).unwrap_or("");
+        let otype = out
+            .get("output_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         match otype {
             "stream" => {
                 let text = out.get("text").map(join_source).unwrap_or_default();
@@ -341,7 +343,11 @@ mod ansi_tests {
         // Cursor up (A), erase display (J), set mode (h), and colour (m).
         for final_byte in ['A', 'J', 'h', 'm'] {
             let input = format!("{ESC}[1{final_byte}kept");
-            assert_eq!(strip_ansi(&input), "kept", "ESC[1{final_byte} was mishandled");
+            assert_eq!(
+                strip_ansi(&input),
+                "kept",
+                "ESC[1{final_byte} was mishandled"
+            );
         }
     }
 

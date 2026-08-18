@@ -30,7 +30,10 @@ pub struct TableInfo {
     pub headers: Vec<String>,
 }
 
-fn read_zip_entry(archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> Result<Option<Vec<u8>>, String> {
+fn read_zip_entry(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+) -> Result<Option<Vec<u8>>, String> {
     match archive.by_name(name) {
         Ok(mut entry) => {
             let mut buf = Vec::new();
@@ -87,21 +90,21 @@ fn parse_table_relationship_targets(rels_xml: &[u8]) -> Result<Vec<String>, Stri
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse worksheet relationships XML: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"Relationship" {
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        if key.as_slice() == b"Type" {
-                            rel_type = attr_value(&attr);
-                        } else if key.as_slice() == b"Target" {
-                            target = attr_value(&attr);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"Relationship" =>
+            {
+                let mut rel_type = String::new();
+                let mut target = String::new();
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    if key.as_slice() == b"Type" {
+                        rel_type = attr_value(&attr);
+                    } else if key.as_slice() == b"Target" {
+                        target = attr_value(&attr);
                     }
-                    if rel_type.ends_with("/table") && !target.is_empty() {
-                        targets.push(target);
-                    }
+                }
+                if rel_type.ends_with("/table") && !target.is_empty() {
+                    targets.push(target);
                 }
             }
             _ => {}
@@ -289,9 +292,7 @@ fn apply_ods_names(
     };
     let ranges: Vec<_> = super::common::get_ods_named_ranges_for_sheet(&content, sheet_name)
         .into_iter()
-        .filter(|r| {
-            !ODS_BUILTIN_NAMES.contains(&r.name.as_str()) && !r.name.starts_with('_')
-        })
+        .filter(|r| !ODS_BUILTIN_NAMES.contains(&r.name.as_str()) && !r.name.starts_with('_'))
         .collect();
     if ranges.is_empty() {
         return Ok(());
@@ -338,8 +339,7 @@ pub fn build_table_chunks(
         return Err("max_chunk_chars must be > 0".to_string());
     }
 
-    let mut workbook =
-        super::common::open_spreadsheet_from_bytes(data, ext)?;
+    let mut workbook = super::common::open_spreadsheet_from_bytes(data, ext)?;
 
     let workbook_sheet_names = workbook.sheet_names().to_vec();
     let selected_sheets = if sheet_names.is_empty() {
@@ -563,4 +563,3 @@ pub fn build_table_chunks(
     super::common::stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
-

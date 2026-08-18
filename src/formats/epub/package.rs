@@ -53,7 +53,7 @@ pub struct EpubPackage {
     /// XHTML content documents in spine (reading) order.
     pub spine: Vec<EpubDoc>,
     /// Embedded images: full zip path → bytes.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// A book's own table of contents, from `nav.xhtml` (EPUB 3) or `toc.ncx`
@@ -67,7 +67,7 @@ fn parse_toc(xml: &[u8]) -> Vec<(String, String)> {
     let mut buf = Vec::new();
     let mut out: Vec<(String, String)> = Vec::new();
 
-    let mut in_text = false;     // <text> (ncx) or <a> (xhtml)
+    let mut in_text = false; // <text> (ncx) or <a> (xhtml)
     let mut label = String::new();
     let mut pending_src: Option<String> = None;
     let mut anchor_href: Option<String> = None;
@@ -90,10 +90,8 @@ fn parse_toc(xml: &[u8]) -> Vec<(String, String)> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_text {
-                    label.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_text => {
+                label.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
                 b"a" => {
@@ -147,7 +145,11 @@ fn looks_like_navigation(id: &str, href: &str) -> bool {
 
 fn local_name(name: QName<'_>) -> Vec<u8> {
     let b = name.as_ref();
-    let idx = b.iter().rposition(|c| *c == b':').map(|i| i + 1).unwrap_or(0);
+    let idx = b
+        .iter()
+        .rposition(|c| *c == b':')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     b[idx..].to_vec()
 }
 
@@ -233,11 +235,11 @@ fn find_opf_path(zip: &mut Zip) -> Result<String, String> {
         match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Bad container.xml: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"rootfile" {
-                    if let Some(p) = attr(e, b"full-path") {
-                        return Ok(percent_decode(&p));
-                    }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"rootfile" =>
+            {
+                if let Some(p) = attr(e, b"full-path") {
+                    return Ok(percent_decode(&p));
                 }
             }
             _ => {}
@@ -252,7 +254,10 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
         .map_err(|e| format!("Not a valid EPUB (zip) file: {e}"))?;
 
     let opf_path = find_opf_path(&mut zip)?;
-    let opf_dir = opf_path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+    let opf_dir = opf_path
+        .rsplit_once('/')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default();
     let opf = read_entry(&mut zip, &opf_path)
         .ok_or_else(|| format!("EPUB OPF not found at {opf_path}"))?;
 
@@ -315,7 +320,9 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
             }
             Ok(Event::Text(t)) => {
                 if let Some(m) = &cur_meta {
-                    let text = unescape_entities(&String::from_utf8_lossy(t.as_ref())).trim().to_string();
+                    let text = unescape_entities(&String::from_utf8_lossy(t.as_ref()))
+                        .trim()
+                        .to_string();
                     if !text.is_empty() {
                         let slot = match m.as_slice() {
                             b"title" => &mut pkg.title,
@@ -359,7 +366,11 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
             let is_navigation =
                 props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
             if let Some(bytes) = read_entry(&mut zip, &full) {
-                pkg.spine.push(EpubDoc { href: full, bytes, is_navigation });
+                pkg.spine.push(EpubDoc {
+                    href: full,
+                    bytes,
+                    is_navigation,
+                });
             }
         }
     }

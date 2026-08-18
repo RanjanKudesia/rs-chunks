@@ -14,17 +14,34 @@ use chunks_rs::{get_chunks, get_markdown};
 
 const PROSE_EXTS: &[&str] = &[
     "md", "txt", "html", "htm", "json", "jsonl", "ndjson", "eml", "mbox", "odt", "odp", "msg",
-    "ipynb", "rtf", "pdf", "epub", "docx", "docm", "dotx", "dotm", "doc", "ppt", "pptx", "potx", "potm", "ppsx", "ppsm",
+    "ipynb", "rtf", "pdf", "epub", "docx", "docm", "dotx", "dotm", "doc", "ppt", "pptx", "potx",
+    "potm", "ppsx", "ppsm",
 ];
 const DELIM_EXTS: &[&str] = &["csv", "tsv"];
 const SHEET_EXTS: &[&str] = &["xlsx", "xls", "xlsm", "xlsb", "ods", "xltx", "xltm"];
 
-const PROSE_MODES: &[&str] = &["default", "section", "semantic", "sentence", "page_aware", "sliding_window"];
+const PROSE_MODES: &[&str] = &[
+    "default",
+    "section",
+    "semantic",
+    "sentence",
+    "page_aware",
+    "sliding_window",
+];
 const DELIM_MODES: &[&str] = &["default", "sliding_window", "page_aware"];
-const SHEET_MODES: &[&str] = &["default", "table", "sheet", "semantic", "page_aware", "sliding_window"];
+const SHEET_MODES: &[&str] = &[
+    "default",
+    "table",
+    "sheet",
+    "semantic",
+    "page_aware",
+    "sliding_window",
+];
 
 fn test_files_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("test_files")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test_files")
 }
 
 fn walk(dir: &PathBuf, out: &mut Vec<PathBuf>) {
@@ -63,7 +80,10 @@ fn main() {
         };
         // Skip multi-MB stress fixtures (e.g. 100mb.doc) — they are validated
         // separately; re-parsing them once per mode makes the sweep intractable.
-        if std::fs::metadata(&path).map(|m| m.len() > 10 * 1024 * 1024).unwrap_or(false) {
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > 10 * 1024 * 1024)
+            .unwrap_or(false)
+        {
             continue;
         }
         let p = path.to_str().unwrap();

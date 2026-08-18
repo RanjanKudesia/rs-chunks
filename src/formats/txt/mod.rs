@@ -40,7 +40,11 @@ fn build_records(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<ChunkRecordInput>> {
-    let normalized = if mode == "default" { "structural" } else { mode };
+    let normalized = if mode == "default" {
+        "structural"
+    } else {
+        mode
+    };
     crate::options::validate_mode_args(
         normalized,
         window_size,
@@ -54,7 +58,9 @@ fn build_records(
         "semantic" => semantic::build_semantic_chunks(bytes),
         "sentence" => sentence::build_sentence_chunks(bytes, sentences_per_chunk),
         "page_aware" => page_aware::build_page_aware_chunks(bytes, paragraphs_per_page),
-        "sliding_window" => sliding_window::build_sliding_window_chunks(bytes, window_size, overlap),
+        "sliding_window" => {
+            sliding_window::build_sliding_window_chunks(bytes, window_size, overlap)
+        }
         other => return Err(ChunkError::InvalidArg(format!("Unknown TXT mode: {other}"))),
     };
     res.map_err(ChunkError::Parse)
@@ -70,7 +76,14 @@ pub fn chunk(
 ) -> Result<Vec<Chunk>> {
     ensure_txt(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry (wasm/browser + bytes callers).
@@ -137,7 +150,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

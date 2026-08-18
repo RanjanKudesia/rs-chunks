@@ -42,7 +42,11 @@ fn fixtures() -> Vec<PathBuf> {
         })
         .collect();
     out.sort();
-    assert!(out.len() >= 10, "expected a real fixture corpus, got {}", out.len());
+    assert!(
+        out.len() >= 10,
+        "expected a real fixture corpus, got {}",
+        out.len()
+    );
     out
 }
 
@@ -107,11 +111,7 @@ fn emphasis_markers_never_wrap_whitespace_or_stand_empty() {
         let name = path.file_name().unwrap().to_string_lossy();
         for line in md.lines() {
             let runs = emphasis_runs(line);
-            assert_eq!(
-                runs.len() % 2,
-                0,
-                "unbalanced emphasis in {name}: {line}"
-            );
+            assert_eq!(runs.len() % 2, 0, "unbalanced emphasis in {name}: {line}");
             for pair in runs.chunks(2) {
                 let (open, open_len) = pair[0];
                 let (close, close_len) = pair[1];
@@ -246,7 +246,10 @@ fn a_nested_title_is_refused_rather_than_guessed() {
     // The Japanese fixture stores its title as a `\upr` pair whose ANSI copy is
     // `ゾ?ル?ゲ?`; returning nothing beats returning that.
     assert_eq!(doc("tika_testRTFJapanese.rtf").title, None);
-    assert_eq!(doc("tika_testRTF-ms932.rtf").title.as_deref(), Some("タイトル"));
+    assert_eq!(
+        doc("tika_testRTF-ms932.rtf").title.as_deref(),
+        Some("タイトル")
+    );
 }
 
 // ── every fixture still chunks in every mode ────────────────────────────────
@@ -259,8 +262,14 @@ fn all_modes_all_fixtures_well_formed() {
             let chunks = rtf::chunk(p, mode, 512, 50, 3, 3)
                 .unwrap_or_else(|e| panic!("{p} [{mode}] failed: {e}"));
             for c in &chunks {
-                assert!(!c.content_type.is_empty(), "{p} [{mode}] empty content_type");
-                assert!(c.metadata.is_object(), "{p} [{mode}] metadata not an object");
+                assert!(
+                    !c.content_type.is_empty(),
+                    "{p} [{mode}] empty content_type"
+                );
+                assert!(
+                    c.metadata.is_object(),
+                    "{p} [{mode}] metadata not an object"
+                );
             }
         }
     }

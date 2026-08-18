@@ -23,7 +23,10 @@ pub fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
     crate::image_naming::name_for_path(bytes, &path)
 }
 
-fn read_zip_entry(archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> Option<Vec<u8>> {
+fn read_zip_entry(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+) -> Option<Vec<u8>> {
     let mut entry = archive.by_name(name).ok()?;
     let mut buf = Vec::new();
     entry.read_to_end(&mut buf).ok()?;
@@ -74,12 +77,11 @@ fn parse_sheet_drawing_targets(
     // .bin.rels fallback lights up xlsb images through this same walker.
     let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
     let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
-    let bytes = match read_zip_entry(archive, &xml_rels)
-        .or_else(|| read_zip_entry(archive, &bin_rels))
-    {
-        Some(b) => b,
-        None => return Vec::new(),
-    };
+    let bytes =
+        match read_zip_entry(archive, &xml_rels).or_else(|| read_zip_entry(archive, &bin_rels)) {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
 
     let mut reader = XmlReader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
@@ -91,21 +93,21 @@ fn parse_sheet_drawing_targets(
         match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) => break,
             Err(_) => return Vec::new(),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"Relationship" {
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        if key.as_slice() == b"Type" {
-                            rel_type = attr_value(&attr);
-                        } else if key.as_slice() == b"Target" {
-                            target = attr_value(&attr);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"Relationship" =>
+            {
+                let mut rel_type = String::new();
+                let mut target = String::new();
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    if key.as_slice() == b"Type" {
+                        rel_type = attr_value(&attr);
+                    } else if key.as_slice() == b"Target" {
+                        target = attr_value(&attr);
                     }
-                    if rel_type.ends_with("/drawing") && !target.is_empty() {
-                        targets.push(resolve_relative_path("xl/worksheets", &target));
-                    }
+                }
+                if rel_type.ends_with("/drawing") && !target.is_empty() {
+                    targets.push(resolve_relative_path("xl/worksheets", &target));
                 }
             }
             _ => {}
@@ -141,25 +143,25 @@ fn parse_drawing_image_rids(
         match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) => break,
             Err(_) => return HashMap::new(),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"Relationship" {
-                    let mut id = String::new();
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        if key.as_slice() == b"Id" {
-                            id = value;
-                        } else if key.as_slice() == b"Type" {
-                            rel_type = value;
-                        } else if key.as_slice() == b"Target" {
-                            target = value;
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"Relationship" =>
+            {
+                let mut id = String::new();
+                let mut rel_type = String::new();
+                let mut target = String::new();
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    if key.as_slice() == b"Id" {
+                        id = value;
+                    } else if key.as_slice() == b"Type" {
+                        rel_type = value;
+                    } else if key.as_slice() == b"Target" {
+                        target = value;
                     }
-                    if rel_type.ends_with("/image") && !id.is_empty() && !target.is_empty() {
-                        images.insert(id, resolve_relative_path("xl/drawings", &target));
-                    }
+                }
+                if rel_type.ends_with("/image") && !id.is_empty() && !target.is_empty() {
+                    images.insert(id, resolve_relative_path("xl/drawings", &target));
                 }
             }
             _ => {}
@@ -315,7 +317,7 @@ fn extract_drawing_pic_rids(xml_bytes: &[u8]) -> Vec<(Option<String>, Option<Str
 pub fn collect_all_sheet_images(
     data: &[u8],
     workbook_sheet_names: &[String],
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<SheetImageInfo> {
     let mut archive = match ZipArchive::new(std::io::Cursor::new(data.to_vec())) {
         Ok(a) => a,
@@ -393,7 +395,7 @@ fn is_generic_draw_name(name: &str) -> bool {
 pub fn collect_all_ods_images(
     data: &[u8],
     workbook_sheet_names: &[String],
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<SheetImageInfo> {
     let mut archive = match ZipArchive::new(std::io::Cursor::new(data.to_vec())) {
         Ok(a) => a,
@@ -494,13 +496,11 @@ pub fn collect_all_ods_images(
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref t)) => {
-                if capture_text_into.is_some() && in_frame {
-                    let text = String::from_utf8_lossy(t.as_ref()).trim().to_string();
-                    if !text.is_empty() {
-                        // svg:desc/title is a real caption — prefer it over draw:name.
-                        frame_alt = Some(text);
-                    }
+            Ok(Event::Text(ref t)) if capture_text_into.is_some() && in_frame => {
+                let text = String::from_utf8_lossy(t.as_ref()).trim().to_string();
+                if !text.is_empty() {
+                    // svg:desc/title is a real caption — prefer it over draw:name.
+                    frame_alt = Some(text);
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -551,7 +551,7 @@ pub fn collect_spreadsheet_images(
     data: &[u8],
     ext: &str,
     workbook_sheet_names: &[String],
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<SheetImageInfo> {
     if ext == "ods" {
         collect_all_ods_images(data, workbook_sheet_names, image_out)

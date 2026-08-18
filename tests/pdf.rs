@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use chunks_rs::formats::pdf;
 
 fn fixture(name: &str) -> String {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name].iter().collect();
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name]
+        .iter()
+        .collect();
     path.to_string_lossy().to_string()
 }
 
@@ -19,7 +21,9 @@ fn markdown(name: &str) -> String {
 }
 
 fn images(name: &str) -> Vec<(String, Vec<u8>)> {
-    pdf::to_markdown_with_images(&fixture(name)).expect("images").1
+    pdf::to_markdown_with_images(&fixture(name))
+        .expect("images")
+        .1
 }
 
 /// [#57]: the page's `/XObject` offers one *Form*, and the five images live in
@@ -27,10 +31,18 @@ fn images(name: &str) -> Vec<(String, Vec<u8>)> {
 #[test]
 fn images_nested_in_a_form_xobject_are_extracted() {
     let images = images("pdfjs_images.pdf");
-    assert_eq!(images.len(), 5, "{:?}", images.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    assert_eq!(
+        images.len(),
+        5,
+        "{:?}",
+        images.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
     for (name, bytes) in &images {
         assert!(name.starts_with("image_p1_"), "{name}");
-        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "{name} is not a PNG");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "{name} is not a PNG"
+        );
     }
 }
 
@@ -38,14 +50,22 @@ fn images_nested_in_a_form_xobject_are_extracted() {
 /// the two entry points may not disagree about what a page holds.
 #[test]
 fn every_image_reference_resolves_to_an_extracted_image() {
-    for name in ["pdfjs_images.pdf", "pdfjs_S2.pdf", "arxiv_1706.03762_attention.pdf", "sample-pdf.pdf"] {
+    for name in [
+        "pdfjs_images.pdf",
+        "pdfjs_S2.pdf",
+        "arxiv_1706.03762_attention.pdf",
+        "sample-pdf.pdf",
+    ] {
         let (markdown, images) = pdf::to_markdown_with_images(&fixture(name)).expect("parse");
         let keys: Vec<&str> = images.iter().map(|(n, _)| n.as_str()).collect();
         for reference in markdown.match_indices("![](").map(|(i, _)| {
             let rest = &markdown[i + 4..];
             &rest[..rest.find(')').unwrap_or(0)]
         }) {
-            assert!(keys.contains(&reference), "{name}: markdown references {reference}, which is not extracted");
+            assert!(
+                keys.contains(&reference),
+                "{name}: markdown references {reference}, which is not extracted"
+            );
         }
     }
 }
@@ -54,8 +74,14 @@ fn every_image_reference_resolves_to_an_extracted_image() {
 #[test]
 fn a_jpeg_image_is_returned_untouched() {
     let images = images("sample-pdf.pdf");
-    let (name, bytes) = images.iter().find(|(n, _)| n.ends_with(".jpg")).expect("a jpeg");
-    assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]), "{name} has no JPEG SOI");
+    let (name, bytes) = images
+        .iter()
+        .find(|(n, _)| n.ends_with(".jpg"))
+        .expect("a jpeg");
+    assert!(
+        bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "{name} has no JPEG SOI"
+    );
     assert!(bytes.ends_with(&[0xFF, 0xD9]), "{name} has no JPEG EOI");
 }
 
@@ -65,7 +91,10 @@ fn a_jpeg_image_is_returned_untouched() {
 #[test]
 fn text_is_recovered_from_a_font_programs_own_encoding() {
     let text = markdown("arxiv_2005.14165_gpt3.pdf");
-    assert!(text.contains("Language Models are Few-Shot Learners"), "title missing");
+    assert!(
+        text.contains("Language Models are Few-Shot Learners"),
+        "title missing"
+    );
     assert!(text.len() > 150_000, "only {} characters", text.len());
 }
 
@@ -93,7 +122,10 @@ fn ligatures_are_spelled_out() {
 #[test]
 fn link_annotations_become_markdown_links() {
     let text = markdown("arxiv_1810.04805_bert.pdf");
-    assert!(text.contains("](https://github.com/google-research/bert)"), "link target missing");
+    assert!(
+        text.contains("](https://github.com/google-research/bert)"),
+        "link target missing"
+    );
 }
 
 /// [#56]: a scanned PDF has no text to chunk, and says so.
@@ -118,8 +150,12 @@ fn reading_from_bytes_matches_reading_from_a_path() {
     let bytes = std::fs::read(fixture(name)).expect("read");
     assert_eq!(pdf::to_markdown_from_bytes(&bytes).unwrap(), markdown(name));
     assert_eq!(
-        pdf::chunk_from_bytes(&bytes, "default", 3, 1, 3, 15).unwrap().len(),
-        pdf::chunk(&fixture(name), "default", 3, 1, 3, 15).unwrap().len()
+        pdf::chunk_from_bytes(&bytes, "default", 3, 1, 3, 15)
+            .unwrap()
+            .len(),
+        pdf::chunk(&fixture(name), "default", 3, 1, 3, 15)
+            .unwrap()
+            .len()
     );
 }
 
@@ -134,18 +170,33 @@ fn reading_from_bytes_matches_reading_from_a_path() {
 #[test]
 fn a_subset_font_naming_glyphs_by_index_decodes_and_never_invents_letters() {
     let text = markdown("pdfjs_TAMReview.pdf");
-    assert!(text.contains("Overview of the Technology Acceptance Model"), "decodable text missing");
+    assert!(
+        text.contains("Overview of the Technology Acceptance Model"),
+        "decodable text missing"
+    );
     assert!(
         text.contains("predicting system use became an area of interest for many researchers"),
         "the Cambria subset's body text did not decode"
     );
     // Punctuation, digits and the smart apostrophe all come from the table.
-    assert!(text.contains("(Davis, 1985, p. 10)"), "punctuation did not decode");
-    assert!(text.contains("the 1970\u{2019}s"), "the quoteright did not decode");
+    assert!(
+        text.contains("(Davis, 1985, p. 10)"),
+        "punctuation did not decode"
+    );
+    assert!(
+        text.contains("the 1970\u{2019}s"),
+        "the quoteright did not decode"
+    );
     let letters = text.chars().filter(|c| c.is_alphabetic()).count();
-    assert!(letters > 45_000, "expected the body to decode, got {letters} letters");
+    assert!(
+        letters > 45_000,
+        "expected the body to decode, got {letters} letters"
+    );
     let replacement = text.chars().filter(|c| *c == '\u{FFFD}').count();
-    assert_eq!(replacement, 0, "replacement characters leaked into the output");
+    assert_eq!(
+        replacement, 0,
+        "replacement characters leaked into the output"
+    );
 }
 
 /// The other half of [#84], and a different defect despite sharing the number:
@@ -161,7 +212,10 @@ fn a_type3_font_naming_glyphs_after_their_own_code_decodes() {
     );
     // A real ZapfDingbats `/a84` sits at code 116, so it must be untouched.
     let dingbats = markdown("pdfjs_freeculture.pdf");
-    assert!(dingbats.contains("Free Culture"), "the dingbats fixture stopped decoding");
+    assert!(
+        dingbats.contains("Free Culture"),
+        "the dingbats fixture stopped decoding"
+    );
 }
 
 /// [#54]: `default` and `structural` were byte-identical while the docs said
@@ -185,13 +239,25 @@ fn default_and_structural_differ_only_in_heading_classification() {
         let words = |chunks: &[chunks_rs::Chunk]| {
             chunks
                 .iter()
-                .flat_map(|c| c.content.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+                .flat_map(|c| {
+                    c.content
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
                 .filter(|w| w.chars().any(char::is_alphanumeric))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(words(&fast), words(&full), "{name}: the two modes disagree about the text");
+        assert_eq!(
+            words(&fast),
+            words(&full),
+            "{name}: the two modes disagree about the text"
+        );
     }
-    assert!(differed > 0, "the modes are still identical — the fast path is not wired up");
+    assert!(
+        differed > 0,
+        "the modes are still identical — the fast path is not wired up"
+    );
 }
 
 /// The fast path must find the document's title, which is exactly what ranking
@@ -210,9 +276,15 @@ fn the_fast_path_recovers_a_title_the_ranked_one_misses() {
     let fast = headings("default");
     // Compared without spaces: this title is set in small caps, and the gap
     // after each large capital still reads as a word break (TECH_DEBT #88).
-    let squashed = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_uppercase();
+    let squashed = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_uppercase()
+    };
     assert!(
-        fast.iter().any(|h| squashed(h).contains("DEEPCONVOLUTIONALNETWORKS")),
+        fast.iter()
+            .any(|h| squashed(h).contains("DEEPCONVOLUTIONALNETWORKS")),
         "the title is not a heading in default mode: {fast:?}"
     );
     assert!(fast.len() > headings("structural").len());
@@ -224,14 +296,25 @@ fn the_fast_path_recovers_a_title_the_ranked_one_misses() {
 #[test]
 fn sideways_text_is_never_a_heading() {
     for mode in ["default", "structural"] {
-        let chunks =
-            pdf::chunk(&fixture("arxiv_1706.03762_attention.pdf"), mode, 3, 1, 3, 15).expect("chunk");
+        let chunks = pdf::chunk(
+            &fixture("arxiv_1706.03762_attention.pdf"),
+            mode,
+            3,
+            1,
+            3,
+            15,
+        )
+        .expect("chunk");
         assert!(
-            !chunks.iter().any(|c| c.content_type == "heading" && c.content.contains("arXiv:")),
+            !chunks
+                .iter()
+                .any(|c| c.content_type == "heading" && c.content.contains("arXiv:")),
             "{mode}: the margin stamp was classified as a heading"
         );
         assert!(
-            chunks.iter().any(|c| c.content.contains("arXiv:1706.03762")),
+            chunks
+                .iter()
+                .any(|c| c.content.contains("arXiv:1706.03762")),
             "{mode}: the margin stamp's text was lost"
         );
     }
@@ -240,9 +323,14 @@ fn sideways_text_is_never_a_heading() {
 /// Every fixture must parse or fail cleanly — never panic.
 #[test]
 fn the_whole_corpus_parses_without_panicking() {
-    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf"].iter().collect();
+    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf"]
+        .iter()
+        .collect();
     let mut seen = 0;
-    for entry in std::fs::read_dir(dir).expect("fixtures").filter_map(|e| e.ok()) {
+    for entry in std::fs::read_dir(dir)
+        .expect("fixtures")
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("pdf") {
             continue;
@@ -250,5 +338,11 @@ fn the_whole_corpus_parses_without_panicking() {
         seen += 1;
         let _ = pdf::chunk(&path.to_string_lossy(), "default", 3, 1, 3, 15);
     }
-    assert_eq!(seen, 24, "the PDF corpus changed size");
+    // Deliberate trip-wire: if the PDF corpus changes, someone must confirm the
+    // change was intended rather than an accidental add/delete. Raised 24 -> 48
+    // on 2026-08-14 when 24 permissively-licensed PDFs were added (Apache Tika,
+    // pdfminer.six, pdfplumber, and US federal public-domain documents) to give
+    // the format redistributable fixtures; see test_files/manifest.json
+    // `url_status` / `license`.
+    assert_eq!(seen, 48, "the PDF corpus changed size");
 }

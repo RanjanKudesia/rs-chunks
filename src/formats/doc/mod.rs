@@ -92,7 +92,9 @@ pub(crate) fn validate_mode_args(
         "sliding_window" if window_size == 0 => bad("window_size must be greater than 0"),
         "sliding_window" if overlap >= window_size => bad("overlap must be less than window_size"),
         "sentence" if sentences_per_chunk == 0 => bad("sentences_per_chunk must be greater than 0"),
-        "page_aware" if paragraphs_per_page == 0 => bad("paragraphs_per_page must be greater than 0"),
+        "page_aware" if paragraphs_per_page == 0 => {
+            bad("paragraphs_per_page must be greater than 0")
+        }
         _ => Ok(()),
     }
 }
@@ -106,9 +108,22 @@ pub fn chunk(
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
     validate_doc_path(file_path).map_err(ChunkError::InvalidArg)?;
-    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let paragraphs = load_doc_paragraphs(file_path).map_err(ChunkError::Parse)?;
-    let records = build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    let records = build_by_mode(
+        paragraphs,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     Ok(records_to_chunks(file_path, records))
 }
 
@@ -133,10 +148,31 @@ fn build_by_mode(
 
 /// No-filesystem entry (wasm/browser). `source` label is used for the `source`
 /// metadata field (pass the filename).
-pub fn chunk_from_bytes(data: &[u8], source: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+pub fn chunk_from_bytes(
+    data: &[u8],
+    source: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let paragraphs = structural::load_doc_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
-    let records = build_by_mode(paragraphs, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    let records = build_by_mode(
+        paragraphs,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     Ok(records_to_chunks(source, records))
 }
 
@@ -180,16 +216,30 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     validate_doc_path(file_path).map_err(ChunkError::InvalidArg)?;
-    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+    validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let res = match mode {
-        "default" | "structural" => images::chunk_with_images_impl(file_path, build_structural_chunks),
+        "default" | "structural" => {
+            images::chunk_with_images_impl(file_path, build_structural_chunks)
+        }
         "section" => images::chunk_with_images_impl(file_path, build_section_chunks),
         "semantic" => images::chunk_with_images_impl(file_path, build_semantic_chunks),
-        "sentence" => images::chunk_with_images_impl(file_path, |p| build_sentence_chunks(p, sentences_per_chunk)),
-        "page_aware" => images::chunk_with_images_impl(file_path, |p| build_page_aware_chunks(p, paragraphs_per_page)),
-        "sliding_window" => images::chunk_with_images_impl(file_path, |p| build_sliding_window_chunks(p, window_size, overlap)),
+        "sentence" => images::chunk_with_images_impl(file_path, |p| {
+            build_sentence_chunks(p, sentences_per_chunk)
+        }),
+        "page_aware" => images::chunk_with_images_impl(file_path, |p| {
+            build_page_aware_chunks(p, paragraphs_per_page)
+        }),
+        "sliding_window" => images::chunk_with_images_impl(file_path, |p| {
+            build_sliding_window_chunks(p, window_size, overlap)
+        }),
         other => return Err(ChunkError::InvalidArg(format!("Unknown DOC mode: {other}"))),
     };
     res.map_err(ChunkError::Parse)
@@ -201,27 +251,51 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
     Ok(to_markdown::render_paragraphs_markdown(paragraphs))
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown::to_markdown_with_images(file_path).map_err(ChunkError::Parse)
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser). `filename` is recorded as
 /// each chunk's `source`.
-pub fn chunk_with_images_from_bytes(bytes: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    validate_mode_args(mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
+pub fn chunk_with_images_from_bytes(
+    bytes: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
+    validate_mode_args(
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
     let res = match mode {
-        "default" | "structural" => images::chunk_with_images_impl_bytes(bytes, filename, build_structural_chunks),
+        "default" | "structural" => {
+            images::chunk_with_images_impl_bytes(bytes, filename, build_structural_chunks)
+        }
         "section" => images::chunk_with_images_impl_bytes(bytes, filename, build_section_chunks),
         "semantic" => images::chunk_with_images_impl_bytes(bytes, filename, build_semantic_chunks),
-        "sentence" => images::chunk_with_images_impl_bytes(bytes, filename, |p| build_sentence_chunks(p, sentences_per_chunk)),
-        "page_aware" => images::chunk_with_images_impl_bytes(bytes, filename, |p| build_page_aware_chunks(p, paragraphs_per_page)),
-        "sliding_window" => images::chunk_with_images_impl_bytes(bytes, filename, |p| build_sliding_window_chunks(p, window_size, overlap)),
+        "sentence" => images::chunk_with_images_impl_bytes(bytes, filename, |p| {
+            build_sentence_chunks(p, sentences_per_chunk)
+        }),
+        "page_aware" => images::chunk_with_images_impl_bytes(bytes, filename, |p| {
+            build_page_aware_chunks(p, paragraphs_per_page)
+        }),
+        "sliding_window" => images::chunk_with_images_impl_bytes(bytes, filename, |p| {
+            build_sliding_window_chunks(p, window_size, overlap)
+        }),
         other => return Err(ChunkError::InvalidArg(format!("Unknown DOC mode: {other}"))),
     };
     res.map_err(ChunkError::Parse)
 }
 
-pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown::to_markdown_with_images_bytes(bytes).map_err(ChunkError::Parse)
 }
 
@@ -233,7 +307,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

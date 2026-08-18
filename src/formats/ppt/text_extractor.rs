@@ -24,9 +24,9 @@
 use crate::formats::doc::text_extractor::{DocParagraph, ParagraphType};
 
 use super::records::{
-    parse_header, read_txtype, RT_MAIN_MASTER, RT_NOTES_CONTAINER, RT_SLIDE_CONTAINER,
-    RT_SLIDE_LIST_WITH_TEXT, RT_SLIDE_PERSIST_ATOM, RT_TEXT_BYTES_ATOM, RT_TEXT_CHARS_ATOM,
-    RT_TEXT_HEADER_ATOM, REC_VER_CONTAINER, SLWT_INSTANCE_SLIDES, TX_TYPE_CENTER_TITLE,
+    parse_header, read_txtype, REC_VER_CONTAINER, RT_MAIN_MASTER, RT_NOTES_CONTAINER,
+    RT_SLIDE_CONTAINER, RT_SLIDE_LIST_WITH_TEXT, RT_SLIDE_PERSIST_ATOM, RT_TEXT_BYTES_ATOM,
+    RT_TEXT_CHARS_ATOM, RT_TEXT_HEADER_ATOM, SLWT_INSTANCE_SLIDES, TX_TYPE_CENTER_TITLE,
     TX_TYPE_TITLE,
 };
 
@@ -236,12 +236,7 @@ fn merge_freeform(slide: &mut Vec<DocParagraph>, escher_raw: &[String]) {
 }
 
 /// Find the slides SlideListWithText (recInstance 0) and collect its slides.
-fn collect_slwt_slides(
-    data: &[u8],
-    start: usize,
-    end: usize,
-    slides: &mut Vec<Vec<DocParagraph>>,
-) {
+fn collect_slwt_slides(data: &[u8], start: usize, end: usize, slides: &mut Vec<Vec<DocParagraph>>) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {

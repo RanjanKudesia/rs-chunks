@@ -9,9 +9,8 @@ use zip::ZipArchive;
 use super::md_blocks::{BlockKind, SlideMarkdownContent};
 use super::md_rels::image_hash_name;
 
-
 fn escape_pipe(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ").replace('\r', " ")
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 fn render_table_md(rows: &[Vec<String>], has_header: bool) -> String {
@@ -126,7 +125,7 @@ pub(super) fn slide_to_markdown_with_images(
     slide: &SlideMarkdownContent,
     image_rids: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> String {
     let mut out = String::new();
 

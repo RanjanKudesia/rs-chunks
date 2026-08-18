@@ -47,7 +47,9 @@ pub fn for_each_entry(bytes: &[u8], opener: &[u8], mut f: impl FnMut(&[u8])) {
             i += 1;
             continue;
         }
-        let Some(stop) = group_end(bytes, i) else { break };
+        let Some(stop) = group_end(bytes, i) else {
+            break;
+        };
         if stop > end {
             break;
         }
@@ -123,7 +125,11 @@ pub fn read_param(def: &[u8], word: &[u8]) -> Option<u32> {
     let pos = find(def, word)?;
     let rest = &def[pos + word.len()..];
     // Guard against matching a longer control word (`\s` inside `\sbasedon`).
-    let digits: Vec<u8> = rest.iter().copied().take_while(u8::is_ascii_digit).collect();
+    let digits: Vec<u8> = rest
+        .iter()
+        .copied()
+        .take_while(u8::is_ascii_digit)
+        .collect();
     if digits.is_empty() {
         return None;
     }

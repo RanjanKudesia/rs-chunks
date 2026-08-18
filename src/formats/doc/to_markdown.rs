@@ -1,4 +1,3 @@
-
 use super::text_extractor::{DocParagraph, ParagraphType};
 
 /// Render a paragraph list to Markdown. Shared by `.doc` and `.ppt`, both of
@@ -61,16 +60,19 @@ pub(crate) fn render_paragraphs_markdown(paragraphs: Vec<DocParagraph>) -> Strin
     out.trim().to_string()
 }
 
-
 /// `.doc` → Markdown with image markers interleaved by raw paragraph ordinal,
 /// plus extracted image bytes.
-pub(super) fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images(
+    file_path: &str,
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     super::structural::validate_doc_path(file_path)?;
     let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .doc file: {e}"))?;
     to_markdown_with_images_bytes(&bytes)
 }
 
-pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     let indexed = super::structural::load_doc_paragraphs_indexed_bytes(bytes)?;
     let images = super::images::extract_doc_images_bytes(bytes).unwrap_or_default();
 
@@ -104,7 +106,7 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
         paragraphs.push(image_paragraph(&img.hash_name));
     }
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     for img in &images {
         if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
             image_out.push((img.hash_name.clone(), img.bytes.clone()));

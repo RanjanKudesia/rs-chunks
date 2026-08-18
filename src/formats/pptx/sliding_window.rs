@@ -1,8 +1,7 @@
 use serde_json::json;
 
 use super::common::{
-    collect_slide_names, open_pptx, read_all_slides, ChunkRecordInput,
-    ContentType, MAX_CHUNK_CHARS,
+    collect_slide_names, open_pptx, read_all_slides, ChunkRecordInput, ContentType, MAX_CHUNK_CHARS,
 };
 
 /// Safety cap: no window chunk may exceed this many chars regardless of window_size.
@@ -55,11 +54,8 @@ pub fn build_sliding_window_chunks(
             .join("\n\n");
         // Safety cap: prevent unbounded output for very large window_size values.
         let (content, truncated) = if raw_content.len() > MAX_WINDOW_CONTENT_CHARS {
-            let budget = crate::shared::floor_char_boundary(
-                &raw_content, MAX_WINDOW_CONTENT_CHARS);
-            let truncate_at = raw_content[..budget]
-                .rfind([' ', '\n'])
-                .unwrap_or(budget);
+            let budget = crate::shared::floor_char_boundary(&raw_content, MAX_WINDOW_CONTENT_CHARS);
+            let truncate_at = raw_content[..budget].rfind([' ', '\n']).unwrap_or(budget);
             (raw_content[..truncate_at].trim_end().to_string(), true)
         } else {
             (raw_content, false)
@@ -87,9 +83,12 @@ pub fn build_sliding_window_chunks(
         start += step;
     }
 
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No sliding-window chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
-

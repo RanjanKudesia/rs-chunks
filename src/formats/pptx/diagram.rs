@@ -71,7 +71,7 @@ fn attr(fragment: &str, name: &str) -> Option<String> {
     let rest = &fragment[start..];
     // Attribute values are escaped in the file; decode before use.
     Some(crate::entities::decode_attr_value(
-        rest[..rest.find('"')?].as_bytes(),
+        &rest.as_bytes()[..rest.find('"')?],
     ))
 }
 
@@ -112,10 +112,8 @@ pub fn parse_diagram_xml(xml_bytes: &[u8]) -> Vec<String> {
                 b"t" if in_para => in_t = true,
                 _ => {}
             },
-            Ok(Event::Text(ref e)) => {
-                if in_t {
-                    para_text.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_t => {
+                para_text.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
                 b"t" if in_t => in_t = false,
@@ -174,7 +172,13 @@ mod tests {
 
     #[test]
     fn skips_presentation_points_so_labels_are_not_duplicated() {
-        assert_eq!(parse_diagram_xml(SAMPLE).iter().filter(|p| *p == "Alpha step").count(), 1);
+        assert_eq!(
+            parse_diagram_xml(SAMPLE)
+                .iter()
+                .filter(|p| *p == "Alpha step")
+                .count(),
+            1
+        );
     }
 
     #[test]

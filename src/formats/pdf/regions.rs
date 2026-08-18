@@ -139,9 +139,17 @@ fn cut(glyphs: &[&Glyph], depth: usize, horizontal_first: bool, out: &mut Vec<Re
         emit(glyphs, out);
         return;
     }
-    let order: [bool; 2] = if horizontal_first { [true, false] } else { [false, true] };
+    let order: [bool; 2] = if horizontal_first {
+        [true, false]
+    } else {
+        [false, true]
+    };
     for horizontal in order {
-        let parts = if horizontal { bands(glyphs) } else { columns(glyphs) };
+        let parts = if horizontal {
+            bands(glyphs)
+        } else {
+            columns(glyphs)
+        };
         if parts.len() > 1 {
             for part in parts {
                 cut(&part, depth + 1, !horizontal, out);
@@ -163,7 +171,10 @@ fn emit(glyphs: &[&Glyph], out: &mut Vec<Region>) {
 /// Split at whitespace crossing the full width.
 fn bands<'a>(glyphs: &[&'a Glyph]) -> Vec<Vec<&'a Glyph>> {
     let em = median_size(glyphs);
-    let extents: Vec<(f32, f32)> = glyphs.iter().map(|g| (g.y - 0.22 * g.size, g.y + 0.78 * g.size)).collect();
+    let extents: Vec<(f32, f32)> = glyphs
+        .iter()
+        .map(|g| (g.y - 0.22 * g.size, g.y + 0.78 * g.size))
+        .collect();
     let gaps = empty_runs(&extents, (BAND_GAP_EMS * em).max(1.0));
     if gaps.is_empty() {
         return vec![glyphs.to_vec()];
@@ -209,20 +220,29 @@ fn reads_as_a_column(glyphs: &[&Glyph]) -> bool {
     if lines.len() < MIN_LINES_PER_COLUMN {
         return false;
     }
-    let measure = lines.iter().map(|l| l.right).fold(f32::NEG_INFINITY, f32::max);
+    let measure = lines
+        .iter()
+        .map(|l| l.right)
+        .fold(f32::NEG_INFINITY, f32::max);
     let left = lines.iter().map(|l| l.left).fold(f32::INFINITY, f32::min);
     let width = measure - left;
     if width <= 0.0 {
         return false;
     }
-    let full = lines.iter().filter(|l| l.right >= measure - width * FULL_LINE_SLACK).count();
+    let full = lines
+        .iter()
+        .filter(|l| l.right >= measure - width * FULL_LINE_SLACK)
+        .count();
     full as f32 >= lines.len() as f32 * JUSTIFIED_SHARE
 }
 
 /// The midpoints of every interior run of empty bins at least `min_width` wide.
 fn empty_runs(extents: &[(f32, f32)], min_width: f32) -> Vec<f32> {
-    let mut spans: Vec<(f32, f32)> =
-        extents.iter().copied().filter(|(start, end)| start.is_finite() && end >= start).collect();
+    let mut spans: Vec<(f32, f32)> = extents
+        .iter()
+        .copied()
+        .filter(|(start, end)| start.is_finite() && end >= start)
+        .collect();
     if spans.is_empty() {
         return Vec::new();
     }
@@ -282,8 +302,16 @@ mod tests {
         let mut glyphs = Vec::new();
         for i in 0..6 {
             let y = 600.0 - i as f32 * 12.0;
-            glyphs.extend(run(&format!("left{i} filling out the whole measure"), 40.0, y));
-            glyphs.extend(run(&format!("right{i} filling out the whole measur"), 320.0, y));
+            glyphs.extend(run(
+                &format!("left{i} filling out the whole measure"),
+                40.0,
+                y,
+            ));
+            glyphs.extend(run(
+                &format!("right{i} filling out the whole measur"),
+                320.0,
+                y,
+            ));
         }
         glyphs
     }
@@ -300,11 +328,18 @@ mod tests {
     fn a_single_column_page_keeps_its_order() {
         let mut glyphs = Vec::new();
         for i in 0..6 {
-            glyphs.extend(run(&format!("line{i} of a single column of prose"), 40.0, 600.0 - i as f32 * 12.0));
+            glyphs.extend(run(
+                &format!("line{i} of a single column of prose"),
+                40.0,
+                600.0 - i as f32 * 12.0,
+            ));
         }
         let out = texts(split(&glyphs));
         assert_eq!(out.len(), 6);
-        assert!(out[0].starts_with("line0") && out[5].starts_with("line5"), "{out:?}");
+        assert!(
+            out[0].starts_with("line0") && out[5].starts_with("line5"),
+            "{out:?}"
+        );
     }
 
     /// A table's cells are separated by gutter-width whitespace too. Reading it
@@ -313,9 +348,13 @@ mod tests {
     #[test]
     fn a_ragged_grid_is_not_cut_into_columns() {
         let mut glyphs = Vec::new();
-        for (i, (a, b)) in [("Recurrent", "O(n)"), ("Convolutional", "O(k)"), ("Self-Attention", "O(1)")]
-            .iter()
-            .enumerate()
+        for (i, (a, b)) in [
+            ("Recurrent", "O(n)"),
+            ("Convolutional", "O(k)"),
+            ("Self-Attention", "O(1)"),
+        ]
+        .iter()
+        .enumerate()
         {
             let y = 600.0 - i as f32 * 12.0;
             glyphs.extend(run(a, 40.0, y));
@@ -323,13 +362,20 @@ mod tests {
         }
         let out = texts(split(&glyphs));
         assert_eq!(out.len(), 3);
-        assert!(out[0].starts_with("Recurrent") && out[0].ends_with("O(n)"), "{out:?}");
+        assert!(
+            out[0].starts_with("Recurrent") && out[0].ends_with("O(n)"),
+            "{out:?}"
+        );
     }
 
     #[test]
     fn a_full_width_line_ends_the_columns_above_it() {
         let mut glyphs = two_columns();
-        glyphs.extend(run("A FULL WIDTH HEADING ACROSS THE ENTIRE PAGE WIDTH", 40.0, 700.0));
+        glyphs.extend(run(
+            "A FULL WIDTH HEADING ACROSS THE ENTIRE PAGE WIDTH",
+            40.0,
+            700.0,
+        ));
         let out = texts(split(&glyphs));
         assert!(out[0].starts_with("A FULL WIDTH"), "{out:?}");
     }
@@ -338,7 +384,11 @@ mod tests {
     fn sideways_text_is_kept_out_of_the_upright_flow() {
         let mut glyphs = Vec::new();
         for i in 0..4 {
-            glyphs.extend(run(&format!("body{i} of an ordinary upright page"), 40.0, 600.0 - i as f32 * 12.0));
+            glyphs.extend(run(
+                &format!("body{i} of an ordinary upright page"),
+                40.0,
+                600.0 - i as f32 * 12.0,
+            ));
         }
         let mut stamp = run("arXiv:1706.03762", 0.0, 300.0);
         for g in &mut stamp {
