@@ -37,16 +37,14 @@ pub(crate) fn load_doc_paragraphs_bytes(bytes: &[u8]) -> Result<Vec<DocParagraph
 /// callers can interleave content anchored by raw paragraph index (used by
 /// the image-aware markdown converter).
 // Path-based twin of the used `_bytes` variant, kept for loader API symmetry.
-#[allow(dead_code)]
-pub(crate) fn load_doc_paragraphs_indexed(
-    file_path: &str,
-) -> Result<Vec<(usize, DocParagraph)>, String> {
-    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .doc file: {e}"))?;
-    load_doc_paragraphs_indexed_bytes(&bytes)
-}
-
+/// Main-story paragraphs with their ordinals, plus the side stories.
+///
+/// Both halves matter: the ordinals anchor inline images, and the side stories
+/// are the footnotes, headers, comments, endnotes and text boxes that
+/// `to_markdown` has always included. Returning only the first half is what
+/// made the images surface lose prose (L5).
 pub(crate) fn load_doc_paragraphs_indexed_bytes(
     bytes: &[u8],
-) -> Result<Vec<(usize, DocParagraph)>, String> {
-    ParsedDoc::open(bytes)?.main_paragraphs_indexed()
+) -> Result<super::loader::IndexedAndSideStories, String> {
+    ParsedDoc::open(bytes)?.all_paragraphs_indexed()
 }

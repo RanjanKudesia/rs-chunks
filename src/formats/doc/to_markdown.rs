@@ -73,7 +73,7 @@ pub(super) fn to_markdown_with_images(
 pub(super) fn to_markdown_with_images_bytes(
     bytes: &[u8],
 ) -> Result<crate::chunk::MarkdownWithImages, String> {
-    let indexed = super::structural::load_doc_paragraphs_indexed_bytes(bytes)?;
+    let (indexed, side_stories) = super::structural::load_doc_paragraphs_indexed_bytes(bytes)?;
     let images = super::images::extract_doc_images_bytes(bytes).unwrap_or_default();
 
     let mut anchored: Vec<(usize, &str)> = images
@@ -87,7 +87,8 @@ pub(super) fn to_markdown_with_images_bytes(
         DocParagraph::plain(format!("![]({hash_name})"), ParagraphType::Normal, None)
     };
 
-    let mut paragraphs: Vec<DocParagraph> = Vec::with_capacity(indexed.len() + images.len());
+    let mut paragraphs: Vec<DocParagraph> =
+        Vec::with_capacity(indexed.len() + side_stories.len() + images.len());
     for (raw_idx, para) in indexed {
         while let Some((rp, _)) = anchored_iter.peek() {
             if *rp < raw_idx {
@@ -105,6 +106,11 @@ pub(super) fn to_markdown_with_images_bytes(
     for img in images.iter().filter(|i| i.raw_para.is_none()) {
         paragraphs.push(image_paragraph(&img.hash_name));
     }
+    // Footnotes, headers/footers, comments, endnotes and text boxes go last,
+    // exactly where `to_markdown` puts them — so stripping every `![](…)` line
+    // from this output yields `to_markdown` byte for byte. Omitting them is
+    // what made asking for images return less text than not asking (L5).
+    paragraphs.extend(side_stories);
 
     let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     for img in &images {
