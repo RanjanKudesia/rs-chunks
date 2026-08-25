@@ -136,8 +136,12 @@ fn block_type_str(bt: HtmlBlockType) -> &'static str {
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
     let text = super::encoding::decode_html(bytes);
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("HTML file is empty".to_string());
+        return Ok(Vec::new());
     }
     let blocks = parse_html_blocks(&remove_comments(&text));
     let total = blocks.len();

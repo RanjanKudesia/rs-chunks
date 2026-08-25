@@ -24,8 +24,12 @@ pub fn build_sliding_window_chunks(
     }
 
     let text = crate::text_encoding::decode_text(bytes).0;
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("TXT file is empty".to_string());
+        return Ok(Vec::new());
     }
 
     let blocks = parse_txt_blocks(&text);

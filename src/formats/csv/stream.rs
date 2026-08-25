@@ -260,7 +260,10 @@ fn detect_delimiter_from_file(file_path: &str, encoding: &str) -> std::result::R
             .read_until(b'\n', &mut buf)
             .map_err(|e| format!("Failed to read CSV line: {e}"))?;
         if read == 0 {
-            return Err("CSV file is empty".to_string());
+            // Nothing to sniff. Mirrors the batch path: a delimiter-detection
+            // failure is not an emptiness error, and the empty row set below
+            // produces `[]` (TECH_DEBT T6).
+            return Ok(b',');
         }
         let line = decode_line_bytes(&buf, encoding)?;
         if !line.trim().is_empty() && !line.trim_start().starts_with('#') {
@@ -351,7 +354,11 @@ fn build_row_streaming(
     let Some((mut headers, has_header, prelude)) =
         read_header_with_lookahead(&mut records, skip_empty_rows)?
     else {
-        return Err("CSV file is empty".to_string());
+        // Empty input is not a failure (TECH_DEBT T6). Send nothing and return
+        // cleanly, so streaming stays byte-identical to batch — the guarantee
+        // `streaming_matches_batch_row_mode` pins, which no fixture exercised
+        // for the empty case.
+        return Ok(());
     };
     let mut buffer: Vec<Vec<String>> = Vec::new();
     let mut row_start = 1usize;
@@ -432,7 +439,11 @@ fn build_sliding_window_streaming(
     let Some((mut headers, has_header, prelude)) =
         read_header_with_lookahead(&mut records, skip_empty_rows)?
     else {
-        return Err("CSV file is empty".to_string());
+        // Empty input is not a failure (TECH_DEBT T6). Send nothing and return
+        // cleanly, so streaming stays byte-identical to batch — the guarantee
+        // `streaming_matches_batch_row_mode` pins, which no fixture exercised
+        // for the empty case.
+        return Ok(());
     };
     let mut buffer: VecDeque<Vec<String>> = VecDeque::new();
     let mut row_start = 1usize;

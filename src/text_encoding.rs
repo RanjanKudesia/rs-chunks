@@ -106,6 +106,13 @@ pub fn normalize_newlines(text: String) -> String {
 /// Six copies of the decode expression were spread across `md/`'s strategy
 /// files, which is why fixing this in one of them would have fixed one mode.
 pub fn decode_utf8_document(bytes: &[u8]) -> String {
+    // Strip the UTF-8 BOM, which `decode_text` has always done for `.txt` (see
+    // `decode_raw`) and this path never did. A leading U+FEFF is a *signature*,
+    // not content: left in place it prefixes the first line, so `\u{feff}# Title`
+    // stops matching the heading rule and classifies as an ordinary paragraph —
+    // a BOM'd markdown file silently lost its entire heading structure, and
+    // `structural` and `section` degraded to flat text.
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     let text = match std::str::from_utf8(bytes) {
         Ok(v) => v.to_string(),
         Err(_) => String::from_utf8_lossy(bytes).to_string(),
