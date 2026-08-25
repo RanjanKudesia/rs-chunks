@@ -10,6 +10,7 @@ use std::io::Read;
 
 use encoding_rs::{Encoding, BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252};
 
+use crate::formats::html::to_markdown::html_to_markdown_str;
 use super::rtf::compressed_rtf_to_text;
 
 type Cfb<'a> = cfb::CompoundFile<std::io::Cursor<&'a [u8]>>;
@@ -461,21 +462,6 @@ fn extract_embedded(
 
 // ── Body (HTML → plain → RTF) ─────────────────────────────────────────────────
 
-/// Drop HTML tags and collapse whitespace (lightweight HTML → text).
-fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// `Err` means a body stream is present and unreadable — distinct from a
 /// message that legitimately has no body (contacts, sticky notes), which stays
 /// `Ok(None)`.
@@ -493,13 +479,13 @@ fn read_body(
     // 2) HTML body → text.
     if let Some(bytes) = read_binary(cfb, prefix, PID_HTML) {
         let (html, _, _) = encoding_for_codepage(codepage).decode(&bytes);
-        let text = html_to_text(&html);
+        let text = html_to_markdown_str(&html);
         if !text.trim().is_empty() {
             return Ok(Some(text));
         }
     }
     if let Some(html) = read_string(cfb, prefix, PID_HTML, codepage) {
-        let text = html_to_text(&html);
+        let text = html_to_markdown_str(&html);
         if !text.trim().is_empty() {
             return Ok(Some(text));
         }

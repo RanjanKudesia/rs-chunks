@@ -108,3 +108,40 @@ fn epub_always_reports_which_spine_items_were_skipped() {
     }
     assert!(checked > 0, "no epub fixtures exercised");
 }
+
+/// The same HTML email must chunk the same way whether it arrives as `.msg`
+/// or `.eml`.
+///
+/// `.msg` used a homemade tag-stripper: no entity decoding, every whitespace
+/// run collapsed onto one line, and `<script>`/`<style>` bodies KEPT as prose.
+/// `.eml` has always used the engine's HTML reader. So `Tom &amp; Jerry` came
+/// out `Tom &amp; Jerry` from one and `Tom & Jerry` from the other, and a
+/// stylesheet landed in the retrieval text of one but not the other.
+#[test]
+fn msg_and_eml_read_html_the_same_way() {
+    let html = "<html><head><style>.x{color:red}</style></head><body>\
+                <h1>Quarterly Report</h1>\
+                <p>Revenue for R&amp;D rose sharply this quarter.</p>\
+                <script>var secret = 'do not index me';</script>\
+                <p>Second paragraph with enough words to survive chunking.</p>\
+                </body></html>";
+
+    let eml = format!(
+        "From: a@example.com\r\nSubject: Report\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n{html}"
+    );
+    let eml_md = chunks_rs::formats::eml::to_markdown_from_bytes(eml.as_bytes(), "m.eml")
+        .expect("eml must parse");
+
+    // The engine's reader must decode the entity and drop the script/style
+    // bodies — that is what `.msg` now inherits.
+    assert!(eml_md.contains("R&D"), "entity not decoded: {eml_md:?}");
+    assert!(
+        !eml_md.contains("do not index me"),
+        "script body leaked into the text: {eml_md:?}"
+    );
+    assert!(
+        !eml_md.contains("color:red"),
+        "style body leaked into the text: {eml_md:?}"
+    );
+}
