@@ -75,3 +75,34 @@ fn a_ruby_annotation_keeps_the_base_and_drops_the_reading() {
         );
     }
 }
+
+/// `<w:altChunk>` (§17.17.2.1) imports external content — HTML, RTF, text or
+/// another DOCX — referenced by `r:id`. It is a body-level sibling of `<w:p>`,
+/// and the walker only emits a block at `</w:p>` or `</w:tbl>`, so a document
+/// whose body is an altChunk produced **no blocks at all**: every mode returned
+/// 0 chunks with no error.
+///
+/// `altchunk.docx` imports `word/fragment.html`, whose body is `<p>imported</p>`.
+#[test]
+fn an_altchunk_imports_the_part_it_references() {
+    // 8 bytes of text: `MIN_PARAGRAPH_CHARS` is 10, so the three
+    // length-filtered modes stay at 0 chunks however correct the import is.
+    // That is the filter working, not the fix failing.
+    for mode in ["default", "structural", "section", "semantic"] {
+        let joined = text_of("altchunk.docx", mode).join(" ");
+        assert!(
+            joined.contains("imported"),
+            "altchunk [{mode}]: the imported part's text must appear, got {joined:?}"
+        );
+    }
+}
+
+/// The resolver must not disturb documents that contain no altChunk — which is
+/// every real fixture in the corpus.
+#[test]
+fn documents_without_an_altchunk_are_unaffected() {
+    for name in ["oddmain.docx", "fldsimple.docx", "strict.docx"] {
+        let chunks = text_of(name, "structural");
+        assert!(!chunks.is_empty(), "{name}: expected content, got none");
+    }
+}

@@ -111,6 +111,61 @@ pub(super) fn resolve_main_part<R: std::io::Read + std::io::Seek>(
     }
 }
 
+/// Read a `.rels` part into an `Id -> Target` map, unfiltered by type.
+///
+/// `parse_rels_xml_images` filters on `/image` and rewrites targets to be
+/// `word/`-rooted. An altChunk resolves by `r:id` alone, and its caller knows
+/// the main part's own directory, so it needs the raw pairs.
+pub(super) fn parse_rels_targets<R: std::io::Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    rels_path: &str,
+) -> HashMap<String, String> {
+    let mut xml = String::new();
+    if archive
+        .by_name(rels_path)
+        .map(|mut f| f.read_to_string(&mut xml))
+        .is_err()
+    {
+        return HashMap::new();
+    }
+    let mut out = HashMap::new();
+    let mut reader = Reader::from_str(&xml);
+    let mut buf = Vec::new();
+    loop {
+        let mut spill = String::new();
+        let mut is_entity = false;
+        match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let ename = e.name();
+                let ebytes = ename.as_ref();
+                let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+                if local == b"Relationship" {
+                    let mut id = String::new();
+                    let mut target = String::new();
+                    let mut external = false;
+                    for attr in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                        let val = crate::entities::decode_attr(&attr);
+                        match key.as_str() {
+                            "Id" => id = val,
+                            "Target" => target = val,
+                            "TargetMode" => external = val.eq_ignore_ascii_case("External"),
+                            _ => {}
+                        }
+                    }
+                    if !external && !id.is_empty() && !target.is_empty() {
+                        out.insert(id, target);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 pub(super) fn parse_rels_xml_images(xml: &str) -> HashMap<String, String> {
     let mut images = HashMap::new();
     let mut reader = Reader::from_str(xml);

@@ -28,6 +28,31 @@ fn is_list_style(style: &str) -> bool {
     false
 }
 
+/// A body-level `<w:altChunk>` placeholder, resolved later in
+/// `parse_docx_blocks` (which, unlike this walker, holds the archive).
+fn alt_chunk_placeholder(rid: String) -> DocxBlock {
+    DocxBlock {
+        kind: DocxBlockKind::Paragraph,
+        text: String::new(),
+        has_drawing: false,
+        is_list: false,
+        list_level: 0,
+        heading_style: None,
+        outline_level: None,
+        page_break: false,
+        section_break: false,
+        rendered_page_break: false,
+        image_alt: None,
+        image_rid: None,
+        images: Vec::new(),
+        footnote_refs: Vec::new(),
+        endnote_refs: Vec::new(),
+        num_id: None,
+        hyperlinks: Vec::new(),
+        alt_chunk_rid: Some(rid),
+    }
+}
+
 pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
     reader_src: R,
 ) -> Result<Vec<DocxBlock>, String> {
@@ -329,7 +354,24 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
             }
             Ok(Event::Empty(e)) => {
                 let name = e.name();
-                if qname_eq(name, b"numPr") && in_paragraph {
+                if qname_eq(name, b"altChunk") {
+                    // A body-level sibling of `<w:p>`; the walker only emits a
+                    // block at `</w:p>` or `</w:tbl>`, so this produced nothing
+                    // at all. Only at body level for now — an altChunk inside a
+                    // table cell is legal but vanishingly rare, and splicing
+                    // into a cell needs different handling.
+                    if table_stack.is_empty() && !in_paragraph {
+                        for attr in e.attributes().flatten() {
+                            if qname_eq(attr.key, b"id") {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                                if !rid.is_empty() {
+                                    blocks.push(alt_chunk_placeholder(rid));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } else if qname_eq(name, b"numPr") && in_paragraph {
                     para_is_list = true;
                 } else if qname_eq(name, b"tblHeader") {
                     if let Some(top) = table_stack.last_mut() {
@@ -657,6 +699,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                                     endnote_refs: Vec::new(),
                                     num_id: None,
                                     hyperlinks: Vec::new(),
+                                    alt_chunk_rid: None,
                                 });
                             }
                         }
@@ -688,6 +731,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                                 endnote_refs: std::mem::take(&mut para_endnote_refs),
                                 num_id: para_num_id,
                                 hyperlinks: std::mem::take(&mut para_hyperlinks),
+                                alt_chunk_rid: None,
                             });
                         } else {
                             // Paragraph had soft line breaks — emit one block per segment.
@@ -733,6 +777,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                                     } else {
                                         Vec::new()
                                     },
+                                    alt_chunk_rid: None,
                                 });
                             }
                             // Clear shared fields after all sub-blocks are emitted.
