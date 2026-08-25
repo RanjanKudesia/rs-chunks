@@ -375,12 +375,18 @@ mod entity_tests {
             .map(|r| r.join("|"))
             .collect::<Vec<_>>()
             .join(" // ");
-        assert!(flat.contains("R&D"), "series name lost its ampersand: {flat}");
+        assert!(
+            flat.contains("R&D"),
+            "series name lost its ampersand: {flat}"
+        );
         assert!(
             flat.contains("Alpha & Beta"),
             "category lost its ampersand: {flat}"
         );
-        assert!(!flat.contains("RD"), "the deleted-entity shape is back: {flat}");
+        assert!(
+            !flat.contains("RD"),
+            "the deleted-entity shape is back: {flat}"
+        );
     }
 
     /// The other named references must decode too, not just `&amp;`.

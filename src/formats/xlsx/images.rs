@@ -67,23 +67,9 @@ fn attr_value(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
     crate::entities::decode_attr(attr)
 }
 
-fn parse_sheet_drawing_targets(
-    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
-    sheet_index_1based: usize,
-) -> Vec<String> {
-    // .xlsx/.xlsm/.xltx/.xltm store the worksheet as sheetN.xml (rels
-    // sheetN.xml.rels); .xlsb stores it as sheetN.bin (rels sheetN.bin.rels).
-    // The drawing/media parts are identical XML/binary in both, so trying the
-    // .bin.rels fallback lights up xlsb images through this same walker.
-    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
-    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
-    let bytes =
-        match read_zip_entry(archive, &xml_rels).or_else(|| read_zip_entry(archive, &bin_rels)) {
-            Some(b) => b,
-            None => return Vec::new(),
-        };
-
-    let mut reader = XmlReader::from_reader(bytes.as_slice());
+/// Parse a worksheet's `.rels` bytes into its drawing part paths.
+fn drawing_targets_from_rels(bytes: &[u8]) -> Vec<String> {
+    let mut reader = XmlReader::from_reader(bytes);
     let mut buf = Vec::new();
     let mut targets = Vec::new();
 
@@ -116,6 +102,38 @@ fn parse_sheet_drawing_targets(
     }
 
     targets
+}
+
+/// Find a worksheet's drawing parts.
+///
+/// Resolves the worksheet part through the workbook relationship rather than
+/// assuming `sheet{ordinal}.xml`: the sheet's position in the workbook is not
+/// its part number. Measured on `poi_xlmmacro.xlsm`, where an XLM macro sheet
+/// shifts every worksheet after it, so images were read from the wrong sheet —
+/// silently, because the wrong sheet is still a valid sheet.
+///
+/// Falls back to the ordinal guess when the workbook or rels cannot be read,
+/// which is correct for 60 of the 62 zip-backed workbooks in the corpus.
+fn parse_sheet_drawing_targets(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    sheet_index_1based: usize,
+    sheet_name: &str,
+) -> Vec<String> {
+    if let Some(part) = super::common::resolve_sheet_part(archive, sheet_name) {
+        let rels = super::common::sheet_rels_path(&part);
+        return match read_zip_entry(archive, &rels) {
+            Some(bytes) => drawing_targets_from_rels(&bytes),
+            None => Vec::new(),
+        };
+    }
+    // .xlsx/.xlsm/.xltx/.xltm store the worksheet as sheetN.xml (rels
+    // sheetN.xml.rels); .xlsb stores it as sheetN.bin (rels sheetN.bin.rels).
+    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
+    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
+    match read_zip_entry(archive, &xml_rels).or_else(|| read_zip_entry(archive, &bin_rels)) {
+        Some(bytes) => drawing_targets_from_rels(&bytes),
+        None => Vec::new(),
+    }
 }
 
 fn parse_drawing_image_rids(
@@ -327,7 +345,7 @@ pub fn collect_all_sheet_images(
     let mut result = Vec::new();
 
     for (sheet_idx, sheet_name) in workbook_sheet_names.iter().enumerate() {
-        let drawing_paths = parse_sheet_drawing_targets(&mut archive, sheet_idx + 1);
+        let drawing_paths = parse_sheet_drawing_targets(&mut archive, sheet_idx + 1, sheet_name);
 
         for drawing_path in drawing_paths {
             let image_rids = parse_drawing_image_rids(&mut archive, &drawing_path);

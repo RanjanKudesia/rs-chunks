@@ -471,6 +471,119 @@ fn parse_table_name(table_xml: &[u8]) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// Resolve a worksheet's part name from `xl/workbook.xml` + its rels.
+///
+/// The sheet's position in the workbook is **not** its part number. OOXML lists
+/// `<sheet name="X" r:id="rIdN"/>` and the rels map `rIdN` to an arbitrary
+/// target, so `sheet{ordinal}.xml` is a guess. Measured on
+/// `poi_xlmmacro.xlsm`, where an XLM macro sheet occupies a slot and shifts
+/// every worksheet after it: ordinal 2 resolves to `sheet1.xml`, ordinal 3 to
+/// `sheet2.xml`. Named tables, images and drawings were therefore read from the
+/// **wrong sheet** — silently, since the wrong sheet is still a valid sheet.
+///
+/// Returns the part path without the `xl/` prefix (e.g. `worksheets/sheet1.xml`),
+/// or `None` when the workbook or its rels cannot be read — the caller then
+/// keeps the historical ordinal guess, which is correct for 60 of the 62
+/// zip-backed workbooks in the corpus.
+pub fn resolve_sheet_part(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    sheet_name: &str,
+) -> Option<String> {
+    let wb = read_zip_entry(archive, "xl/workbook.xml").ok()??;
+    let rels = read_zip_entry(archive, "xl/_rels/workbook.xml.rels").ok()??;
+
+    let rid = sheet_rid_for_name(&wb, sheet_name)?;
+    let target = rels_target_for_id(&rels, &rid)?;
+    Some(
+        target
+            .trim_start_matches('/')
+            .trim_start_matches("xl/")
+            .to_string(),
+    )
+}
+
+fn sheet_rid_for_name(workbook_xml: &[u8], want: &str) -> Option<String> {
+    let mut reader = XmlReader::from_reader(workbook_xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let local: &[u8] = name
+                    .as_ref()
+                    .rsplit(|b| *b == b':')
+                    .next()
+                    .unwrap_or(name.as_ref());
+                if local == b"sheet" {
+                    let mut this_name = String::new();
+                    let mut rid = String::new();
+                    for attr in e.attributes().flatten() {
+                        let key = attr.key.as_ref();
+                        let local_key: &[u8] = key.rsplit(|b| *b == b':').next().unwrap_or(key);
+                        let val = crate::entities::decode_attr(&attr);
+                        match local_key {
+                            b"name" => this_name = val,
+                            b"id" => rid = val,
+                            _ => {}
+                        }
+                    }
+                    if this_name == want && !rid.is_empty() {
+                        return Some(rid);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+fn rels_target_for_id(rels_xml: &[u8], want: &str) -> Option<String> {
+    let mut reader = XmlReader::from_reader(rels_xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let local: &[u8] = name
+                    .as_ref()
+                    .rsplit(|b| *b == b':')
+                    .next()
+                    .unwrap_or(name.as_ref());
+                if local == b"Relationship" {
+                    let mut id = String::new();
+                    let mut target = String::new();
+                    for attr in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                        let val = crate::entities::decode_attr(&attr);
+                        match key.as_str() {
+                            "Id" => id = val,
+                            "Target" => target = val,
+                            _ => {}
+                        }
+                    }
+                    if id == want && !target.is_empty() {
+                        return Some(target);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// The `_rels` path for a worksheet part, e.g.
+/// `worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
+pub fn sheet_rels_path(part: &str) -> String {
+    match part.rsplit_once('/') {
+        Some((dir, file)) => format!("xl/{dir}/_rels/{file}.rels"),
+        None => format!("xl/_rels/{part}.rels"),
+    }
+}
+
 pub fn get_named_table_names_for_sheet(
     data: &[u8],
     ext: &str,
@@ -494,8 +607,14 @@ pub fn get_named_table_names_for_sheet(
 
     // .xlsx/.xlsm/.xltx/.xltm → sheetN.xml.rels; .xlsb → sheetN.bin.rels.
     // The referenced table parts (xl/tables/tableN.xml) are XML in both.
-    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
-    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
+    // Prefer the workbook relationship over the ordinal guess — the sheet's
+    // position is not its part number (see `resolve_sheet_part`).
+    let resolved = resolve_sheet_part(&mut archive, sheet_name).map(|p| sheet_rels_path(&p));
+    let xml_rels = resolved
+        .clone()
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based));
+    let bin_rels = resolved
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based));
     let rels_xml = match read_zip_entry(&mut archive, &xml_rels)? {
         Some(b) => b,
         None => match read_zip_entry(&mut archive, &bin_rels)? {

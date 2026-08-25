@@ -405,7 +405,6 @@ fn collect_text_strings_at(
     }
 }
 
-
 #[cfg(test)]
 mod ansi_tests {
     /// `TextBytesAtom` bytes are the ANSI code page, not Latin-1.

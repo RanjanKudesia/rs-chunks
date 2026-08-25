@@ -284,9 +284,15 @@ fn all_modes_all_fixtures_well_formed() {
 #[test]
 fn a_file_that_is_not_rtf_is_rejected() {
     let cases: &[(&str, &[u8])] = &[
-        ("png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR binary data here"),
+        (
+            "png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR binary data here",
+        ),
         ("jpeg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01 more binary"),
-        ("plain text", b"This is just prose, not a rich text document at all."),
+        (
+            "plain text",
+            b"This is just prose, not a rich text document at all.",
+        ),
         ("html", b"<html><body><p>not rtf</p></body></html>"),
         ("empty", b""),
     ];
@@ -306,8 +312,8 @@ fn a_file_that_is_not_rtf_is_rejected() {
 #[test]
 fn real_rtf_still_parses_with_a_bom_or_leading_whitespace() {
     let body = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Times;}}\f0 Hello there, body text.\par}";
-    let plain = chunks_rs::formats::rtf::to_markdown_from_bytes(body)
-        .expect("plain rtf must parse");
+    let plain =
+        chunks_rs::formats::rtf::to_markdown_from_bytes(body).expect("plain rtf must parse");
     assert!(plain.contains("Hello there"), "lost the text: {plain:?}");
 
     let mut bom = vec![0xEF, 0xBB, 0xBF];

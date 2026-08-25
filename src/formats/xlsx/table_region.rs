@@ -237,6 +237,7 @@ fn build_headers_from_cells(row_cells: &[Data], col_count: usize) -> Vec<String>
 fn read_named_tables_for_sheet(
     archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
     sheet_index_1based: usize,
+    sheet_name: &str,
 ) -> Result<Vec<TableInfo>, String> {
     // `.xlsx`/`.xlsm`/`.xltx`/`.xltm` name the part `sheetN.xml.rels`; `.xlsb`
     // names it `sheetN.bin.rels`. The referenced table parts are XML either way.
@@ -246,8 +247,16 @@ fn read_named_tables_for_sheet(
     // that one knew about `.bin.rels`, so a `.xlsb` workbook with real tables
     // would have `sheet` mode list them while `table` mode reported every
     // region unnamed (TECH_DEBT #20).
-    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
-    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
+    // Prefer the workbook relationship: the sheet's position is not its part
+    // number, so the ordinal read tables from the wrong sheet on any workbook
+    // whose parts are not in sheet order (see `common::resolve_sheet_part`).
+    let resolved = super::common::resolve_sheet_part(archive, sheet_name)
+        .map(|p| super::common::sheet_rels_path(&p));
+    let xml_rels = resolved
+        .clone()
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based));
+    let bin_rels = resolved
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based));
     let rels_xml = match read_zip_entry(archive, &xml_rels)? {
         Some(x) => x,
         None => match read_zip_entry(archive, &bin_rels)? {
@@ -390,7 +399,7 @@ pub fn build_table_chunks(
         let mut tables = if ext == "ods" {
             Vec::new()
         } else if let Some(ref mut archive) = maybe_archive {
-            read_named_tables_for_sheet(archive, sheet_index + 1)?
+            read_named_tables_for_sheet(archive, sheet_index + 1, &sheet_name)?
         } else {
             Vec::new()
         };
