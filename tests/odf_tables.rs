@@ -80,7 +80,9 @@ fn a_nested_table_does_not_replace_its_parent() {
     let md = chunks_rs::formats::odf::to_markdown_from_bytes(&odt, "nested.odt")
         .expect("nested table must parse");
 
-    for needle in ["outer-a", "outer-b", "outer-c", "outer-d", "inner-1", "inner-2"] {
+    for needle in [
+        "outer-a", "outer-b", "outer-c", "outer-d", "inner-1", "inner-2",
+    ] {
         assert!(md.contains(needle), "lost {needle}: {md:?}");
     }
     // The inner table must be inside the parent cell, not a block of its own.

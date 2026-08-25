@@ -44,6 +44,22 @@ pub(super) const SHORT_PARAGRAPH_THRESHOLD: usize = 80;
 /// together, and they need not.
 pub(super) const MAX_SECTION_CHARS: usize = 1200;
 
+/// Pathological-only bound on a single rendered Table element.
+///
+/// A blast-radius limiter, not a prose cap — deliberately 5x
+/// `MAX_SECTION_CHARS`. The largest table in an ordinary corpus document is
+/// 1,737 chars (`poi_drawing.docx`); the only fixtures above this line are
+/// `poi_bug65649.docx` (522,261), `poi_bug59058.docx` (93,066) and
+/// `_stress_big_table.docx` (39,673). The measurement gap between 3,552 and
+/// 39,673 is empty, so nothing ordinary is near it.
+pub(super) const MAX_TABLE_CHARS: usize = MAX_SECTION_CHARS * 5;
+
+/// The markdown header block a split table repeats onto every part: the header
+/// row PLUS its `| --- |` separator, hence 2 and not 1. With 1 the
+/// continuation parts get a header and no separator, which is not a valid
+/// markdown table. Matches `md/common.rs`'s Table handling.
+pub(super) const TABLE_HEADER_LINES: usize = 2;
+
 fn is_complete_sentence(text: &str) -> bool {
     const SENTENCE_END: [char; 8] = [
         '.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}',

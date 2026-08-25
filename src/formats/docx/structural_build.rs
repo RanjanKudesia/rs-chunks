@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::structural_model::{
-    ChunkRecordInput, ContentType, DocumentElement, MAX_SECTION_CHARS, SEMANTIC_SPLIT_MAX_BYTES,
-    SHORT_AGGREGATE_CHUNK_OVERLAP, SHORT_AGGREGATE_CHUNK_SIZE,
+    ChunkRecordInput, ContentType, DocumentElement, MAX_SECTION_CHARS, MAX_TABLE_CHARS,
+    SEMANTIC_SPLIT_MAX_BYTES, SHORT_AGGREGATE_CHUNK_OVERLAP, SHORT_AGGREGATE_CHUNK_SIZE,
+    TABLE_HEADER_LINES,
 };
 use super::structural_text::{recursive_char_chunks, semantic_chunks};
 
@@ -137,18 +138,39 @@ pub(super) fn build_chunks_from_elements(
                 let mut fns = Vec::new();
                 let mut ens = Vec::new();
                 collect_element_refs(element, footnote_map, endnote_map, &mut fns, &mut ens);
-                chunks.push(ChunkRecordInput {
-                    content_type: ContentType::Table,
-                    content: element.text.clone(),
-                    metadata: base_chunk_metadata(
-                        None,
-                        None,
-                        &fns,
-                        &ens,
-                        doc_metadata,
-                        element.page_number,
-                    ),
-                });
+                // A 522,261-char single chunk is not a chunk. `poi_bug65649.docx`
+                // renders one table that large; `_stress_big_table.docx` 39,673.
+                //
+                // "Tables are kept whole" is preserved, not broken: the split is
+                // on ROW boundaries only — `split_block_on_lines` never breaks a
+                // line, the same guarantee that protects a CSV record — and the
+                // markdown header block (header row + `| --- |` separator, hence
+                // 2) is repeated onto every part, so each one is still a valid
+                // table carrying its column labels.
+                //
+                // A soft bound by design: a single row longer than the cap still
+                // comes out over it, because halving a row would corrupt the
+                // record. Measured on poi_bug65649.docx: 523,788 -> 136 parts,
+                // largest 15,440. `poi_bug59058.docx` is deliberately unaffected
+                // — 93,024 of its 93,066 chars are one cell, i.e. one line.
+                for part in crate::shared::split_block_on_lines(
+                    &element.text,
+                    MAX_TABLE_CHARS,
+                    TABLE_HEADER_LINES,
+                ) {
+                    chunks.push(ChunkRecordInput {
+                        content_type: ContentType::Table,
+                        content: part,
+                        metadata: base_chunk_metadata(
+                            None,
+                            None,
+                            &fns,
+                            &ens,
+                            doc_metadata,
+                            element.page_number,
+                        ),
+                    });
+                }
             }
             ContentType::CodeBlock => {
                 flush_outside_shorts(

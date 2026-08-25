@@ -98,5 +98,8 @@ fn streaming_and_batch_agree_on_the_diagnosis() {
         batch.contains("encrypted") && streamed.contains("encrypted"),
         "batch and stream disagree:\n  batch:  {batch}\n  stream: {streamed}"
     );
-    assert_eq!(batch, streamed, "the two entry points must word it identically");
+    assert_eq!(
+        batch, streamed,
+        "the two entry points must word it identically"
+    );
 }

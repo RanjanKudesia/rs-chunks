@@ -8,6 +8,13 @@ struct ChunkRecordInput {
     metadata: Value,
 }
 
+/// Safety cap on assembled window content, independent of `window_size`.
+///
+/// A window is `window_size` PARAGRAPHS, and a whole table is one paragraph —
+/// so `poi_bug65649.docx` produced a single 886,428-char chunk. Mirrors pptx's
+/// window cap.
+const MAX_WINDOW_CONTENT_CHARS: usize = 6_000;
+
 fn build_sliding_window_chunks(
     paragraphs: Vec<IndexedParagraph>,
     window_size: usize,
@@ -25,9 +32,9 @@ fn build_sliding_window_chunks(
     while start < paragraphs.len() {
         let end = (start + window_size).min(paragraphs.len());
         let window = &paragraphs[start..end];
-        let content = window
+        let raw_content = window
             .iter()
-            .map(|paragraph| paragraph.text.clone())
+            .map(|paragraph| paragraph.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
         let paragraph_indices: Vec<usize> =
@@ -47,21 +54,36 @@ fn build_sliding_window_chunks(
         let heading_count = window.iter().filter(|p| p.is_heading).count();
         let list_count = window.iter().filter(|p| p.is_list).count();
 
-        chunks.push(ChunkRecordInput {
-            content,
-            metadata: json!({
-                "window_size": window_size,
-                "overlap": overlap,
-                "window_index": window_index,
-                "paragraph_indices": paragraph_indices,
-                "paragraph_meta": paragraph_meta,
-                "heading_count": heading_count,
-                "list_item_count": list_count,
-                "document_metadata": {
-                    "source_type": "docx"
-                }
-            }),
-        });
+        // Sentences, not lines: on this path a table's newlines have already
+        // been collapsed to spaces, so the 522,261-char table arrives as ONE
+        // line and `split_block_on_lines` alone would not touch it.
+        // `split_block_on_lines_and_sentences` falls through to a word-boundary
+        // hard split, which bounds it for real.
+        //
+        // Inert below the cap: content shorter than the cap is returned
+        // unchanged by both stages, and only three corpus fixtures exceed it.
+        // This is NOT the excluded semantic sentence-splitter swap, which would
+        // move prose boundaries on every docx.
+        for content in crate::shared::split_block_on_lines_and_sentences(
+            &raw_content,
+            MAX_WINDOW_CONTENT_CHARS,
+        ) {
+            chunks.push(ChunkRecordInput {
+                content,
+                metadata: json!({
+                    "window_size": window_size,
+                    "overlap": overlap,
+                    "window_index": window_index,
+                    "paragraph_indices": paragraph_indices,
+                    "paragraph_meta": paragraph_meta,
+                    "heading_count": heading_count,
+                    "list_item_count": list_count,
+                    "document_metadata": {
+                        "source_type": "docx"
+                    }
+                }),
+            });
+        }
 
         if end == paragraphs.len() {
             break;

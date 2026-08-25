@@ -142,7 +142,11 @@ fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Lo
             // cannot work, since rendering its pages fails for the same reason.
             // The evidence to tell these apart was already being collected and
             // then discarded (TECH_DEBT F8).
-            return Err(diagnose(parsed.total_pages, parsed.encrypted, &parsed.skipped));
+            return Err(diagnose(
+                parsed.total_pages,
+                parsed.encrypted,
+                &parsed.skipped,
+            ));
         }
     }
     Ok(pdf_loaded(markdown, images, parsed.total_pages))
@@ -170,11 +174,7 @@ fn preview(reasons: &[String]) -> String {
 /// on `load()` only, and `stream.rs` kept its own copy — so the same encrypted
 /// file was reported as encrypted in six modes and as a scan in `default`.
 /// One document, two answers, which is the shape F6 fixed for markdown.
-pub(super) fn diagnose(
-    total_pages: usize,
-    encrypted: bool,
-    skipped: &[String],
-) -> ChunkError {
+pub(super) fn diagnose(total_pages: usize, encrypted: bool, skipped: &[String]) -> ChunkError {
     ChunkError::Parse(if encrypted {
         format!(
             "PDF is encrypted ({total_pages} page(s)); its text and images cannot be read without the password. This is not a scanned document — passing list_images will not help."
