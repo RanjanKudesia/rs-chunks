@@ -57,6 +57,12 @@ struct Ctx {
     heading_level: Option<u8>,
     uc_pending: i32,
     pending_surrogate: Option<u16>,
+    /// A table row is open, i.e. its leading `|` has been written.
+    row_open: bool,
+    /// Cells seen in the row being built — the column count for the delimiter.
+    row_cells: usize,
+    /// Rows emitted in the current table; 0 means the next row is the header.
+    table_rows: usize,
 }
 
 impl Ctx {
@@ -98,6 +104,9 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
         heading_level: None,
         uc_pending: 0,
         pending_surrogate: None,
+        row_open: false,
+        row_cells: 0,
+        table_rows: 0,
     };
 
     // Raw-byte buffer for consecutive `\'xx` (decoded together for double-byte).
@@ -133,6 +142,17 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
                     let (word, num, consumed) = read_control_word(bytes, i);
                     handle_control_word(word, num, &mut stack, &mut raw, &mut ctx);
                     i = consumed;
+                    // `\binN` is followed by exactly N *raw* bytes (RTF spec,
+                    // "Pictures"). They are not text and — the part that
+                    // matters — they are not RTF either: a `{` or `}` among
+                    // them pushes or pops the group stack and corrupts nesting
+                    // for the rest of the file. Measured on a synthetic
+                    // fixture: two stray `{` bytes inside a `\bin` run cost
+                    // every paragraph after the image.
+                    if word == b"bin" {
+                        let count = num.unwrap_or(0).max(0) as usize;
+                        i = i.saturating_add(count).min(n);
+                    }
                 } else if next == b'\'' && i + 4 <= n {
                     if let Some(byte) = read_hex_byte(&bytes[i + 2..i + 4]) {
                         if ctx.uc_pending > 0 {
@@ -406,6 +426,12 @@ fn handle_control_word(
         b"par" | b"line" | b"sect" | b"page" | b"softline" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                // A `\par` outside a row ends the table, so a second table
+                // gets its own header. A `\par` *inside* a cell leaves
+                // `row_open` set, so a multi-paragraph cell does not.
+                if !ctx.row_open {
+                    ctx.table_rows = 0;
+                }
                 ctx.out.break_line();
                 requeue_heading(ctx);
             }
@@ -419,16 +445,44 @@ fn handle_control_word(
                 ctx.out.push_text("\t", fmt);
             }
         }
+        // `\intbl`/`\trowd` arrive *before* the cell text, so the row's
+        // leading `|` goes here. Word writes `\intbl` once per cell paragraph;
+        // the `row_open` guard absorbs the repeats.
+        b"intbl" | b"trowd" if !top.skip && !ctx.row_open => {
+            flush_raw(raw, &top, ctx);
+            ctx.out.open_row();
+            ctx.row_open = true;
+            ctx.row_cells = 0;
+        }
         b"cell" | b"nestcell" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                if !ctx.row_open {
+                    ctx.out.open_row();
+                    ctx.row_open = true;
+                    ctx.row_cells = 0;
+                }
+                ctx.row_cells += 1;
                 ctx.out.push_structural(" | ");
             }
         }
         b"row" | b"nestrow" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                let cols = ctx.row_cells;
                 ctx.out.break_line();
+                // Without a delimiter row this is not a markdown table: GFM
+                // renders it as one paragraph, and `md::common::rows_form_a_table`
+                // refuses to classify the block as `table` at all — so the
+                // chunk came back `short_disconnected_paragraph`. RTF's only
+                // header signal is `\trhdr` and neither corpus table uses it,
+                // so the first row is the header, matching docx's documented
+                // fallback.
+                if ctx.table_rows == 0 && cols > 0 {
+                    ctx.out.push_line(&format!("|{}", " --- |".repeat(cols)));
+                }
+                ctx.table_rows += 1;
+                ctx.row_open = false;
             }
         }
         b"bullet" => {

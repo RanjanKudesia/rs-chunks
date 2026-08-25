@@ -174,9 +174,18 @@ fn yaml_front_matter_is_not_body_text() {
         let chunks = md::chunk_from_bytes(doc.as_bytes(), mode, 3, 1, 3, 15)
             .unwrap_or_else(|e| panic!("[{mode}]: {e}"));
         let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
-        assert!(!joined.contains("draft: false"), "[{mode}] front matter leaked: {joined:?}");
-        assert!(!joined.contains("tags:"), "[{mode}] front matter leaked: {joined:?}");
-        assert!(joined.contains("Real Heading"), "[{mode}] lost the real heading: {joined:?}");
+        assert!(
+            !joined.contains("draft: false"),
+            "[{mode}] front matter leaked: {joined:?}"
+        );
+        assert!(
+            !joined.contains("tags:"),
+            "[{mode}] front matter leaked: {joined:?}"
+        );
+        assert!(
+            joined.contains("Real Heading"),
+            "[{mode}] lost the real heading: {joined:?}"
+        );
 
         let first_heading = chunks.iter().find(|c| c.content_type == "heading");
         assert!(
@@ -194,8 +203,14 @@ fn a_later_rule_is_not_treated_as_front_matter() {
     let doc = "# Title\n\nFirst paragraph with enough words in it.\n\n---\n\n               Second paragraph with enough words in it too.\n";
     let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
     let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
-    assert!(joined.contains("First paragraph"), "lost content: {joined:?}");
-    assert!(joined.contains("Second paragraph"), "lost content: {joined:?}");
+    assert!(
+        joined.contains("First paragraph"),
+        "lost content: {joined:?}"
+    );
+    assert!(
+        joined.contains("Second paragraph"),
+        "lost content: {joined:?}"
+    );
 }
 
 /// An unterminated fence is not front matter and must not swallow the document.
@@ -234,8 +249,14 @@ fn a_backslash_before_punctuation_still_escapes() {
     let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
     let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
     assert!(joined.contains("asterisk *"), "escape dropped: {joined:?}");
-    assert!(joined.contains("underscore _"), "escape dropped: {joined:?}");
-    assert!(!joined.contains("\\*"), "the backslash survived: {joined:?}");
+    assert!(
+        joined.contains("underscore _"),
+        "escape dropped: {joined:?}"
+    );
+    assert!(
+        !joined.contains("\\*"),
+        "the backslash survived: {joined:?}"
+    );
 }
 
 /// An unterminated `<` is not a tag. The scan ran to end-of-string and deleted

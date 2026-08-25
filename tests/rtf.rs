@@ -328,3 +328,47 @@ fn real_rtf_still_parses_with_a_bom_or_leading_whitespace() {
         .expect("leading whitespace must be tolerated");
     assert_eq!(with_ws, plain, "leading whitespace changed the result");
 }
+
+/// `\binN` is followed by N **raw** bytes, which are neither text nor RTF.
+///
+/// They were walked as RTF, so a `{` or `}` among them pushed or popped the
+/// group stack and corrupted nesting for the rest of the file. No corpus
+/// fixture contains `\bin` — all picture data in the 16 real files is hex — so
+/// this was a latent landmine that only a synthetic input can pin.
+#[test]
+fn binary_picture_data_does_not_corrupt_group_nesting() {
+    // Two stray `{` inside the binary run: before the fix these opened groups
+    // that never closed, and every paragraph after the picture was lost.
+    let mut doc: Vec<u8> = Vec::new();
+    doc.extend_from_slice(br"{\rtf1\ansi\deff0 BEFORE\par ");
+    doc.extend_from_slice(br"{\pict\jpegblip\bin6 ");
+    doc.extend_from_slice(&[0x00, 0x7B, 0x7B, 0x01, 0x7D, 0x02]); // { { and }
+    doc.extend_from_slice(br"}");
+    doc.extend_from_slice(br"AFTER\par MORE TEXT\par}");
+
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(&doc)
+        .expect("a document with binary picture data must still parse");
+    assert!(
+        md.contains("BEFORE"),
+        "lost text before the picture: {md:?}"
+    );
+    assert!(
+        md.contains("AFTER") && md.contains("MORE TEXT"),
+        "binary data corrupted nesting and ate the rest: {md:?}"
+    );
+    for stray in ['\u{0}', '\u{1}', '\u{2}'] {
+        assert!(
+            !md.contains(stray),
+            "raw binary leaked into the text: {md:?}"
+        );
+    }
+}
+
+/// A `\bin` whose count overruns the buffer must clamp, not panic.
+#[test]
+fn an_overlong_bin_count_is_clamped() {
+    let doc = br"{\rtf1\ansi\deff0 BEFORE\par {\pict\jpegblip\bin999999 \x00}AFTER\par}";
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(doc)
+        .expect("an overlong \\bin must not panic");
+    assert!(md.contains("BEFORE"), "lost the leading text: {md:?}");
+}

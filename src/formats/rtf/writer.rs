@@ -90,6 +90,31 @@ impl Out {
         self.text.push_str(s);
     }
 
+    /// Begin a markdown table row: `| ` at the start of a fresh line.
+    ///
+    /// A dedicated method rather than `set_line_prefix`, deliberately: the
+    /// prefix slot is shared with headings and `\listtext`, and a `\pard`
+    /// inside a cell can reach `clear_line_prefix`. A row opener must not be
+    /// clobberable that way.
+    pub fn open_row(&mut self) {
+        self.close_span();
+        self.prefix = None;
+        if !self.ends_with_newline() {
+            self.text.push('\n');
+        }
+        self.text.push_str("| ");
+    }
+
+    /// Write `s` as a line of its own.
+    pub fn push_line(&mut self, s: &str) {
+        self.close_span();
+        if !self.ends_with_newline() {
+            self.text.push('\n');
+        }
+        self.text.push_str(s);
+        self.text.push('\n');
+    }
+
     /// End the current line. Any prefix queued for an empty paragraph is dropped.
     pub fn break_line(&mut self) {
         self.close_span();
