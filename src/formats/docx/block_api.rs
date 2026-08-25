@@ -250,9 +250,15 @@ pub(super) fn parse_docx_blocks(bytes: &[u8]) -> Result<Vec<DocxBlock>, String> 
     let mut archive =
         ZipArchive::new(cursor).map_err(|e| format!("DOCX is not a valid zip archive: {e}"))?;
 
+    // Resolve the main part through the package relationship rather than
+    // guessing its name; `word/document.xml` is only Word's convention, and a
+    // package that names it otherwise is still spec-legal (see
+    // `resolve_main_part`).
+    let main_part = super::images_rels::resolve_main_part(&mut archive)
+        .unwrap_or_else(|| "word/document.xml".to_string());
     let mut document_xml_file = archive
-        .by_name("word/document.xml")
-        .map_err(|_| "word/document.xml not found in DOCX".to_string())?;
+        .by_name(&main_part)
+        .map_err(|_| format!("main document part '{main_part}' not found in DOCX"))?;
 
     parse_document_xml_blocks_streaming(&mut document_xml_file)
 }

@@ -48,9 +48,12 @@ fn md_returns_empty_from_every_mode() {
     for (label, bytes) in EMPTY_INPUTS {
         for mode in MODES {
             let got = md::chunk_from_bytes(bytes, mode, 3, 1, 3, 15);
-            let chunks = got
-                .unwrap_or_else(|e| panic!("md {mode} on {label}: must not raise, got {e:?}"));
-            assert!(chunks.is_empty(), "md {mode} on {label}: expected [], got {chunks:?}");
+            let chunks =
+                got.unwrap_or_else(|e| panic!("md {mode} on {label}: must not raise, got {e:?}"));
+            assert!(
+                chunks.is_empty(),
+                "md {mode} on {label}: expected [], got {chunks:?}"
+            );
         }
     }
 }
@@ -60,9 +63,12 @@ fn txt_returns_empty_from_every_mode() {
     for (label, bytes) in EMPTY_INPUTS {
         for mode in MODES {
             let got = txt::chunk_from_bytes(bytes, mode, 3, 1, 3, 15);
-            let chunks = got
-                .unwrap_or_else(|e| panic!("txt {mode} on {label}: must not raise, got {e:?}"));
-            assert!(chunks.is_empty(), "txt {mode} on {label}: expected [], got {chunks:?}");
+            let chunks =
+                got.unwrap_or_else(|e| panic!("txt {mode} on {label}: must not raise, got {e:?}"));
+            assert!(
+                chunks.is_empty(),
+                "txt {mode} on {label}: expected [], got {chunks:?}"
+            );
         }
     }
 }
@@ -72,9 +78,12 @@ fn html_returns_empty_from_every_mode() {
     for (label, bytes) in EMPTY_INPUTS {
         for mode in MODES {
             let got = html::chunk_from_bytes(bytes, mode, 3, 1, 3, 15);
-            let chunks = got
-                .unwrap_or_else(|e| panic!("html {mode} on {label}: must not raise, got {e:?}"));
-            assert!(chunks.is_empty(), "html {mode} on {label}: expected [], got {chunks:?}");
+            let chunks =
+                got.unwrap_or_else(|e| panic!("html {mode} on {label}: must not raise, got {e:?}"));
+            assert!(
+                chunks.is_empty(),
+                "html {mode} on {label}: expected [], got {chunks:?}"
+            );
         }
     }
 }
@@ -89,7 +98,10 @@ fn html_with_only_markup_returns_empty_from_every_mode() {
         let got = html::chunk_from_bytes(bytes, mode, 3, 1, 3, 15);
         let chunks =
             got.unwrap_or_else(|e| panic!("html {mode} on markup-only: must not raise, got {e:?}"));
-        assert!(chunks.is_empty(), "html {mode} on markup-only: expected [], got {chunks:?}");
+        assert!(
+            chunks.is_empty(),
+            "html {mode} on markup-only: expected [], got {chunks:?}"
+        );
     }
 }
 
@@ -108,8 +120,14 @@ fn csv_and_tsv_agree_on_empty_input() {
             let tsv_chunks = as_tsv
                 .unwrap_or_else(|e| panic!("tsv {mode} on {label}: must not raise, got {e:?}"));
 
-            assert!(csv_chunks.is_empty(), "csv {mode} on {label}: expected [], got {csv_chunks:?}");
-            assert!(tsv_chunks.is_empty(), "tsv {mode} on {label}: expected [], got {tsv_chunks:?}");
+            assert!(
+                csv_chunks.is_empty(),
+                "csv {mode} on {label}: expected [], got {csv_chunks:?}"
+            );
+            assert!(
+                tsv_chunks.is_empty(),
+                "tsv {mode} on {label}: expected [], got {tsv_chunks:?}"
+            );
         }
     }
 }
@@ -121,8 +139,11 @@ fn csv_with_only_comments_returns_empty() {
     let bytes = b"# just a comment\n# and another\n";
     for mode in DELIM_MODES {
         let got = csv::chunk_from_bytes(bytes, mode, 10, 3, 1, true, None, "auto", true);
-        let chunks =
-            got.unwrap_or_else(|e| panic!("csv {mode} on comments-only: must not raise, got {e:?}"));
-        assert!(chunks.is_empty(), "csv {mode} on comments-only: expected [], got {chunks:?}");
+        let chunks = got
+            .unwrap_or_else(|e| panic!("csv {mode} on comments-only: must not raise, got {e:?}"));
+        assert!(
+            chunks.is_empty(),
+            "csv {mode} on comments-only: expected [], got {chunks:?}"
+        );
     }
 }

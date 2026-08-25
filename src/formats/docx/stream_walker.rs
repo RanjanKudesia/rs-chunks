@@ -70,6 +70,13 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
     // drawing (those local names also appear in shape XML elsewhere).
     let mut drawing_depth: u32 = 0;
     let mut in_run = false;
+    // Depth inside `<w:rt>`, the phonetic-reading half of a ruby annotation
+    // (ECMA-376 §17.3.3.25). Its `<w:r><w:t>` looks exactly like ordinary run
+    // content to this walker, so the reading was emitted as body text *ahead of*
+    // the word it annotates: `<w:ruby>` over 漢字 yielded "ふりがな 漢字". That is
+    // corrupted output, not missing output — the base text is what the document
+    // says, and the reading is a gloss on it.
+    let mut ruby_rt_depth: usize = 0;
     let mut in_rpr = false;
     let mut cur_bold = false;
     let mut cur_italic = false;
@@ -313,6 +320,8 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                             break;
                         }
                     }
+                } else if qname_eq(name, b"rt") {
+                    ruby_rt_depth += 1;
                 } else if qname_eq(name, b"t") {
                     in_text = true;
                     wt_buf.clear();
@@ -496,9 +505,22 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
             }
             Ok(Event::End(e)) => {
                 let name = e.name();
-                if qname_eq(name, b"t") {
+                if qname_eq(name, b"rt") {
+                    ruby_rt_depth = ruby_rt_depth.saturating_sub(1);
+                } else if qname_eq(name, b"t") {
                     in_text = false;
+                    // Always taken, so `wt_buf` is cleared for the next run —
+                    // then discarded inside `<w:rt>`, keeping `<w:rubyBase>`,
+                    // which is the actual word. `push_text` ignores an empty
+                    // piece, so every routing branch below is a no-op for it.
+                    // (Not `continue`: that would skip this loop's `buf.clear()`
+                    // and let quick-xml's buffer grow for the whole document.)
                     let txt = std::mem::take(&mut wt_buf);
+                    let txt = if ruby_rt_depth > 0 {
+                        String::new()
+                    } else {
+                        txt
+                    };
                     if let Some(top) = table_stack.last_mut() {
                         if top.in_cell {
                             push_text(&mut top.current_cell, &txt);
