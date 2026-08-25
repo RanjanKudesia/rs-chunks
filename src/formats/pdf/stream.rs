@@ -286,20 +286,36 @@ impl Iterator for PdfChunkStream {
 fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_DEPTH);
     std::thread::spawn(move || {
-        let mut work = match Incremental::open(&bytes) {
-            Ok(work) => work,
-            Err(error) => {
-                let _ = tx.send(Err(error));
-                return;
+        // The worker carries its own panic boundary. `dispatch`'s runs on the
+        // *caller's* thread and cannot see a spawned worker, so a panic here
+        // simply unwound, dropped `tx`, and turned `rx.recv().ok()` into a clean
+        // end-of-stream — mid-document, after the consumer had already taken
+        // correct chunks, with no error anywhere. Truncation that looks like
+        // completion (TECH_DEBT F7).
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut work = Incremental::open(&bytes)?;
+            // The bounded channel is what keeps this incremental in practice:
+            // the worker blocks once the consumer is CHANNEL_DEPTH chunks
+            // behind, so pages are read at the rate they are consumed rather
+            // than all at once.
+            while let Some(item) = work.pump() {
+                let failed = item.is_err();
+                if tx.send(item).is_err() || failed {
+                    break;
+                }
             }
-        };
-        // The bounded channel is what keeps this incremental in practice: the
-        // worker blocks once the consumer is CHANNEL_DEPTH chunks behind, so
-        // pages are read at the rate they are consumed rather than all at once.
-        while let Some(item) = work.pump() {
-            let failed = item.is_err();
-            if tx.send(item).is_err() || failed {
-                return;
+            Ok::<(), ChunkError>(())
+        }));
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = tx.send(Err(error));
+            }
+            Err(payload) => {
+                let msg = crate::error::panic_message(payload);
+                let _ = tx.send(Err(ChunkError::Parse(format!(
+                    "internal parser panic: {msg}"
+                ))));
             }
         }
     });
@@ -351,18 +367,30 @@ pub fn stream_from_bytes(
     #[cfg(not(target_arch = "wasm32"))]
     let backend = {
         let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_DEPTH);
-        std::thread::spawn(move || match work.run() {
-            Ok(chunks) => {
-                for chunk in chunks {
+        std::thread::spawn(move || {
+            // Same boundary as the incremental worker above, for the same
+            // reason: a panic on this thread is invisible to `dispatch`.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for chunk in work.run()? {
                     // A closed receiver means the consumer stopped early — an
                     // ordinary outcome, not a failure.
                     if tx.send(Ok(chunk)).is_err() {
-                        return;
+                        break;
                     }
                 }
-            }
-            Err(error) => {
-                let _ = tx.send(Err(error));
+                Ok::<(), ChunkError>(())
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = tx.send(Err(error));
+                }
+                Err(payload) => {
+                    let msg = crate::error::panic_message(payload);
+                    let _ = tx.send(Err(ChunkError::Parse(format!(
+                        "internal parser panic: {msg}"
+                    ))));
+                }
             }
         });
         Backend::Threaded(rx)

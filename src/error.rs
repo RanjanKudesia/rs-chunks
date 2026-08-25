@@ -60,3 +60,37 @@ impl From<String> for ChunkError {
 }
 
 pub type Result<T> = std::result::Result<T, ChunkError>;
+
+/// Stringify a `catch_unwind` payload.
+///
+/// Shared so every panic boundary in the engine produces the same message for
+/// the same panic — the dispatch boundary and the PDF stream workers were
+/// otherwise going to word it twice.
+pub(crate) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_string())
+}
+
+#[cfg(test)]
+mod panic_message_tests {
+    use super::panic_message;
+
+    /// Both panic boundaries — `dispatch` and the two PDF stream workers — word
+    /// a panic identically, so a caller cannot tell which thread it came from.
+    /// Pinned because the wording is now shared rather than duplicated.
+    #[test]
+    fn stringifies_both_payload_shapes_and_neither() {
+        let s = std::panic::catch_unwind(|| panic!("static str")).unwrap_err();
+        assert_eq!(panic_message(s), "static str");
+
+        let owned =
+            std::panic::catch_unwind(|| panic!("{}", String::from("owned"))).unwrap_err();
+        assert_eq!(panic_message(owned), "owned");
+
+        let odd = std::panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
+        assert_eq!(panic_message(odd), "unknown panic payload");
+    }
+}

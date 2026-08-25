@@ -25,11 +25,7 @@ fn catch_parser_panics<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown panic payload".to_string());
+            let msg = crate::error::panic_message(payload);
             Err(ChunkError::Parse(format!("internal parser panic: {msg}")))
         }
     }
