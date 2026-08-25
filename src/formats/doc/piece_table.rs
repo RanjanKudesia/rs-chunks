@@ -35,6 +35,28 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
         .ok_or_else(|| format!("Piece table truncated at offset {offset}"))
 }
 
+/// One byte of a compressed (`fCompressed = 1`) piece → its character.
+///
+/// **This is not a code page, and no code page selects it.** [MS-DOC] §2.4.1
+/// step 6 and §2.9.73 define compressed pieces as 8-bit *Unicode* with a fixed
+/// 24-value exception table; anything outside Latin-1 must be stored in a
+/// 16-bit piece instead. Encoding is per PIECE, and `.doc` carries no
+/// file-level text-encoding declaration at all.
+///
+/// Do NOT wire this to `FibBase.lid` (offset 6). [MS-DOC] §2.5.2 makes it the
+/// producing application's *install* language and REQUIRES it to be falsified
+/// to 0x0409 for East Asian, Spanish, German and French installs — it is a
+/// deliberately lossy field. And, measured, all three Cyrillic-locale fixtures
+/// (`poi_o_kurs`, `poi_ob_is`, `poi_rasp`, lid 0x0419) store 100% UTF-16
+/// pieces and decode correctly today, so switching on lid would introduce
+/// corruption where there is none. The SummaryInformation code page governs
+/// property-set strings only.
+///
+/// One deliberate deviation: the spec table omits 0x80, 0x8E and 0x9E, which
+/// map literally to C1 controls. Those bytes are illegal in a compressed piece
+/// and occur zero times across the 27-fixture corpus; when a non-conformant
+/// producer emits them, cp1252's EUR/Zcaron/zcaron is a better guess than an
+/// invisible control character.
 fn cp1252_to_char(byte: u8) -> char {
     match byte {
         0x00..=0x7F => byte as char,

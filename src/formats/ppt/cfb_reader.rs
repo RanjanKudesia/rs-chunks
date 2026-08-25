@@ -23,10 +23,35 @@ impl<'a> PptCfb<'a> {
     }
 
     /// Reads the "PowerPoint Document" stream — the record tree every parse needs.
+    ///
+    /// PowerPoint 4.0 / 95 keep their content in a `PP40` storage rather than
+    /// this stream, so such a file landed on "not a valid .ppt" — technically
+    /// true and useless: it is a perfectly valid PowerPoint file, just an
+    /// older format, and the caller is told nothing they can act on. Named
+    /// now, mirroring what `.doc` already does for pre-Word-97 files.
+    ///
+    /// Some PowerPoint 95 saves also carry a `PP97_DUALSTORAGE` sub-storage
+    /// holding a 97-format copy, which this reader CAN read — so that is
+    /// preferred before giving up. Same discriminator Apache POI uses.
     pub fn powerpoint_document_stream(&mut self) -> Result<Vec<u8>, String> {
+        let path = if self.compound.is_stream("/PowerPoint Document") {
+            "/PowerPoint Document"
+        } else if self
+            .compound
+            .is_stream("/PP97_DUALSTORAGE/PowerPoint Document")
+        {
+            "/PP97_DUALSTORAGE/PowerPoint Document"
+        } else if self.compound.exists("/PP40") {
+            return Err("This is a PowerPoint 95 (or earlier) file, which is not \
+                        supported. Convert it to .pptx first."
+                .to_string());
+        } else {
+            return Err("Missing 'PowerPoint Document' stream — not a valid .ppt file".to_string());
+        };
+
         let mut buf = Vec::new();
         self.compound
-            .open_stream("/PowerPoint Document")
+            .open_stream(path)
             .map_err(|_| {
                 "Missing 'PowerPoint Document' stream — not a valid .ppt file".to_string()
             })?

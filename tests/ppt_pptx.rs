@@ -180,3 +180,52 @@ fn ppt_chunks_carry_slide_metadata() {
         assert!(titled > 0, "{name}: no chunk carries a slide_title");
     }
 }
+
+/// A PowerPoint 95 file is a valid PowerPoint file in an older format, and
+/// saying "not a valid .ppt" tells the caller nothing they can act on.
+///
+/// PowerPoint 4.0/95 keep content in a `PP40` storage rather than the
+/// `PowerPoint Document` stream this reader understands. No corpus fixture is
+/// one — all 28 carry the modern stream — so this can only be pinned
+/// synthetically.
+#[test]
+fn a_powerpoint_95_file_is_named_rather_than_called_invalid() {
+    let cfb = build_cfb_with_storage("PP40");
+    let err = chunks_rs::formats::ppt::chunk_from_bytes(&cfb, "old.ppt", "structural", 3, 1, 3, 15)
+        .expect_err("a PowerPoint 95 file has no readable stream here");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("PowerPoint 95"),
+        "the error must name the format, got {msg:?}"
+    );
+    assert!(
+        msg.contains(".pptx"),
+        "the error must say what to do about it, got {msg:?}"
+    );
+}
+
+/// A CFB that is not PowerPoint at all keeps the original message.
+#[test]
+fn a_non_powerpoint_cfb_still_says_not_a_valid_ppt() {
+    let cfb = build_cfb_with_storage("SomethingElse");
+    let err = chunks_rs::formats::ppt::chunk_from_bytes(&cfb, "x.ppt", "structural", 3, 1, 3, 15)
+        .expect_err("must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not a valid .ppt"),
+        "unexpected message for a non-PowerPoint CFB: {msg:?}"
+    );
+    assert!(
+        !msg.contains("PowerPoint 95"),
+        "a non-PowerPoint CFB must not be blamed on the 95 format: {msg:?}"
+    );
+}
+
+/// Minimal compound file carrying one empty storage.
+fn build_cfb_with_storage(name: &str) -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut comp = cfb::CompoundFile::create(cursor).expect("create cfb");
+    comp.create_storage(format!("/{name}")).expect("storage");
+    comp.flush().expect("flush");
+    comp.into_inner().into_inner()
+}

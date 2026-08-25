@@ -38,23 +38,30 @@ fn decode_utf16le(body: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// Decode a `TextBytesAtom` body, whose bytes are in the ANSI code page.
+/// Decode a `TextBytesAtom` body.
 ///
-/// This was `b as char` — raw Latin-1 — which is wrong for exactly the range
-/// that matters. cp1252 puts the typographic punctuation PowerPoint's
-/// autocorrect emits at 0x80-0x9F, where Latin-1 has C1 control characters, so
-/// `split_runs`'s `!c.is_control()` filter then **deleted** them. Measured:
+/// [MS-PPT] defines each byte as the LOW BYTE of a `U+00xx` character — the
+/// atom is Latin-1 **by construction**, not the system ANSI code page. So
+/// cp1252 here is a deliberate LENIENCE over the specification, not conformance
+/// to it. It differs from Latin-1 only on 0x80-0x9F, which cannot legally
+/// appear, and on exactly those bytes `split_runs`'s `!c.is_control()` filter
+/// would otherwise DELETE the character mid-word rather than merely mangle it —
+/// so the lenience is strictly better than the alternative. Measured: 2,394
+/// TextBytesAtoms across 28 fixtures carry 1,335 high bytes and **none** is in
+/// 0x80-0x9F; every one is >= 0xA0, where Latin-1 and cp1252 agree.
 ///
-///   don\x92t "\x93quote\x94" dash\x97here  ->  "dont quote dashhere"
+/// Two corrections to the commit that introduced this (`e2dcaaf`), whose
+/// stated reasoning was wrong in both halves:
 ///
-/// Curly apostrophes, curly quotes and em dashes vanished mid-word, silently.
-/// That is corrupted text rather than missing text, and it is the commonest
-/// punctuation in real decks.
+/// 1. It is NOT "the same assumption `.doc` makes". `.doc` implements
+///    [MS-DOC] §2.9.73's fixed 24-value table for compressed pieces, which
+///    differs from cp1252 at 0x80, 0x8E and 0x9E.
+/// 2. A Cyrillic or Greek deck does NOT mojibake. Non-Latin-1 text is stored
+///    in a `TextCharsAtom` (UTF-16) and has always decoded correctly.
 ///
-/// cp1252 is the Western default and the same assumption `.doc` makes
-/// (`piece_table::cp1252_to_char`); a deck authored in a Cyrillic or Greek
-/// locale still mojibakes, which is a shared, documented limitation rather than
-/// a new one.
+/// Do not "fix" this with a code-page switch. There is no code page to switch
+/// on, and doing so would corrupt the Portuguese decks (`poi_br_*`) that decode
+/// correctly today.
 fn decode_ansi(body: &[u8]) -> String {
     encoding_rs::WINDOWS_1252.decode(body).0.into_owned()
 }
