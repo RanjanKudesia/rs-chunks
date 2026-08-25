@@ -217,7 +217,11 @@ fn unpredict(doc: &Document, data: &[u8], parms: &Dictionary) -> Result<Vec<u8>,
     }
     let colors = get(b"Colors", 1).clamp(1, 32) as usize;
     let bpc = get(b"BitsPerComponent", 8).clamp(1, 16) as usize;
-    let columns = get(b"Columns", 1).max(1) as usize;
+    // `Colors` and `BitsPerComponent` are clamped above; `Columns` was not, and
+    // it feeds `vec![0u8; row_bytes]` twice below. `/Columns 4000000000` asks
+    // for ~8 GB and the multiply can overflow first. 2^20 columns is already
+    // absurd for a real scan (a 4 MB row buffer) and keeps the product small.
+    let columns = (get(b"Columns", 1).max(1) as usize).min(1 << 20);
     let row_bytes = (columns * colors * bpc).div_ceil(8);
     let pixel_bytes = (colors * bpc).div_ceil(8).max(1);
 

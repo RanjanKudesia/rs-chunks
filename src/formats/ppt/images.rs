@@ -59,6 +59,19 @@ fn decode_bstore(doc_stream: &[u8], pictures: Option<&[u8]>) -> Vec<Option<Decod
 
 /// Collect `Pib` blip-store references per SlideContainer, in document order.
 fn collect_slide_pibs(data: &[u8], start: usize, end: usize, out: &mut Vec<Vec<u32>>) {
+    collect_slide_pibs_at(data, start, end, out, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_slide_pibs_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<Vec<u32>>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -77,8 +90,10 @@ fn collect_slide_pibs(data: &[u8], start: usize, end: usize, out: &mut Vec<Vec<u
             }
             RT_NOTES_CONTAINER | RT_MAIN_MASTER => {}
             _ => {
-                if hdr.rec_ver == REC_VER_CONTAINER {
-                    collect_slide_pibs(data, hdr.body_start, hdr.body_end, out);
+                if hdr.rec_ver == REC_VER_CONTAINER
+                    && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+                {
+                    collect_slide_pibs_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
                 }
             }
         }

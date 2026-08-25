@@ -291,10 +291,36 @@ pub fn detect_header_row(rows: &[&[Data]]) -> Option<usize> {
     None
 }
 
+/// Excel's own grid limits. A `ref=` attribute or `_xlnm.Print_Area` string is
+/// attacker-controlled, and both feed per-row allocations and row loops, so a
+/// reference beyond the real grid is rejected rather than honoured:
+/// `ref="A1:AAAAAAAAAA1"` otherwise yields a column count around 1.4e14.
+pub const MAX_SHEET_COLS: usize = 16_384; // XFD
+pub const MAX_SHEET_ROWS: usize = 1_048_576;
+
+/// Convert a column label (`A`, `AB`, `XFD`) to a 0-based index.
+///
+/// Saturating and underflow-free on purpose: the old body was
+/// `fold(...) - 1`, which underflowed to `usize::MAX` for an empty label and
+/// overflowed `acc * 26` for a long run of letters — both reachable from a
+/// crafted `ref=`.
 pub fn col_letter_to_index(col: &str) -> usize {
-    col.chars().fold(0usize, |acc, c| {
-        acc * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
+    let mut acc = 0usize;
+    for c in col.chars() {
+        if !c.is_ascii_alphabetic() {
+            break;
+        }
+        acc = acc
+            .saturating_mul(26)
+            .saturating_add(c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+        if acc > MAX_SHEET_COLS {
+            // One past the last real column, so `parse_range_ref` rejects the
+            // reference instead of silently accepting a clamped one. Saturating
+            // to XFD would make `A1:AAAAAAAAAA1` look like a legal range.
+            return MAX_SHEET_COLS;
+        }
+    }
+    acc.saturating_sub(1)
 }
 
 pub fn parse_cell_ref(cell_ref: &str) -> Option<(usize, usize)> {
@@ -321,6 +347,10 @@ pub fn parse_range_ref(range_ref: &str) -> Option<(usize, usize, usize, usize)> 
     }
     let (r1, c1) = parse_cell_ref(parts[0])?;
     let (r2, c2) = parse_cell_ref(parts[1])?;
+    // Outside the real grid this is not a range, it is an allocation request.
+    if r1.max(r2) >= MAX_SHEET_ROWS || c1.max(c2) >= MAX_SHEET_COLS {
+        return None;
+    }
     Some((r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
 }
 

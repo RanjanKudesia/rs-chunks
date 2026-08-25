@@ -66,7 +66,13 @@ pub fn csv_to_markdown_from_bytes(
         if is_empty_row(&row) {
             continue;
         }
-        max_width = max_width.max(row.len());
+        // One pathological row must not widen every other row: the padding
+        // loop below costs `rows x max_width` empty Strings, so a single
+        // 1M-field row in a 1M-row file is 10^12 allocations. Excel's column
+        // limit is a generous ceiling for a markdown table.
+        max_width = max_width
+            .max(row.len())
+            .min(crate::formats::xlsx::common::MAX_SHEET_COLS);
         data_rows.push(row);
     }
 

@@ -237,6 +237,19 @@ fn merge_freeform(slide: &mut Vec<DocParagraph>, escher_raw: &[String]) {
 
 /// Find the slides SlideListWithText (recInstance 0) and collect its slides.
 fn collect_slwt_slides(data: &[u8], start: usize, end: usize, slides: &mut Vec<Vec<DocParagraph>>) {
+    collect_slwt_slides_at(data, start, end, slides, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_slwt_slides_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    slides: &mut Vec<Vec<DocParagraph>>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -246,8 +259,10 @@ fn collect_slwt_slides(data: &[u8], start: usize, end: usize, slides: &mut Vec<V
             if hdr.rec_instance == SLWT_INSTANCE_SLIDES {
                 parse_slwt_children(data, hdr.body_start, hdr.body_end, slides);
             }
-        } else if hdr.rec_ver == REC_VER_CONTAINER {
-            collect_slwt_slides(data, hdr.body_start, hdr.body_end, slides);
+        } else if hdr.rec_ver == REC_VER_CONTAINER
+            && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+        {
+            collect_slwt_slides_at(data, hdr.body_start, hdr.body_end, slides, depth + 1);
         }
         pos = next;
     }
@@ -300,6 +315,19 @@ fn parse_slwt_children(data: &[u8], start: usize, end: usize, slides: &mut Vec<V
 
 /// Collect raw text per SlideContainer drawing (in document order).
 fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Vec<String>>) {
+    collect_escher_slides_at(data, start, end, out, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_escher_slides_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<Vec<String>>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -313,8 +341,10 @@ fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Ve
             }
             RT_NOTES_CONTAINER | RT_MAIN_MASTER => {}
             _ => {
-                if hdr.rec_ver == REC_VER_CONTAINER {
-                    collect_escher_slides(data, hdr.body_start, hdr.body_end, out);
+                if hdr.rec_ver == REC_VER_CONTAINER
+                    && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+                {
+                    collect_escher_slides_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
                 }
             }
         }
@@ -324,6 +354,19 @@ fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Ve
 
 /// Recursively gather raw text-atom strings within a subtree.
 fn collect_text_strings(data: &[u8], start: usize, end: usize, out: &mut Vec<String>) {
+    collect_text_strings_at(data, start, end, out, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_text_strings_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<String>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -334,8 +377,10 @@ fn collect_text_strings(data: &[u8], start: usize, end: usize, out: &mut Vec<Str
             RT_TEXT_CHARS_ATOM => out.push(decode_utf16le(body)),
             RT_TEXT_BYTES_ATOM => out.push(decode_latin1(body)),
             _ => {
-                if hdr.rec_ver == REC_VER_CONTAINER {
-                    collect_text_strings(data, hdr.body_start, hdr.body_end, out);
+                if hdr.rec_ver == REC_VER_CONTAINER
+                    && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+                {
+                    collect_text_strings_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
                 }
             }
         }

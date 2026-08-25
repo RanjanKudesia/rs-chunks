@@ -188,6 +188,18 @@ fn decode_picf_blip(data_stream: &[u8], fc_pic: usize) -> Option<DecodedBlip> {
 /// Walk OfficeArt records in `data[start..end)` (descending into containers
 /// and FBSEs) and decode the first supported BLIP found.
 fn find_blip_in_records(data: &[u8], start: usize, end: usize) -> Option<DecodedBlip> {
+    find_blip_in_records_at(data, start, end, 0)
+}
+
+/// Depth-capped worker. See `odraw::MAX_RECORD_DEPTH`: container nesting costs
+/// 8 bytes a level, so an uncapped descent is a stack-overflow abort from a
+/// small file.
+fn find_blip_in_records_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    depth: usize,
+) -> Option<DecodedBlip> {
     let mut pos = start;
     while let Some((hdr, next)) = parse_odraw_header(data, pos, end) {
         if next <= pos {
@@ -205,8 +217,12 @@ fn find_blip_in_records(data: &[u8], start: usize, end: usize) -> Option<Decoded
             if let Some(decoded) = decode_fbse_blip(data.get(hdr.body_start..hdr.body_end)?, None) {
                 return Some(decoded);
             }
-        } else if hdr.rec_ver == REC_VER_CONTAINER {
-            if let Some(decoded) = find_blip_in_records(data, hdr.body_start, hdr.body_end) {
+        } else if hdr.rec_ver == REC_VER_CONTAINER
+            && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+        {
+            if let Some(decoded) =
+                find_blip_in_records_at(data, hdr.body_start, hdr.body_end, depth + 1)
+            {
                 return Some(decoded);
             }
         }

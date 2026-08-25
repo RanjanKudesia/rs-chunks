@@ -38,7 +38,13 @@ pub fn decompress_rtf(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut dict = vec![0u8; DICT_SIZE];
     dict[..LZFU_INIT_DICT.len()].copy_from_slice(LZFU_INIT_DICT);
     let mut write_pos = LZFU_INIT_DICT.len(); // 207
-    let mut out = Vec::with_capacity(raw_size);
+
+    // `raw_size` is a u32 straight from the file, so a 16-byte input can ask
+    // for 4 GiB. LZFu emits at most 16 bytes per flag byte, so `body.len() * 17`
+    // is a hard ceiling on real output — clamping the *reservation* to it is
+    // lossless, because the Vec still grows if genuinely needed.
+    let reserve = raw_size.min(body.len().saturating_mul(17));
+    let mut out = Vec::with_capacity(reserve);
     let mut ip = 0usize;
 
     'outer: while ip < body.len() {

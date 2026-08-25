@@ -10,6 +10,21 @@
 /// recVer value that marks a container record.
 pub const REC_VER_CONTAINER: u16 = 0xF;
 
+/// How deep a nested OfficeArt/PPT record tree may go before the walkers stop.
+///
+/// Every level of nesting costs only an 8-byte header, so a container that
+/// declares itself as containing another container, repeated, is ~8 bytes per
+/// stack frame. A **480 KB** file drove `find_record` to
+/// `fatal runtime error: stack overflow, aborting` (SIGABRT) — and a stack
+/// overflow is an abort, not a panic, so `catch_unwind` cannot intercept it and
+/// no caller can defend against it. That is strictly worse than TECH_DEBT T12,
+/// which at least happened inside a dependency.
+///
+/// Real Escher trees are shallow: Dgg > BStore > FBSE, and Slide > Drawing >
+/// Spgr > Sp with nested groups, is about 6-8 levels. 32 leaves a wide margin
+/// while capping stack use at a few KB.
+pub const MAX_RECORD_DEPTH: usize = 32;
+
 // OfficeArt record types used by the image extractors.
 // Part of the ODRAW record-type registry; currently referenced only from tests.
 #[allow(dead_code)]
@@ -192,7 +207,21 @@ pub fn decode_fbse_blip(fbse_body: &[u8], delay_stream: Option<&[u8]>) -> Option
 }
 
 /// Recursively locate the first record of `wanted_type` within `data[start..end]`.
+///
+/// Descent is capped at [`MAX_RECORD_DEPTH`]; past it the subtree is skipped and
+/// the search continues with its siblings, so a hostile file yields less rather
+/// than killing the process.
 pub fn find_record(data: &[u8], start: usize, end: usize, wanted_type: u16) -> Option<OdrawHeader> {
+    find_record_at(data, start, end, wanted_type, 0)
+}
+
+fn find_record_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    wanted_type: u16,
+    depth: usize,
+) -> Option<OdrawHeader> {
     let mut pos = start;
     while let Some((hdr, next)) = parse_odraw_header(data, pos, end) {
         if next <= pos {
@@ -201,8 +230,10 @@ pub fn find_record(data: &[u8], start: usize, end: usize, wanted_type: u16) -> O
         if hdr.rec_type == wanted_type {
             return Some(hdr);
         }
-        if hdr.rec_ver == REC_VER_CONTAINER {
-            if let Some(found) = find_record(data, hdr.body_start, hdr.body_end, wanted_type) {
+        if hdr.rec_ver == REC_VER_CONTAINER && depth < MAX_RECORD_DEPTH {
+            if let Some(found) =
+                find_record_at(data, hdr.body_start, hdr.body_end, wanted_type, depth + 1)
+            {
                 return Some(found);
             }
         }
@@ -215,6 +246,10 @@ pub fn find_record(data: &[u8], start: usize, end: usize, wanted_type: u16) -> O
 /// all OPT records within `data[start..end]`, in document order. The property
 /// value is a 1-based index into the blip store.
 pub fn collect_pib_values(data: &[u8], start: usize, end: usize, out: &mut Vec<u32>) {
+    collect_pib_values_at(data, start, end, out, 0)
+}
+
+fn collect_pib_values_at(data: &[u8], start: usize, end: usize, out: &mut Vec<u32>, depth: usize) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_odraw_header(data, pos, end) {
         if next <= pos {
@@ -234,8 +269,8 @@ pub fn collect_pib_values(data: &[u8], start: usize, end: usize, out: &mut Vec<u
                     out.push(value);
                 }
             }
-        } else if hdr.rec_ver == REC_VER_CONTAINER {
-            collect_pib_values(data, hdr.body_start, hdr.body_end, out);
+        } else if hdr.rec_ver == REC_VER_CONTAINER && depth < MAX_RECORD_DEPTH {
+            collect_pib_values_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
         }
         pos = next;
     }

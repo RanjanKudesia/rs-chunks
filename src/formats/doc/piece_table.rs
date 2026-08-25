@@ -275,6 +275,13 @@ pub fn parse_piece_table(
     Ok(reconstruct_from_pieces(word_doc, &pieces))
 }
 
+/// Document-wide ceiling on one reconstructed story.
+///
+/// A .doc story is prose; 64 MB of it is far beyond anything worth chunking and
+/// well past the largest real fixture. The bound exists so a crafted piece table
+/// cannot multiply a small file into an unbounded allocation.
+const MAX_STORY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Decode a piece list into text plus the CP→byte map.
 pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> ReconstructedText {
     let mut text = String::new();
@@ -296,6 +303,15 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
     };
 
     for piece in pieces {
+        // Each piece is clamped to the WordDocument stream, but nothing bounded
+        // the SUM: the piece count is `(plcpcd.len() - 4) / 12`, and every piece
+        // may legally re-map the whole stream. ~87k pieces over a 1 MB stream is
+        // tens of GB of `String` — an OOM abort, which `catch_unwind` cannot
+        // intercept. Keep the readable prefix, which is what the per-piece
+        // clamps below already do on their own scale.
+        if text.len() >= MAX_STORY_BYTES {
+            break;
+        }
         let char_count = (piece.cp_end - piece.cp_start) as usize;
         let real_offset = piece.fc;
 

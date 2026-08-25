@@ -306,6 +306,14 @@ fn to_rgb(
     space: &ColorSpace,
     inverted: bool,
 ) -> Result<Vec<u8>, String> {
+    // The 100 MP guard used to live only in `to_png`, checked against the
+    // *parent* image. `alpha()` re-enters here with the /SMask's own Width and
+    // Height, so a 1x1 image carrying a 100000x100000 mask reserved ~30 GB —
+    // an OOM abort, which `catch_unwind` cannot intercept. Guarding here covers
+    // every caller instead of every call site.
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err("image is implausibly large".to_string());
+    }
     let components = space.components();
     let pixels = width as usize * height as usize;
     let row_bits = width as usize * components * bpc;

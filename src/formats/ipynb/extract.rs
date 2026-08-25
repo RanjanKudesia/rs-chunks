@@ -8,6 +8,9 @@
 use base64::Engine;
 use serde_json::Value;
 
+/// Cap on the base64 text of a single embedded image.
+const MAX_IMAGE_B64_BYTES: usize = 64 * 1024 * 1024;
+
 /// Per-output text is capped to avoid a single huge output bloating chunks.
 const MAX_OUTPUT_CHARS: usize = 4000;
 
@@ -109,6 +112,12 @@ fn html_to_text(html: &str) -> String {
 
 fn decode_b64_image(data: &str) -> Option<Vec<u8>> {
     // Notebook image payloads may contain newlines.
+    // The encoded string is already resident, but `clean` doubles it and the
+    // decode doubles again. A notebook can legitimately embed a large plot;
+    // 64 MB of base64 is far past that and past anything worth chunking.
+    if data.len() > MAX_IMAGE_B64_BYTES {
+        return None;
+    }
     let clean: String = data.split_whitespace().collect();
     base64::engine::general_purpose::STANDARD.decode(clean).ok()
 }
