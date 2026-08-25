@@ -161,7 +161,11 @@ fn document_records(root: &Value) -> (Vec<&Value>, &'static str, Option<String>)
 /// input too deeply nested (serde_json's recursion limit rejects the ~100k-deep
 /// torture case as an error rather than overflowing the stack).
 pub fn parse_document(raw: &[u8]) -> Result<JsonDoc, String> {
-    let root: Value = serde_json::from_slice(raw).map_err(|e| format!("Invalid JSON: {e}"))?;
+    // Bytes, not text: newline normalisation must not touch what the parser
+    // sees, because a `\r\n` inside a string literal is data. This only strips a
+    // BOM and transcodes when the input is not already UTF-8 (TECH_DEBT C4).
+    let raw = crate::text_encoding::to_utf8_bytes(raw);
+    let root: Value = serde_json::from_slice(&raw).map_err(|e| format!("Invalid JSON: {e}"))?;
     let (records, top_level, envelope_key) = document_records(&root);
     let record_count = records.len();
     let rendered: Vec<String> = records.iter().map(|v| render_record(v)).collect();
@@ -178,7 +182,12 @@ pub fn parse_document(raw: &[u8]) -> Result<JsonDoc, String> {
 /// Parse `.jsonl` / `.ndjson`: one record per non-blank line. A malformed line
 /// is rendered as a raw paragraph rather than failing the whole file.
 pub fn parse_lines(raw: &[u8]) -> JsonDoc {
-    let text = String::from_utf8_lossy(raw);
+    // Unlike `.json` this path is line-oriented and cannot fail, so it takes the
+    // full text ladder rather than lossy UTF-8: a leading BOM made record 1
+    // unparseable (it was emitted as a raw paragraph), non-UTF-8 bytes became
+    // U+FFFD silently, and a bare-CR file yielded one giant unparseable record
+    // because `.lines()` never split it (TECH_DEBT C4).
+    let text = crate::text_encoding::decode_text(raw).0;
     let mut sections: Vec<String> = Vec::new();
     let mut count = 0usize;
     for line in text.lines() {

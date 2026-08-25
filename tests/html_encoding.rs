@@ -181,8 +181,18 @@ fn utf8_html_is_unaffected() {
 fn bomless_utf16_html_decodes() {
     let doc = "<html><body><h1>Heading One</h1><p>Body text here.</p></body></html>";
     for (label, bytes) in [
-        ("utf-16le", doc.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()),
-        ("utf-16be", doc.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>()),
+        (
+            "utf-16le",
+            doc.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>(),
+        ),
+        (
+            "utf-16be",
+            doc.encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<u8>>(),
+        ),
     ] {
         let md = chunks_rs::formats::html::to_markdown_from_bytes(&bytes)
             .unwrap_or_else(|e| panic!("{label}: {e}"));

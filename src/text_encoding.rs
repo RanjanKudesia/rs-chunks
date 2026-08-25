@@ -150,6 +150,30 @@ fn lossy_utf8(bytes: &[u8]) -> String {
 /// a binary blob from being mistaken for UTF-16.
 /// Whether BOM-less bytes look like UTF-16. Exposed so `html::decode_html` can
 /// apply the same ordering rule `decode_raw` documents above.
+/// Normalise document bytes to UTF-8 bytes, stripping any BOM.
+///
+/// For formats parsed straight from bytes — `serde_json` consumes bytes, and
+/// RFC 8259 §8.1 makes UTF-8 the JSON encoding — where decoding to a `String`
+/// and normalising newlines would corrupt the very thing being parsed: a `\r\n`
+/// inside a JSON string literal is data, not a line ending.
+///
+/// A BOM is not part of the JSON text, but `serde_json` sees it as a stray
+/// codepoint and rejects the file as *"expected value at line 1 column 1"* —
+/// so a Windows-exported `.json` failed with an error naming neither the cause
+/// nor the remedy.
+///
+/// Borrows when the input is already BOM-less valid UTF-8, so the overwhelmingly
+/// common path allocates nothing.
+pub(crate) fn to_utf8_bytes(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF]);
+    if !bom && !sniffs_utf16(bytes) && std::str::from_utf8(bytes).is_ok() {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    std::borrow::Cow::Owned(decode_raw(bytes).0.into_bytes())
+}
+
 pub(crate) fn sniffs_utf16(bytes: &[u8]) -> bool {
     sniff_utf16(bytes).is_some()
 }

@@ -123,7 +123,12 @@ fn decode_b64_image(data: &str) -> Option<Vec<u8>> {
 }
 
 pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
-    let root: Value = serde_json::from_slice(bytes)
+    // A notebook is JSON, so it inherits JSON's byte-level handling: strip a
+    // BOM and transcode only when the bytes are not already UTF-8, without
+    // normalising newlines (TECH_DEBT C4). A BOM'd notebook was rejected as
+    // "expected value at line 1 column 1".
+    let bytes = crate::text_encoding::to_utf8_bytes(bytes);
+    let root: Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Not a valid .ipynb (JSON) file: {e}"))?;
 
     let mut doc = IpynbDoc {
