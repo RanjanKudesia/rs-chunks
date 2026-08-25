@@ -98,7 +98,9 @@ fn an_entity_keeps_the_space_before_it_on_both_surfaces() {
         assert!(
             body.contains("O\u{2019}Reilly & Associates"),
             "{surface}: the space before the entity was eaten: {:?}",
-            body.split("Associates").next().map(|s| &s[s.len().saturating_sub(40)..])
+            body.split("Associates")
+                .next()
+                .map(|s| &s[s.len().saturating_sub(40)..])
         );
         assert!(
             !body.contains("O\u{2019}Reilly& Associates"),

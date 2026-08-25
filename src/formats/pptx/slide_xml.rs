@@ -188,6 +188,13 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                     }
                 }
             }
+            // CDATA inside `<a:t>` is text. Without this arm it fell through
+            // `_ => {}` and the whole paragraph vanished from `get_chunks`,
+            // while `get_markdown` kept it — the third way these two parsers
+            // have disagreed.
+            Ok(Event::CData(ref e)) if in_t => {
+                t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+            }
             Ok(Event::Text(ref e)) if in_t => {
                 // One <a:t> arrives as several events when it contains
                 // entity references, so concatenate verbatim here and let
@@ -342,4 +349,35 @@ pub fn read_all_slides(
         slides.push((*slide_num, slide));
     }
     Ok(slides)
+}
+
+#[cfg(test)]
+mod cdata_tests {
+    /// CDATA inside `<a:t>` is text, and dropping it lost the whole paragraph.
+    ///
+    /// There was no `CData` arm, so the event fell through `_ => {}` and the
+    /// paragraph vanished from `get_chunks` while `get_markdown` kept it — the
+    /// third way these two parsers disagreed. No fixture contains CDATA (Power-
+    /// Point never writes it), so only a synthetic input can pin this.
+    #[test]
+    fn cdata_in_a_text_run_is_not_dropped() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>
+ <p:sp><p:txBody>
+  <a:p><a:r><a:t><![CDATA[Quarterly review notes]]></a:t></a:r></a:p>
+  <a:p><a:r><a:t>before <![CDATA[middle]]> after</a:t></a:r></a:p>
+ </p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"#;
+
+        let slide = super::parse_slide_xml(xml).expect("slide must parse");
+        let text = slide.all_text();
+        assert!(
+            text.contains("Quarterly review notes"),
+            "a CDATA-only paragraph was dropped: {text:?}"
+        );
+        assert!(
+            text.contains("before middle after"),
+            "CDATA mixed with text was dropped: {text:?}"
+        );
+    }
 }

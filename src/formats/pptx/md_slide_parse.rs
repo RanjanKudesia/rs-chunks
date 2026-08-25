@@ -13,6 +13,40 @@ use super::md_blocks::{
 use std::collections::HashMap;
 use std::io::Cursor;
 
+/// Record a `<c:chart r:id>` or `<dgm:relIds r:dm>` pointer.
+///
+/// Called from BOTH the `Start` and `Empty` branches. These elements are almost
+/// always self-closing, but a producer may write them in start/end form — and
+/// the arms lived only under `Empty`, so such a slide lost its chart and
+/// SmartArt text through `get_markdown` while `get_chunks`, which handles both
+/// forms, kept them.
+fn record_graphic_pointer(
+    local: &[u8],
+    e: &quick_xml::events::BytesStart,
+    slide: &mut SlideMarkdownContent,
+) {
+    let want: &[u8] = match local {
+        b"chart" => b"id",
+        b"relIds" => b"dm",
+        _ => return,
+    };
+    for attr in e.attributes().flatten() {
+        if attr_local_name(attr.key.as_ref()) == want {
+            let v = String::from_utf8_lossy(attr.value.as_ref())
+                .trim()
+                .to_string();
+            if !v.is_empty() {
+                if local == b"chart" {
+                    slide.chart_rids.push(v);
+                } else {
+                    slide.diagram_rids.push(v);
+                }
+            }
+            break;
+        }
+    }
+}
+
 pub(super) fn parse_slide_for_markdown(
     xml_bytes: &[u8],
     rels: &HashMap<String, String>,
@@ -91,6 +125,12 @@ pub(super) fn parse_slide_for_markdown(
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
 
                 match local {
+                    // Charts and SmartArt are usually self-closing, but a
+                    // producer may write them in start/end form — and these
+                    // arms existed only under `Empty`, so such a slide silently
+                    // lost its chart and SmartArt text here while `get_chunks`
+                    // kept them.
+                    b"chart" | b"relIds" => record_graphic_pointer(local, e, &mut slide),
                     // Group shapes are traversed transparently; the tag itself
                     // needs no state — shapes inside are handled as normal.
                     b"grpSp" => {}
@@ -307,34 +347,10 @@ pub(super) fn parse_slide_for_markdown(
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
 
                 match local {
-                    // SmartArt: the slide only points at the part holding the text.
-                    // `<c:chart r:id=…/>` — the pointer to the chart part.
-                    b"chart" => {
-                        for attr in e.attributes().flatten() {
-                            if attr_local_name(attr.key.as_ref()) == b"id" {
-                                let v = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !v.is_empty() {
-                                    slide.chart_rids.push(v);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    b"relIds" => {
-                        for attr in e.attributes().flatten() {
-                            if attr_local_name(attr.key.as_ref()) == b"dm" {
-                                let v = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !v.is_empty() {
-                                    slide.diagram_rids.push(v);
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    // SmartArt and charts: the slide only points at the part
+                    // holding the text. Handled from BOTH branches — see
+                    // `record_graphic_pointer`.
+                    b"chart" | b"relIds" => record_graphic_pointer(local, e, &mut slide),
                     b"pPr" if in_para => {
                         for attr in e.attributes().flatten() {
                             if attr_local_name(attr.key.as_ref()) == b"lvl" {
@@ -662,4 +678,52 @@ pub(super) fn parse_slide_for_markdown(
     }
 
     Ok(slide)
+}
+
+#[cfg(test)]
+mod graphic_pointer_tests {
+    /// `<c:chart>` and `<dgm:relIds>` are almost always self-closing, but a
+    /// producer may write them in start/end form — and the arms existed only
+    /// under `Empty`, so such a slide lost its chart and SmartArt text through
+    /// `get_markdown` while `get_chunks` kept them. No fixture uses the
+    /// start/end form, so this needs a synthetic input.
+    #[test]
+    fn a_start_form_chart_pointer_is_recorded() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a" xmlns:c="c" xmlns:dgm="dgm" xmlns:r="r">
+ <p:cSld><p:spTree>
+  <p:graphicFrame><a:graphic><a:graphicData>
+    <c:chart r:id="rId9"></c:chart>
+  </a:graphicData></a:graphic></p:graphicFrame>
+  <p:graphicFrame><a:graphic><a:graphicData>
+    <dgm:relIds r:dm="rId12"></dgm:relIds>
+  </a:graphicData></a:graphic></p:graphicFrame>
+ </p:spTree></p:cSld></p:sld>"#;
+
+        let slide = super::parse_slide_for_markdown(xml, &Default::default())
+            .expect("slide must parse");
+        assert_eq!(
+            slide.chart_rids,
+            vec!["rId9".to_string()],
+            "a start/end-form <c:chart> pointer was missed"
+        );
+        assert_eq!(
+            slide.diagram_rids,
+            vec!["rId12".to_string()],
+            "a start/end-form <dgm:relIds> pointer was missed"
+        );
+    }
+
+    /// The self-closing form, which is what real decks use, must be unchanged.
+    #[test]
+    fn the_self_closing_form_still_works() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a" xmlns:c="c" xmlns:r="r">
+ <p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData>
+   <c:chart r:id="rId3"/>
+ </a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"#;
+        let slide = super::parse_slide_for_markdown(xml, &Default::default())
+            .expect("slide must parse");
+        assert_eq!(slide.chart_rids, vec!["rId3".to_string()]);
+    }
 }
