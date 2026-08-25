@@ -303,7 +303,7 @@ fn finalize(accum: SemanticAccum, chunk_index: usize, total_input_blocks: usize)
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
 pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = crate::text_encoding::decode_text(bytes).0;
+    let text = super::common::decode_body(bytes);
 
     // Empty input is not a failure. A blank or whitespace-only document parsed
     // perfectly well; it simply has nothing to chunk, so it returns `[]` like

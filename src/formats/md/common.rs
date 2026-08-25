@@ -4,6 +4,42 @@
 pub use crate::shared::{has_keyword_overlap, split_at_sentences, tokenize_keywords};
 
 /// Classify prose length into a ContentType variant.
+/// Decode a `.md` document and strip its YAML front matter.
+///
+/// Front matter is metadata for a site generator, not body text, and leaving it
+/// in did two things. It became chunk 1 verbatim — every Fumadocs/Hugo page
+/// opened with `title: …\ndraft: false` — and, worse, the closing `---` read as
+/// a **setext underline**, promoting the last front-matter line to a heading.
+/// Measured: `tags: [a, b]` was classified `heading`, so a page's section
+/// structure began with a YAML key.
+///
+/// Only a fence at the very start counts, and only `---`; a `---` later in the
+/// document is a horizontal rule or a setext underline and must stay one. An
+/// unterminated fence is left alone rather than swallowing the whole document.
+pub(super) fn decode_body(bytes: &[u8]) -> String {
+    let text = crate::text_encoding::decode_text(bytes).0;
+    strip_front_matter(&text).to_string()
+}
+
+/// The body with any leading YAML front-matter block removed.
+pub(super) fn strip_front_matter(text: &str) -> &str {
+    let rest = match text.strip_prefix("---\n") {
+        Some(r) => r,
+        None => return text,
+    };
+    // The close is a line that is exactly `---`.
+    let mut offset = 0usize;
+    for line in rest.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        offset += line.len();
+        if trimmed == "---" {
+            return rest[offset..].trim_start_matches(['\r', '\n']);
+        }
+    }
+    // No closing fence: this is not front matter.
+    text
+}
+
 pub fn classify_prose(text: &str) -> ContentType {
     if text.len() > 900 {
         ContentType::LongSingleParagraph

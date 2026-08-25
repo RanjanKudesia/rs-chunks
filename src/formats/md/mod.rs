@@ -163,7 +163,7 @@ pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
     // Markdown has no in-band encoding declaration, so unlike HTML there is
     // nothing extra to consult — it is exactly the `.txt` ladder: BOM, UTF-16
     // sniff, valid UTF-8, then cp1252. Never a hard error, never U+FFFD.
-    Ok(crate::text_encoding::decode_text(bytes).0)
+    Ok(common::decode_body(bytes))
 }
 
 /// Dispatch-layer entry: map a unified [`ChunkOptions`] onto MD's strategies.

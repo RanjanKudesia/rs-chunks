@@ -159,3 +159,53 @@ fn valid_utf8_markdown_is_unaffected() {
         "no .md fixtures exercised — the corpus is missing"
     );
 }
+
+/// YAML front matter is metadata for a site generator, not body text.
+///
+/// Leaving it in did two things: it became chunk 1 verbatim, so every
+/// Fumadocs/Hugo page opened with `title: …`; and the closing `---` read as a
+/// **setext underline**, promoting the last front-matter line to a heading.
+/// Measured before the fix, `tags: [a, b]` was classified `heading` — a page's
+/// section structure began with a YAML key.
+#[test]
+fn yaml_front_matter_is_not_body_text() {
+    let doc = "---\ntitle: My Post\ndraft: false\ntags: [a, b]\n---\n\n               # Real Heading\n\nBody text long enough to be a real paragraph.\n";
+    for mode in ["structural", "section"] {
+        let chunks = md::chunk_from_bytes(doc.as_bytes(), mode, 3, 1, 3, 15)
+            .unwrap_or_else(|e| panic!("[{mode}]: {e}"));
+        let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+        assert!(!joined.contains("draft: false"), "[{mode}] front matter leaked: {joined:?}");
+        assert!(!joined.contains("tags:"), "[{mode}] front matter leaked: {joined:?}");
+        assert!(joined.contains("Real Heading"), "[{mode}] lost the real heading: {joined:?}");
+
+        let first_heading = chunks.iter().find(|c| c.content_type == "heading");
+        assert!(
+            first_heading.is_some_and(|c| c.content.contains("Real Heading")),
+            "[{mode}] the first heading is not the document's: {:?}",
+            first_heading.map(|c| &c.content)
+        );
+    }
+}
+
+/// A `---` that is not a leading fence must keep its meaning: a horizontal rule
+/// or a setext underline. Only a block at the very start is front matter.
+#[test]
+fn a_later_rule_is_not_treated_as_front_matter() {
+    let doc = "# Title\n\nFirst paragraph with enough words in it.\n\n---\n\n               Second paragraph with enough words in it too.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(joined.contains("First paragraph"), "lost content: {joined:?}");
+    assert!(joined.contains("Second paragraph"), "lost content: {joined:?}");
+}
+
+/// An unterminated fence is not front matter and must not swallow the document.
+#[test]
+fn an_unterminated_fence_is_left_alone() {
+    let doc = "---\ntitle: never closed\n\nBody text that must survive intact here.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(
+        joined.contains("Body text that must survive"),
+        "an unterminated fence swallowed the document: {joined:?}"
+    );
+}
