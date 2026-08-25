@@ -227,23 +227,41 @@ fn ordered_list_styles(content_xml: &str) -> std::collections::HashMap<String, b
     out
 }
 
+/// Walk `content.xml` into markdown.
+///
+/// Returns `Err` on malformed XML rather than the prefix parsed so far. A
+/// mid-document syntax error means everything after it is unread and the amount
+/// lost is unknowable, so returning the prefix with `Ok` made a document that
+/// parsed 5% of the way indistinguishable from one that is 5% long. That is the
+/// L14 contract — "structurally invalid raises, nothing-to-chunk returns `[]`" —
+/// applied to ODF.
 pub fn content_to_markdown(
     content_xml: &str,
     kind: OdfKind,
     image_names: &std::collections::HashMap<String, String>,
-) -> (String, usize) {
+) -> Result<(String, usize), String> {
     let mut reader = XmlReader::from_str(content_xml);
     reader.config_mut().trim_text(false);
     let mut w = Walker::new();
     w.list_styles = ordered_list_styles(content_xml);
     w.image_names = image_names.clone();
     let mut buf = Vec::new();
+    // Open-element depth. quick-xml reports EOF, not an error, when input stops
+    // between elements, so a file truncated at an element boundary — the common
+    // real case, a partial download or upload — parsed "successfully" and
+    // returned its prefix. Only a cut landing mid-markup raised. Counting the
+    // depth catches both.
+    let mut depth: i64 = 0;
 
     loop {
+        // Read before the match: the scrutinee holds `reader` mutably borrowed
+        // for the whole match, so an arm cannot ask it where it got to.
+        let pos = reader.buffer_position();
         // Entity references arrive as their own event; fold them back into text.
         let mut spill = String::new();
         match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Start(e)) => {
+                depth += 1;
                 let name = e.name();
                 match local(name.as_ref()) {
                     b"h" => {
@@ -308,6 +326,7 @@ pub fn content_to_markdown(
                 }
             }
             Ok(Event::End(e)) => {
+                depth -= 1;
                 let name = e.name();
                 match local(name.as_ref()) {
                     b"p" | b"h" => w.flush_paragraph(),
@@ -369,8 +388,17 @@ pub fn content_to_markdown(
                     w.push_text(&txt);
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break, // Malformed XML: stop, keep what we have.
+            Ok(Event::Eof) => {
+                if depth > 0 {
+                    return Err(format!(
+                        "ODF content.xml ends with {depth} unclosed element(s) \
+                         at byte {pos}: the document is truncated"
+                    ));
+                }
+                break;
+            }
+            // Was `break`, which kept the prefix and reported success.
+            Err(e) => return Err(format!("ODF content.xml is malformed at byte {pos}: {e}")),
             _ => {}
         }
         buf.clear();
@@ -385,5 +413,5 @@ pub fn content_to_markdown(
     }
 
     let md = w.blocks.join("\n\n");
-    (md.trim().to_string(), w.slide_count)
+    Ok((md.trim().to_string(), w.slide_count))
 }

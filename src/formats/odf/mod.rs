@@ -151,7 +151,8 @@ fn load_bytes(bytes: &[u8], filename: &str) -> Result<Loaded> {
     let kind = kind_for(filename)?;
     let container = load_container(bytes, kind).map_err(ChunkError::Parse)?;
     let (markdown, slide_count) =
-        content_to_markdown(&container.content_xml, kind, &container.image_names);
+        content_to_markdown(&container.content_xml, kind, &container.image_names)
+            .map_err(ChunkError::Parse)?;
     let (title, creator) = container
         .meta_xml
         .as_deref()
