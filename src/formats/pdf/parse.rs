@@ -36,9 +36,17 @@ pub(crate) struct Parsed {
     /// non-empty is not the same question as the PDF having text.
     pub has_text: bool,
     /// Images present on a page but left out of `images`, with the reason.
-    /// Populated for diagnostics; no current consumer reads it.
-    #[allow(dead_code)]
+    ///
+    /// Read by the diagnosis in `mod.rs`: a text-less PDF whose images were all
+    /// undecodable is a different problem from a scan, and the caller can only
+    /// act on the difference if it is stated.
     pub skipped: Vec<String>,
+    /// The document declares an `/Encrypt` dictionary.
+    ///
+    /// The single most common real-world failure, and it used to surface as
+    /// "scanned or image-only… pass list_images" — a wrong cause with a remedy
+    /// that cannot work, since rendering an encrypted page fails too.
+    pub encrypted: bool,
 }
 
 struct PageLayout {
@@ -214,6 +222,11 @@ impl Reader {
     pub fn take_skipped(&mut self) -> Vec<String> {
         std::mem::take(&mut self.skipped)
     }
+
+    /// Whether the document carries an `/Encrypt` dictionary.
+    pub fn is_encrypted(&self) -> bool {
+        self.document.is_encrypted()
+    }
 }
 
 pub(crate) fn parse(bytes: &[u8], want_images: bool, headings: Headings) -> Result<Parsed, String> {
@@ -241,6 +254,7 @@ pub(crate) fn parse(bytes: &[u8], want_images: bool, headings: Headings) -> Resu
         images,
         total_pages,
         has_text: reader.has_text(),
+        encrypted: reader.is_encrypted(),
         skipped: reader.take_skipped(),
     })
 }

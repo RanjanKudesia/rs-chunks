@@ -126,7 +126,6 @@ fn column_labels_never_overflow_or_underflow() {
     assert_eq!(absurd, MAX_SHEET_COLS, "must be the out-of-grid sentinel");
 }
 
-
 /// A PDF decompression bomb must be refused, not allocated.
 ///
 /// `inflate` read into an unbounded `Vec`, so a few KB of Flate could expand
@@ -142,8 +141,7 @@ fn a_flate_bomb_does_not_exhaust_memory() {
     // 1 GiB of zeros compresses to about a megabyte and expands 1000x past it.
     let bomb = {
         use std::io::Write;
-        let mut enc =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
         let zeros = vec![0u8; 1 << 20];
         for _ in 0..1024 {
             enc.write_all(&zeros).expect("compress");
@@ -154,7 +152,9 @@ fn a_flate_bomb_does_not_exhaust_memory() {
     let mut pdf = Vec::new();
     pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image ");
     pdf.extend_from_slice(b"/Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 ");
-    pdf.extend_from_slice(format!("/Filter /FlateDecode /Length {} >>\nstream\n", bomb.len()).as_bytes());
+    pdf.extend_from_slice(
+        format!("/Filter /FlateDecode /Length {} >>\nstream\n", bomb.len()).as_bytes(),
+    );
     pdf.extend_from_slice(&bomb);
     pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
 

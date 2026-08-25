@@ -136,13 +136,49 @@ fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Lo
             images = page_render::render_pages(bytes)?;
         }
         if images.is_empty() {
-            return Err(ChunkError::Parse(format!(
-                "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
-                parsed.total_pages
-            )));
+            // Name the actual cause. "scanned or image-only" was returned for
+            // *any* `has_text == false`, so an encrypted PDF — the commonest
+            // real-world failure — got a wrong diagnosis and a remedy that
+            // cannot work, since rendering its pages fails for the same reason.
+            // The evidence to tell these apart was already being collected and
+            // then discarded (TECH_DEBT F8).
+            return Err(ChunkError::Parse(if parsed.encrypted {
+                format!(
+                    "PDF is encrypted ({} page(s)); its text and images cannot be read without the password. This is not a scanned document — passing list_images will not help.",
+                    parsed.total_pages
+                )
+            } else if !parsed.skipped.is_empty() {
+                format!(
+                    "PDF contains no extractable text ({} page(s)), and {} image(s) could not be decoded: {}. This is not a plain scan — the page content is present but in a form this build cannot read.",
+                    parsed.total_pages,
+                    parsed.skipped.len(),
+                    preview(&parsed.skipped)
+                )
+            } else {
+                format!(
+                    "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
+                    parsed.total_pages
+                )
+            }));
         }
     }
     Ok(pdf_loaded(markdown, images, parsed.total_pages))
+}
+
+/// First few reasons, so a 500-image document does not produce a 500-line error.
+fn preview(reasons: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let head = reasons
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reasons.len() > SHOWN {
+        format!("{head}; and {} more", reasons.len() - SHOWN)
+    } else {
+        head
+    }
 }
 
 fn read(file_path: &str) -> Result<Vec<u8>> {
