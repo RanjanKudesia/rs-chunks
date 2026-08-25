@@ -38,8 +38,25 @@ fn decode_utf16le(body: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-fn decode_latin1(body: &[u8]) -> String {
-    body.iter().map(|&b| b as char).collect()
+/// Decode a `TextBytesAtom` body, whose bytes are in the ANSI code page.
+///
+/// This was `b as char` — raw Latin-1 — which is wrong for exactly the range
+/// that matters. cp1252 puts the typographic punctuation PowerPoint's
+/// autocorrect emits at 0x80-0x9F, where Latin-1 has C1 control characters, so
+/// `split_runs`'s `!c.is_control()` filter then **deleted** them. Measured:
+///
+///   don\x92t "\x93quote\x94" dash\x97here  ->  "dont quote dashhere"
+///
+/// Curly apostrophes, curly quotes and em dashes vanished mid-word, silently.
+/// That is corrupted text rather than missing text, and it is the commonest
+/// punctuation in real decks.
+///
+/// cp1252 is the Western default and the same assumption `.doc` makes
+/// (`piece_table::cp1252_to_char`); a deck authored in a Cyrillic or Greek
+/// locale still mojibakes, which is a shared, documented limitation rather than
+/// a new one.
+fn decode_ansi(body: &[u8]) -> String {
+    encoding_rs::WINDOWS_1252.decode(body).0.into_owned()
 }
 
 /// Split a raw PowerPoint text run into clean paragraphs. `\r` (0x0D) ends a
@@ -303,7 +320,7 @@ fn parse_slwt_children(data: &[u8], start: usize, end: usize, slides: &mut Vec<V
                 txtype: cur_txtype,
             }),
             RT_TEXT_BYTES_ATOM => runs.push(Run {
-                text: decode_latin1(body),
+                text: decode_ansi(body),
                 txtype: cur_txtype,
             }),
             _ => {}
@@ -375,7 +392,7 @@ fn collect_text_strings_at(
         let body = &data[hdr.body_start..hdr.body_end];
         match hdr.rec_type {
             RT_TEXT_CHARS_ATOM => out.push(decode_utf16le(body)),
-            RT_TEXT_BYTES_ATOM => out.push(decode_latin1(body)),
+            RT_TEXT_BYTES_ATOM => out.push(decode_ansi(body)),
             _ => {
                 if hdr.rec_ver == REC_VER_CONTAINER
                     && depth < crate::formats::odraw::MAX_RECORD_DEPTH
@@ -385,5 +402,42 @@ fn collect_text_strings_at(
             }
         }
         pos = next;
+    }
+}
+
+
+#[cfg(test)]
+mod ansi_tests {
+    /// `TextBytesAtom` bytes are the ANSI code page, not Latin-1.
+    ///
+    /// Decoding them as Latin-1 put PowerPoint's autocorrect punctuation into
+    /// the C1 control range, and `split_runs` deletes control characters — so
+    /// the glyphs were removed mid-word with no trace. "don\x92t" came out
+    /// "dont".
+    #[test]
+    fn curly_punctuation_survives_instead_of_being_deleted() {
+        let raw = b"don\x92t \x93quote\x94 dash\x97here \x85ellipsis";
+        let runs = super::split_runs(&super::decode_ansi(raw));
+        let text = runs.join(" ");
+        assert!(text.contains("don\u{2019}t"), "apostrophe lost: {text:?}");
+        assert!(
+            text.contains("\u{201C}quote\u{201D}"),
+            "curly quotes lost: {text:?}"
+        );
+        assert!(text.contains("dash\u{2014}here"), "em dash lost: {text:?}");
+        assert!(text.contains("\u{2026}ellipsis"), "ellipsis lost: {text:?}");
+        assert!(
+            !text.contains("dont"),
+            "the deleted-glyph shape is back: {text:?}"
+        );
+    }
+
+    /// Plain ASCII must be byte-identical to before — that is what keeps this
+    /// from moving any real fixture.
+    #[test]
+    fn ascii_is_unchanged() {
+        let raw = b"Plain ASCII text\rSecond paragraph here";
+        let runs = super::split_runs(&super::decode_ansi(raw));
+        assert_eq!(runs, vec!["Plain ASCII text", "Second paragraph here"]);
     }
 }
