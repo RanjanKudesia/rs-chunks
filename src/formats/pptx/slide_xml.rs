@@ -242,12 +242,20 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                         tc_cell_paras.clear();
                     }
                     b"tr" if in_tbl => {
-                        let row = table_row_cells
-                            .iter()
-                            .filter(|c| !c.trim().is_empty())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" | ");
+                        // A blank cell is a POSITION, not noise. Filtering them
+                        // shifted every column right of the gap one place left,
+                        // so the value ended up under the wrong header.
+                        // Measured on oxml_03_2006Calendar_TP10081921.potx:
+                        // February 2006 starts on a Wednesday, and `get_chunks`
+                        // filed the 1st under SUNDAY while `get_markdown` — which
+                        // keeps blanks — had it right. Plausible, wrong, and
+                        // undetectable downstream.
+                        //
+                        // An all-blank row is still dropped: that is a spacer,
+                        // and emitting `|  |  |  |` would put noise in every
+                        // retrieval chunk. One deliberate divergence from the
+                        // markdown surface, which renders it.
+                        let row = table_row_cells.join(" | ");
                         if !row.trim().is_empty() {
                             table_all_rows.push(row);
                         }
