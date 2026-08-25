@@ -72,3 +72,31 @@ fn a_genuine_scan_still_gets_the_scan_message() {
     // test's business. It asserts only that none of them is misreported.
     let _ = seen;
 }
+
+/// The batch and streaming entry points must give the SAME diagnosis.
+///
+/// F8 branched the error three ways in `mod.rs` but `stream.rs` kept its own
+/// copy of the old message — so the same encrypted file was reported as
+/// encrypted in six modes and as "scanned or image-only" in `default`, which
+/// routes through the incremental backend. One document, two answers.
+#[test]
+fn streaming_and_batch_agree_on_the_diagnosis() {
+    let p = malformed("derived_encrypted.pdf");
+    let path = p.to_str().unwrap();
+
+    let batch = chunks_rs::formats::pdf::chunk(path, "structural", 3, 1, 3, 15)
+        .expect_err("batch must error")
+        .to_string();
+
+    let streamed = chunks_rs::formats::pdf::stream(path, "default", 3, 1, 3, 15)
+        .expect("opening a stream must not fail")
+        .find_map(|item| item.err())
+        .expect("the stream must surface the error")
+        .to_string();
+
+    assert!(
+        batch.contains("encrypted") && streamed.contains("encrypted"),
+        "batch and stream disagree:\n  batch:  {batch}\n  stream: {streamed}"
+    );
+    assert_eq!(batch, streamed, "the two entry points must word it identically");
+}

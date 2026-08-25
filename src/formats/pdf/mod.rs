@@ -142,24 +142,7 @@ fn load(bytes: &[u8], want_images: bool, headings: parse::Headings) -> Result<Lo
             // cannot work, since rendering its pages fails for the same reason.
             // The evidence to tell these apart was already being collected and
             // then discarded (TECH_DEBT F8).
-            return Err(ChunkError::Parse(if parsed.encrypted {
-                format!(
-                    "PDF is encrypted ({} page(s)); its text and images cannot be read without the password. This is not a scanned document — passing list_images will not help.",
-                    parsed.total_pages
-                )
-            } else if !parsed.skipped.is_empty() {
-                format!(
-                    "PDF contains no extractable text ({} page(s)), and {} image(s) could not be decoded: {}. This is not a plain scan — the page content is present but in a form this build cannot read.",
-                    parsed.total_pages,
-                    parsed.skipped.len(),
-                    preview(&parsed.skipped)
-                )
-            } else {
-                format!(
-                    "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
-                    parsed.total_pages
-                )
-            }));
+            return Err(diagnose(parsed.total_pages, parsed.encrypted, &parsed.skipped));
         }
     }
     Ok(pdf_loaded(markdown, images, parsed.total_pages))
@@ -179,6 +162,35 @@ fn preview(reasons: &[String]) -> String {
     } else {
         head
     }
+}
+
+/// Say what actually stopped us, given a document with no extractable text.
+///
+/// Shared so the batch and streaming entry points cannot drift: F8 landed this
+/// on `load()` only, and `stream.rs` kept its own copy — so the same encrypted
+/// file was reported as encrypted in six modes and as a scan in `default`.
+/// One document, two answers, which is the shape F6 fixed for markdown.
+pub(super) fn diagnose(
+    total_pages: usize,
+    encrypted: bool,
+    skipped: &[String],
+) -> ChunkError {
+    ChunkError::Parse(if encrypted {
+        format!(
+            "PDF is encrypted ({total_pages} page(s)); its text and images cannot be read without the password. This is not a scanned document — passing list_images will not help."
+        )
+    } else if !skipped.is_empty() {
+        format!(
+            "PDF contains no extractable text ({} page(s)), and {} image(s) could not be decoded: {}. This is not a plain scan — the page content is present but in a form this build cannot read.",
+            total_pages,
+            skipped.len(),
+            preview(skipped)
+        )
+    } else {
+        format!(
+            "PDF contains no extractable text ({total_pages} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page."
+        )
+    })
 }
 
 fn read(file_path: &str) -> Result<Vec<u8>> {

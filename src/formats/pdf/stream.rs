@@ -222,10 +222,16 @@ impl Incremental {
                         // stream that just ended would hide a scanned PDF.
                         // Nothing has been emitted, so this is still the first
                         // and only item the caller sees.
-                        return Some(Err(ChunkError::Parse(format!(
-                            "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
-                            self.total_pages
-                        ))));
+                        // Same diagnosis as the batch path, from the same
+                        // function — this used to be a second copy of the
+                        // "scanned or image-only" message, so an encrypted PDF
+                        // was reported as encrypted in six modes and as a scan
+                        // in `default`.
+                        return Some(Err(super::diagnose(
+                            self.total_pages,
+                            self.reader.is_encrypted(),
+                            &self.reader.take_skipped(),
+                        )));
                     }
                     self.drain(true);
                 }
