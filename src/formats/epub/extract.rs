@@ -41,6 +41,11 @@ fn doc_metadata(pkg: &EpubPackage) -> serde_json::Value {
         "identifier": pkg.identifier,
         "epub_version": pkg.version,
         "spine_count": pkg.spine.len(),
+        // `spine_count` keeps its meaning — items actually read — and this
+        // says what is missing, so `spine_count + skipped_spine_items.len()`
+        // is the declared length. Deliberately not a second count field:
+        // two different counts under one name is the trap.
+        "skipped_spine_items": pkg.skipped_spine_items,
         // Plural forms carry EVERY value. The singular fields above keep the
         // first, so existing consumers are unaffected. (#38)
         "creators": pkg.creators,

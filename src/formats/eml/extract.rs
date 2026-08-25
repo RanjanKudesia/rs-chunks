@@ -125,20 +125,34 @@ fn image_ext(mime: Option<&str>) -> &'static str {
 
 /// Parse a single RFC822 message (bytes) into an `EmlDocument`. Best-effort:
 /// even a mostly-malformed message yields whatever headers/body parsed.
-pub fn parse_message_bytes(raw: &[u8]) -> EmlDocument {
+///
+/// `Err` means the message could not be parsed at all — distinct from a message
+/// that parsed and is simply empty. Both used to come back as
+/// `EmlDocument::default()`, so "this message is empty" and "we lost this
+/// message" were the same answer, and in an mbox the loss showed only as a
+/// blank `## Message N` (TECH_DEBT F7).
+pub fn parse_message_bytes(raw: &[u8]) -> std::result::Result<EmlDocument, String> {
     // `mail-parser` can panic on some adversarial MIME structures (e.g. an
     // invalid multipart part-id). Under PyO3 that panic was caught at the
     // boundary; as a native library we must contain it ourselves so a single
-    // malformed message never aborts the host. Falls back to an empty doc.
+    // malformed message never aborts the host. The guard stays — only what it
+    // produces on failure changes.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match MessageParser::default().parse(raw) {
             // `mail-parser` parses parts lazily, so part access inside
             // `document_from_message` can also panic — keep it inside the guard.
-            Some(msg) => document_from_message(&msg),
-            None => EmlDocument::default(),
+            Some(msg) => Ok(document_from_message(&msg)),
+            None => Err("not a parseable RFC822 message".to_string()),
         }
     }));
-    result.unwrap_or_default()
+    result.unwrap_or_else(|payload| {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        Err(format!("internal parser panic: {what}"))
+    })
 }
 
 /// Attachment text worth inlining, or `None`.

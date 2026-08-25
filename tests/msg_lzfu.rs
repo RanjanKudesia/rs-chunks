@@ -102,7 +102,9 @@ fn the_largest_fixture_cycles_the_dictionary() {
 #[test]
 fn compressed_rtf_becomes_readable_text() {
     let compressed = compressed_stream("tika_testMSG.msg");
-    let text = compressed_rtf_to_text(&compressed).expect("no text recovered");
+    let text = compressed_rtf_to_text(&compressed)
+        .expect("decode failed")
+        .expect("no text recovered");
     assert!(!text.trim().is_empty(), "recovered no text at all");
     assert!(
         !text.contains("\\rtf") && !text.contains("\\par"),
@@ -116,7 +118,9 @@ fn compressed_rtf_becomes_readable_text() {
 #[test]
 fn a_non_latin_codepage_survives() {
     let compressed = compressed_stream("tika_testMSG_chinese.msg");
-    let text = compressed_rtf_to_text(&compressed).expect("no text recovered");
+    let text = compressed_rtf_to_text(&compressed)
+        .expect("decode failed")
+        .expect("no text recovered");
     assert!(
         !text.contains('\u{FFFD}'),
         "replacement characters in the decoded body"

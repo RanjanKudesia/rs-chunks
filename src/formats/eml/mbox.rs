@@ -92,14 +92,25 @@ pub struct MboxMessageInfo {
     pub references: Vec<String>,
 }
 
-pub fn mbox_to_markdown(
-    raw: &[u8],
-) -> (
-    String,
-    crate::chunk::ExtractedImages,
-    usize,
-    Vec<MboxMessageInfo>,
-) {
+/// What one mbox yielded. A struct rather than a fifth tuple element: the
+/// return was already four anonymous values, and `skipped` only means anything
+/// next to `count`.
+pub struct MboxLoad {
+    pub markdown: String,
+    pub images: crate::chunk::ExtractedImages,
+    /// Messages the splitter found — unchanged by any parse failure below.
+    pub count: usize,
+    pub infos: Vec<MboxMessageInfo>,
+    /// Messages that could not be parsed, as `"message {n}: {reason}"`.
+    ///
+    /// Always present, empty when nothing was lost. One unparseable message
+    /// must not lose a 5,000-message mailbox, but the gap it leaves in the
+    /// `## Message N` numbering has to be explained rather than left as a blank
+    /// heading. Same contract as xlsx's `skipped_sheets` (#66).
+    pub skipped: Vec<String>,
+}
+
+pub fn mbox_to_markdown(raw: &[u8]) -> MboxLoad {
     let messages = split_mbox(raw);
     let count = messages.len();
     let mut out = String::new();
@@ -111,8 +122,15 @@ pub fn mbox_to_markdown(
     ));
 
     let mut infos: Vec<MboxMessageInfo> = Vec::with_capacity(count);
+    let mut skipped: Vec<String> = Vec::new();
     for (i, msg_bytes) in messages.iter().enumerate() {
-        let doc = parse_message_bytes(msg_bytes);
+        let doc = match parse_message_bytes(msg_bytes) {
+            Ok(doc) => doc,
+            Err(e) => {
+                skipped.push(format!("message {}: {e}", i + 1));
+                continue;
+            }
+        };
         infos.push(MboxMessageInfo {
             index: i + 1,
             subject: doc.subject.clone(),
@@ -131,5 +149,11 @@ pub fn mbox_to_markdown(
         }
     }
 
-    (out.trim().to_string(), images, count, infos)
+    MboxLoad {
+        markdown: out.trim().to_string(),
+        images,
+        count,
+        infos,
+        skipped,
+    }
 }

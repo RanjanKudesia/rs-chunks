@@ -121,19 +121,28 @@ pub fn to_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
 
 fn load_bytes(raw: &[u8], file_path: &str) -> Result<(Loaded, Vec<MboxMessageInfo>)> {
     if file_path.to_ascii_lowercase().ends_with(".mbox") {
-        let (markdown, images, count, infos) = mbox_to_markdown(raw);
-        let metadata = serde_json::json!({ "source_type": "mbox", "message_count": count });
+        let load = mbox_to_markdown(raw);
+        // `message_count` keeps its meaning — messages the splitter found — and
+        // `skipped_messages` explains any gap in the `## Message N` numbering.
+        let metadata = serde_json::json!({
+            "source_type": "mbox",
+            "message_count": load.count,
+            "skipped_messages": load.skipped,
+        });
         Ok((
             Loaded {
-                markdown,
-                images,
+                markdown: load.markdown,
+                images: load.images,
                 metadata,
                 records: None,
             },
-            infos,
+            load.infos,
         ))
     } else {
-        let doc = parse_message_bytes(raw);
+        // A single `.eml` has no unit to isolate: if the message did not parse,
+        // there is no document. Propagate, per T6's rule that structurally
+        // invalid raises while nothing-to-chunk returns `[]`.
+        let doc = parse_message_bytes(raw).map_err(ChunkError::Parse)?;
         let markdown = document_to_markdown(&doc, 1);
         let metadata = serde_json::json!({
             "source_type": "eml",

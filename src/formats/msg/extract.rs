@@ -370,9 +370,14 @@ fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut MsgDocument) {
+fn read_attachments(
+    cfb: &mut Cfb<'_>,
+    codepage: u32,
+    depth: usize,
+    doc: &mut MsgDocument,
+) -> std::result::Result<(), String> {
     if depth > 3 {
-        return; // guard against pathological nesting
+        return Ok(()); // guard against pathological nesting
     }
     let storages = child_storages(cfb, "/", "__attach_version1.0");
     for st in storages {
@@ -389,7 +394,7 @@ fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut Ms
         let method = read_u32_prop(cfb, &prefix, PID_ATTACH_METHOD, 24).unwrap_or(0);
         if method == 5 {
             let embed_prefix = format!("{prefix}/__substg1.0_{PID_ATTACH_DATA:04X}000D");
-            if let Some(sub) = extract_embedded(cfb, &embed_prefix, depth + 1) {
+            if let Some(sub) = extract_embedded(cfb, &embed_prefix, depth + 1)? {
                 let mut parts = Vec::new();
                 if let Some(s) = &sub.subject {
                     parts.push(s.clone());
@@ -428,25 +433,30 @@ fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut Ms
         }
         doc.attachments.push(att);
     }
+    Ok(())
 }
 
 /// Minimal recursive extraction of an embedded message sub-storage (subject +
 /// body only — enough to inline attachment content).
-fn extract_embedded(cfb: &mut Cfb<'_>, prefix: &str, depth: usize) -> Option<MsgDocument> {
+fn extract_embedded(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    depth: usize,
+) -> std::result::Result<Option<MsgDocument>, String> {
     if depth > 3 {
-        return None;
+        return Ok(None);
     }
     let codepage = read_u32_prop(cfb, prefix, PID_CODEPAGE, 24).unwrap_or(1252);
     let subject = read_string(cfb, prefix, PID_SUBJECT, codepage);
-    let body = read_body(cfb, prefix, codepage);
+    let body = read_body(cfb, prefix, codepage)?;
     if subject.is_none() && body.is_none() {
-        return None;
+        return Ok(None);
     }
-    Some(MsgDocument {
+    Ok(Some(MsgDocument {
         subject,
         body,
         ..Default::default()
-    })
+    }))
 }
 
 // ── Body (HTML → plain → RTF) ─────────────────────────────────────────────────
@@ -466,11 +476,18 @@ fn html_to_text(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn read_body(cfb: &mut Cfb<'_>, prefix: &str, codepage: u32) -> Option<String> {
+/// `Err` means a body stream is present and unreadable — distinct from a
+/// message that legitimately has no body (contacts, sticky notes), which stays
+/// `Ok(None)`.
+fn read_body(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    codepage: u32,
+) -> std::result::Result<Option<String>, String> {
     // 1) Plain body — cleanest for chunking, present in almost all messages.
     if let Some(b) = read_string(cfb, prefix, PID_BODY, codepage) {
         if !b.trim().is_empty() {
-            return Some(b);
+            return Ok(Some(b));
         }
     }
     // 2) HTML body → text.
@@ -478,22 +495,22 @@ fn read_body(cfb: &mut Cfb<'_>, prefix: &str, codepage: u32) -> Option<String> {
         let (html, _, _) = encoding_for_codepage(codepage).decode(&bytes);
         let text = html_to_text(&html);
         if !text.trim().is_empty() {
-            return Some(text);
+            return Ok(Some(text));
         }
     }
     if let Some(html) = read_string(cfb, prefix, PID_HTML, codepage) {
         let text = html_to_text(&html);
         if !text.trim().is_empty() {
-            return Some(text);
+            return Ok(Some(text));
         }
     }
     // 3) Compressed RTF → text (LZFu, then the engine's own RTF reader).
     if let Some(bytes) = read_binary(cfb, prefix, PID_RTF_COMPRESSED) {
-        if let Some(text) = compressed_rtf_to_text(&bytes) {
-            return Some(text);
+        if let Some(text) = compressed_rtf_to_text(&bytes)? {
+            return Ok(Some(text));
         }
     }
-    None
+    Ok(None)
 }
 
 fn importance_label(v: u32) -> &'static str {
@@ -614,7 +631,7 @@ pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
         received_date: read_date(&mut cfb, PID_MESSAGE_DELIVERY_TIME),
         importance: read_u32_prop(&mut cfb, "", PID_IMPORTANCE, 32)
             .map(|v| importance_label(v).to_string()),
-        body: read_body(&mut cfb, "", codepage),
+        body: read_body(&mut cfb, "", codepage)?,
         ..Default::default()
     };
 
@@ -659,7 +676,7 @@ pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
     let nameid = super::nameid::parse(&mut cfb);
     read_item_fields(&mut cfb, &nameid, codepage, &mut doc);
 
-    read_attachments(&mut cfb, codepage, 0, &mut doc);
+    read_attachments(&mut cfb, codepage, 0, &mut doc)?;
 
     Ok(doc)
 }

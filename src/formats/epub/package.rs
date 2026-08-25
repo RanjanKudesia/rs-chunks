@@ -28,6 +28,15 @@ pub struct EpubDoc {
 
 #[derive(Default)]
 pub struct EpubPackage {
+    /// Spine items the container does not actually hold, in reading order.
+    ///
+    /// A missing zip entry, or an `itemref` whose `idref` has no manifest
+    /// `item`, used to be dropped silently — and `spine_count` then reported
+    /// the shortened list as the book's length, so the loss was not merely
+    /// invisible, it was actively asserted away. Always present, empty when
+    /// nothing was lost, so its absence never has to be interpreted; the same
+    /// contract as xlsx's `skipped_sheets` (#66).
+    pub skipped_spine_items: Vec<String>,
     pub title: Option<String>,
     pub language: Option<String>,
     pub creator: Option<String>,
@@ -361,17 +370,25 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
 
     // ── Resolve spine → ordered XHTML docs; collect images ──
     for idref in &spine_idrefs {
-        if let Some((href, _mt, props)) = manifest.get(idref) {
-            let full = resolve_href(&opf_dir, href);
-            let is_navigation =
-                props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
-            if let Some(bytes) = read_entry(&mut zip, &full) {
-                pkg.spine.push(EpubDoc {
-                    href: full,
-                    bytes,
-                    is_navigation,
-                });
-            }
+        // One dangling href must not lose the book — an 800-chunk EPUB with a
+        // single missing chapter is still overwhelmingly worth returning — but
+        // it must not be invisible either. Isolate and record, like a skipped
+        // sheet.
+        let Some((href, _mt, props)) = manifest.get(idref) else {
+            pkg.skipped_spine_items
+                .push(format!("{idref} (no manifest item)"));
+            continue;
+        };
+        let full = resolve_href(&opf_dir, href);
+        let is_navigation =
+            props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
+        match read_entry(&mut zip, &full) {
+            Some(bytes) => pkg.spine.push(EpubDoc {
+                href: full,
+                bytes,
+                is_navigation,
+            }),
+            None => pkg.skipped_spine_items.push(full),
         }
     }
 
