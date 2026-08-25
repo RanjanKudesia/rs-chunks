@@ -155,13 +155,6 @@ pub(super) fn push_text(dst: &mut String, text: &str) {
 ///
 /// The text is appended verbatim: no trim, no separator. Trimming would eat the
 /// spacing of an entity like `&nbsp;`, and a separator is the bug itself.
-pub(super) fn push_entity_text(dst: &mut String, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    dst.push_str(text);
-}
-
 pub(super) fn attr_local_name(key: &[u8]) -> &[u8] {
     key.rsplit(|b| *b == b':').next().unwrap_or(key)
 }

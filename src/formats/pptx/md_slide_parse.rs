@@ -6,7 +6,7 @@ use quick_xml::events::Event as XmlEvent;
 use quick_xml::Reader as XmlReader;
 
 use super::md_blocks::{
-    attr_local_name, collapse_ws, decode_attr, push_entity_text, push_text, BlockKind, SlideBlock,
+    attr_local_name, collapse_ws, decode_attr, push_text, BlockKind, SlideBlock,
     SlideMarkdownContent,
 };
 
@@ -53,12 +53,13 @@ pub(super) fn parse_slide_for_markdown(
 
     // <a:t> tracking
     let mut in_t = false;
+    // Whole `<a:t>` text, accumulated verbatim and trimmed ONCE at `</a:t>`.
+    let mut t_buf = String::new();
     // True until the first text event of the current <a:t> has been appended.
     // Text inside ONE element must concatenate verbatim — an entity reference
     // splits it into several events, and space-joining them produced `AT & T`
     // from `AT&amp;T` (TECH_DEBT L6). Spacing belongs between elements, not
     // inside one.
-    let mut t_first = true;
 
     // Table tracking
     let mut in_tbl = false;
@@ -72,7 +73,7 @@ pub(super) fn parse_slide_for_markdown(
     let mut in_tc_para = false;
     let mut tc_para_text = String::new();
     let mut in_tc_t = false;
-    let mut tc_t_first = true;
+    let mut tc_t_buf = String::new();
 
     // Shape paragraphs accumulation
     let mut shape_paragraphs: Vec<SlideBlock> = Vec::new();
@@ -196,7 +197,7 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_para && !in_tc_para => {
                         in_t = true;
-                        t_first = true;
+                        t_buf.clear();
                     }
                     b"pic" => {
                         in_pic = true;
@@ -295,7 +296,7 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_tc_para => {
                         in_tc_t = true;
-                        tc_t_first = true;
+                        tc_t_buf.clear();
                     }
                     _ => {}
                 }
@@ -485,42 +486,25 @@ pub(super) fn parse_slide_for_markdown(
                 // event came from a reference. A reference splits one element's
                 // text into several events, so space-joining them turns
                 // `AT&amp;T` into `AT & T` — append verbatim instead (L6).
+                // Accumulate the whole `<a:t>` and trim once at `</a:t>`, the
+                // way `slide_xml` already does. Trimming the FIRST segment and
+                // appending the rest verbatim ate the space before an entity:
+                // `O'Reilly &amp; Associates` came out `O'Reilly& Associates`
+                // in markdown while `get_chunks` had it right. One deck, two
+                // readings.
                 if in_t && in_para && !in_tc_para {
-                    let txt = e.decode().unwrap_or_default().to_string();
-                    let dst = if in_run {
-                        &mut cur_run_text
-                    } else {
-                        &mut para_text
-                    };
-                    if t_first {
-                        push_text(dst, &txt);
-                    } else {
-                        push_entity_text(dst, &txt);
-                    }
-                    t_first = false;
+                    t_buf.push_str(e.decode().unwrap_or_default().as_ref());
                 }
                 if in_tc_t {
-                    let txt = e.decode().unwrap_or_default().to_string();
-                    if tc_t_first {
-                        push_text(&mut tc_para_text, &txt);
-                    } else {
-                        push_entity_text(&mut tc_para_text, &txt);
-                    }
-                    tc_t_first = false;
+                    tc_t_buf.push_str(e.decode().unwrap_or_default().as_ref());
                 }
             }
             Ok(XmlEvent::CData(ref e)) => {
                 if in_t && in_para && !in_tc_para {
-                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
-                    if in_run {
-                        push_text(&mut cur_run_text, &txt);
-                    } else {
-                        push_text(&mut para_text, &txt);
-                    }
+                    t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
                 }
                 if in_tc_t {
-                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
-                    push_text(&mut tc_para_text, &txt);
+                    tc_t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -557,9 +541,18 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_t => {
                         in_t = false;
+                        let txt = std::mem::take(&mut t_buf);
+                        let dst = if in_run {
+                            &mut cur_run_text
+                        } else {
+                            &mut para_text
+                        };
+                        push_text(dst, txt.trim());
                     }
                     b"t" if in_tc_t => {
                         in_tc_t = false;
+                        let txt = std::mem::take(&mut tc_t_buf);
+                        push_text(&mut tc_para_text, txt.trim());
                     }
                     b"pPr" if para_in_ppr => {
                         para_in_ppr = false;

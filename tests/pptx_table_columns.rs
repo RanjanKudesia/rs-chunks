@@ -76,3 +76,33 @@ fn chunk_and_markdown_rows_have_the_same_column_count() {
         "column counts disagree:\n  chunks:   {chunk_row:?}\n  markdown: {md_row:?}"
     );
 }
+
+/// The space before an XML entity must survive on BOTH surfaces.
+///
+/// `md_slide_parse` trimmed the first text event of an `<a:t>` and appended the
+/// entity-spill events verbatim, so `<a:t>O'Reilly &amp; Associates</a:t>`
+/// arrived as `"O'Reilly "`, `"&"`, `" Associates"` and the trailing space of
+/// the first segment was eaten. `slide_xml` buffers the whole element and trims
+/// once, which is right — so the same deck read one way through `get_chunks`
+/// and another through `get_markdown`.
+#[test]
+fn an_entity_keeps_the_space_before_it_on_both_surfaces() {
+    let p = fixture("pptx/poi_2411-Performance_Up.pptx");
+    let path = p.to_str().unwrap();
+
+    let md = chunks_rs::formats::pptx::to_markdown(path).expect("markdown");
+    let chunks = chunks_rs::formats::pptx::chunk(path, "structural", 3, 1, 3, 15).expect("chunks");
+    let chunk_text: String = chunks.iter().map(|c| c.content.as_str()).collect();
+
+    for (surface, body) in [("markdown", &md), ("chunks", &chunk_text)] {
+        assert!(
+            body.contains("O\u{2019}Reilly & Associates"),
+            "{surface}: the space before the entity was eaten: {:?}",
+            body.split("Associates").next().map(|s| &s[s.len().saturating_sub(40)..])
+        );
+        assert!(
+            !body.contains("O\u{2019}Reilly& Associates"),
+            "{surface}: the eaten-space shape is back"
+        );
+    }
+}
