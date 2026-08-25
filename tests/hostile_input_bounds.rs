@@ -125,3 +125,42 @@ fn column_labels_never_overflow_or_underflow() {
     let absurd = col_letter_to_index("AAAAAAAAAAAAAAAAAAAA");
     assert_eq!(absurd, MAX_SHEET_COLS, "must be the out-of-grid sentinel");
 }
+
+
+/// A PDF decompression bomb must be refused, not allocated.
+///
+/// `inflate` read into an unbounded `Vec`, so a few KB of Flate could expand
+/// without limit — and an OOM abort is not a panic, so `catch_unwind` cannot
+/// intercept it and no caller in any language could defend against it.
+///
+/// The cap is absolute rather than a ratio, and that is forced by the data:
+/// DEFLATE's theoretical maximum is 1032:1 and the real corpus contains a
+/// legitimate 1025.6:1 stream (`arxiv_2005.14165_gpt3.pdf`), so any ratio bound
+/// low enough to be useful breaks a genuine file.
+#[test]
+fn a_flate_bomb_does_not_exhaust_memory() {
+    // 1 GiB of zeros compresses to about a megabyte and expands 1000x past it.
+    let bomb = {
+        use std::io::Write;
+        let mut enc =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..1024 {
+            enc.write_all(&zeros).expect("compress");
+        }
+        enc.finish().expect("finish")
+    };
+
+    let mut pdf = Vec::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image ");
+    pdf.extend_from_slice(b"/Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 ");
+    pdf.extend_from_slice(format!("/Filter /FlateDecode /Length {} >>\nstream\n", bomb.len()).as_bytes());
+    pdf.extend_from_slice(&bomb);
+    pdf.extend_from_slice(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+
+    on_small_stack("pdf flate bomb", move || {
+        // Whatever the parse makes of this hand-built object, it must come back
+        // rather than take the process with it.
+        let _ = chunks_rs::get_chunks_from_bytes(&pdf, "bomb.pdf", "default", 3, 1, 3, 15);
+    });
+}

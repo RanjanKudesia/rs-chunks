@@ -86,8 +86,7 @@ mod panic_message_tests {
         let s = std::panic::catch_unwind(|| panic!("static str")).unwrap_err();
         assert_eq!(panic_message(s), "static str");
 
-        let owned =
-            std::panic::catch_unwind(|| panic!("{}", String::from("owned"))).unwrap_err();
+        let owned = std::panic::catch_unwind(|| panic!("{}", String::from("owned"))).unwrap_err();
         assert_eq!(panic_message(owned), "owned");
 
         let odd = std::panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
