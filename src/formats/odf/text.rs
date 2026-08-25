@@ -39,12 +39,74 @@ pub fn decode_entities(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// ODF's grid ceiling for a repeated cell, borrowed from the spreadsheet side
+/// so one attacker-controlled count cannot allocate without bound.
+const MAX_TABLE_COLS: usize = crate::formats::xlsx::common::MAX_SHEET_COLS;
+/// Trailing empty cells past this are grid padding, not authored columns.
+/// A row may legitimately declare `number-columns-repeated="16384"` on its last
+/// empty cell purely to fill the sheet; materialising that is pointless.
+const MAX_TRAILING_EMPTY_COLS: usize = 64;
+
 #[derive(Default)]
 struct TableState {
     rows: Vec<Vec<String>>,
     current_row: Vec<String>,
     in_cell: bool,
     cell_text: String,
+    /// `table:number-columns-repeated` on the cell being read.
+    cell_repeat: usize,
+    /// Empty cells seen but not yet materialised — see `push_cell`.
+    pending_empty: usize,
+}
+
+impl TableState {
+    /// Add a cell, honouring `table:number-columns-repeated`.
+    ///
+    /// Empty cells are deferred rather than pushed: a run of them at the end of
+    /// a row is grid padding, and a declared repeat of 16,384 would otherwise
+    /// build a row no document actually has.
+    fn push_cell(&mut self, cell: String, repeat: usize) {
+        let repeat = repeat.max(1);
+        if cell.is_empty() {
+            self.pending_empty = self.pending_empty.saturating_add(repeat);
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_empty);
+        let room = MAX_TABLE_COLS.saturating_sub(self.current_row.len());
+        for _ in 0..pending.min(room) {
+            self.current_row.push(String::new());
+        }
+        let room = MAX_TABLE_COLS.saturating_sub(self.current_row.len());
+        for _ in 0..repeat.min(room) {
+            self.current_row.push(cell.clone());
+        }
+    }
+
+    /// Close a row, keeping authored trailing columns and dropping padding.
+    ///
+    /// `pending_empty > 0` means the row HAD cells, they were merely empty — so
+    /// they are materialised even when nothing non-empty followed. Dropping the
+    /// row in that case made a table of entirely empty cells disappear:
+    /// caught on `odftoolkit_simple-table.odt`, one row, one empty cell,
+    /// n 1 -> 0.
+    fn end_row(&mut self) {
+        let pad = std::mem::take(&mut self.pending_empty).min(MAX_TRAILING_EMPTY_COLS);
+        let room = MAX_TABLE_COLS.saturating_sub(self.current_row.len());
+        for _ in 0..pad.min(room) {
+            self.current_row.push(String::new());
+        }
+        if !self.current_row.is_empty() {
+            self.rows.push(std::mem::take(&mut self.current_row));
+        }
+    }
+}
+
+/// `table:number-columns-repeated` on a cell element, clamped.
+fn cell_repeat(e: &quick_xml::events::BytesStart) -> usize {
+    attr(e, b"table:number-columns-repeated")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, MAX_TABLE_COLS)
 }
 
 struct Walker {
@@ -61,7 +123,15 @@ struct Walker {
     image_names: std::collections::HashMap<String, String>,
     /// `<text:list-style>` name -> numbers its items.
     list_styles: std::collections::HashMap<String, bool>,
-    table: Option<TableState>,
+    /// Open tables, innermost last.
+    ///
+    /// Was `Option<TableState>`: a nested `table:table` OVERWROTE the outer
+    /// one, so the outer table's completed rows were dropped, the inner table
+    /// was emitted as a top-level block outside its parent cell, and every
+    /// remaining outer cell leaked into body text because `table` was then
+    /// `None`. A stack flattens the inner table into its parent cell instead,
+    /// which is what docx already does (`docx/table_render.rs`).
+    tables: Vec<TableState>,
     // Footnotes collected for a trailing "## Notes" section.
     notes: Vec<String>,
     in_note_body: bool,
@@ -101,7 +171,7 @@ impl Walker {
             pending_frame_name: None,
             image_names: std::collections::HashMap::new(),
             list_styles: std::collections::HashMap::new(),
-            table: None,
+            tables: Vec::new(),
             notes: Vec::new(),
             in_note_body: false,
             note_buf: String::new(),
@@ -115,7 +185,7 @@ impl Walker {
     fn push_text(&mut self, s: &str) {
         if self.in_note_body {
             self.note_buf.push_str(s);
-        } else if let Some(t) = self.table.as_mut().filter(|t| t.in_cell) {
+        } else if let Some(t) = self.tables.last_mut().filter(|t| t.in_cell) {
             t.cell_text.push_str(s);
         } else if self.in_pres_notes {
             self.slide_notes.push_str(s);
@@ -146,13 +216,31 @@ impl Walker {
     }
 
     fn flush_table(&mut self) {
-        let Some(mut t) = self.table.take() else {
+        // `pop`, not `take`: an unbalanced `</table:table>` is then a no-op
+        // rather than clobbering an outer table.
+        let Some(mut t) = self.tables.pop() else {
             return;
         };
-        if !t.current_row.is_empty() {
-            t.rows.push(std::mem::take(&mut t.current_row));
-        }
+        t.end_row();
         if t.rows.is_empty() {
+            return;
+        }
+        // A nested table belongs INSIDE its parent's cell, flattened, which is
+        // the rule docx already applies (`render_table_inline`). Replacing the
+        // parent lost its rows and leaked the remainder into body text.
+        if let Some(parent) = self.tables.last_mut() {
+            let inline = t
+                .rows
+                .iter()
+                .map(|r| r.join(" | "))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !inline.is_empty() {
+                if !parent.cell_text.is_empty() && !parent.cell_text.ends_with(' ') {
+                    parent.cell_text.push(' ');
+                }
+                parent.cell_text.push_str(&inline);
+            }
             return;
         }
         let cols = t.rows.iter().map(|r| r.len()).max().unwrap_or(0);
@@ -303,16 +391,17 @@ pub fn content_to_markdown(
                         w.ordered_stack.push(ordered);
                     }
                     b"list-item" => w.in_list_item = true,
-                    b"table" => w.table = Some(TableState::default()),
+                    b"table" => w.tables.push(TableState::default()),
                     b"table-row" => {
-                        if let Some(t) = w.table.as_mut() {
+                        if let Some(t) = w.tables.last_mut() {
                             t.current_row = Vec::new();
                         }
                     }
-                    b"table-cell" => {
-                        if let Some(t) = w.table.as_mut() {
+                    b"table-cell" | b"covered-table-cell" => {
+                        if let Some(t) = w.tables.last_mut() {
                             t.in_cell = true;
                             t.cell_text.clear();
+                            t.cell_repeat = cell_repeat(&e);
                         }
                     }
                     b"note-body" => w.in_note_body = true,
@@ -347,19 +436,19 @@ pub fn content_to_markdown(
                         }
                     }
                     b"list-item" => w.in_list_item = w.list_depth > 0,
-                    b"table-cell" => {
-                        if let Some(t) = w.table.as_mut() {
+                    b"table-cell" | b"covered-table-cell" => {
+                        if let Some(t) = w.tables.last_mut() {
                             let cell = collapse_ws(&t.cell_text);
-                            t.current_row.push(cell);
+                            let rep = t.cell_repeat;
+                            t.push_cell(cell, rep);
                             t.in_cell = false;
                             t.cell_text.clear();
+                            t.cell_repeat = 1;
                         }
                     }
                     b"table-row" => {
-                        if let Some(t) = w.table.as_mut() {
-                            if !t.current_row.is_empty() {
-                                t.rows.push(std::mem::take(&mut t.current_row));
-                            }
+                        if let Some(t) = w.tables.last_mut() {
+                            t.end_row();
                         }
                     }
                     b"table" => w.flush_table(),
@@ -379,6 +468,18 @@ pub fn content_to_markdown(
             Ok(Event::Empty(e)) => match local(e.name().as_ref()) {
                 b"tab" | b"s" => w.push_text(" "),
                 b"line-break" => w.push_text("\n"),
+                // An empty ODF cell is written `<table:table-cell/>`, which
+                // quick-xml reports as Empty, not Start+End — so it never
+                // reached the cell arms and no cell was pushed at all. Every
+                // later cell in the row then shifted left into the wrong
+                // column. Measured on odftoolkit_Presentation2.odp, where a
+                // 3-column table rendered as one column.
+                b"table-cell" | b"covered-table-cell" => {
+                    if let Some(t) = w.tables.last_mut() {
+                        let rep = cell_repeat(&e);
+                        t.push_cell(String::new(), rep);
+                    }
+                }
                 _ => {}
             },
             Ok(Event::Text(t)) => {
