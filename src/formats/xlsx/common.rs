@@ -237,14 +237,34 @@ pub fn split_content_lines(lines: Vec<String>, max_chunk_chars: usize) -> Vec<Ve
 pub fn cell_to_string(cell: &Data) -> String {
     match cell {
         Data::String(s) => s.clone(),
+        // Excel keeps 15 significant digits and no more; anything past that in
+        // the file is IEEE-754 noise from whatever wrote it (`899.20000000000073`
+        // is what is stored, `899.20` is what Excel shows). So: round to 15
+        // significant digits, then print the shortest decimal that round-trips.
+        //
+        // `{:.4}` did that noise suppression by accident and charged three ways
+        // for it. It picks decimal PLACES where the contract is significant
+        // DIGITS, and places are magnitude-dependent:
+        //   - `3.5E-4` came out `0.0003` — a 14% error
+        //     (poi_NumberFormatTests.xlsx)
+        //   - anything below 5e-5 collapsed to the literal string "0", so a
+        //     satoshi, FX-rate or concentration column rendered as all zeros
+        //   - `as i64` SATURATES in Rust, so any integral value past i64::MAX
+        //     rendered as 9223372036854775807 — Avogadro's number became that
+        // The last two are unexercised by this corpus, so only unit tests can
+        // pin them; the snapshot never will.
         Data::Float(f) => {
-            if f.fract() == 0.0 {
-                format!("{}", *f as i64)
+            let f = *f;
+            if !f.is_finite() {
+                String::new()
+            } else if f.fract() == 0.0 && (f as i64) as f64 == f {
+                // A round-trip guard, not a magnitude guard: take the integer
+                // form only when i64 represents this value exactly, which makes
+                // the saturating cast unreachable.
+                format!("{}", f as i64)
             } else {
-                format!("{:.4}", f)
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                    .to_string()
+                let snapped: f64 = format!("{f:.14e}").parse().unwrap_or(f);
+                format!("{snapped}")
             }
         }
         Data::Int(i) => i.to_string(),
@@ -265,7 +285,10 @@ pub fn cell_to_string(cell: &Data) -> String {
             .unwrap_or_else(|| dt.as_f64().to_string()),
         Data::DateTimeIso(s) => s.clone(),
         Data::DurationIso(s) => s.clone(),
-        Data::Error(_) => String::new(),
+        // A broken cell is not an empty cell. `#REF!` in a chunk is
+        // information; a blank is a lie about what the sheet contains.
+        // poi_46535.xlsx carries 331 of these.
+        Data::Error(e) => format!("{e}"),
         // Data::Empty and any future calamine variant → empty cell.
         _ => String::new(),
     }
@@ -1086,4 +1109,62 @@ pub fn build_row_chunks(
 
     stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
+}
+
+#[cfg(test)]
+mod cell_rendering_tests {
+    use super::cell_to_string;
+    use calamine::Data;
+
+    /// `{:.4}` truncated to four decimal PLACES where the contract is fifteen
+    /// significant DIGITS. Places are magnitude-dependent, so small values lost
+    /// everything: `3.5E-4` came out `0.0003`, a 14% error, and anything below
+    /// 5e-5 collapsed to the literal string "0".
+    #[test]
+    fn small_magnitudes_keep_their_value() {
+        assert_eq!(cell_to_string(&Data::Float(3.5e-4)), "0.00035");
+        assert_eq!(cell_to_string(&Data::Float(1e-8)), "0.00000001");
+        assert_ne!(cell_to_string(&Data::Float(1e-8)), "0");
+    }
+
+    /// Rust's float->int `as` cast SATURATES. Any integral value past i64::MAX
+    /// rendered as 9223372036854775807 — Avogadro's number became that literal.
+    #[test]
+    fn huge_integral_values_do_not_saturate() {
+        let out = cell_to_string(&Data::Float(6.02214076e23));
+        assert_ne!(out, "9223372036854775807", "the cast still saturates");
+        assert!(out.starts_with("602214076"), "unexpected rendering: {out}");
+        assert_ne!(
+            cell_to_string(&Data::Float(1e19)),
+            "9223372036854775807",
+            "the cast still saturates"
+        );
+    }
+
+    /// The half that must not regress: IEEE-754 noise is still suppressed, and
+    /// ordinary values still render cleanly.
+    #[test]
+    fn ieee_noise_is_still_suppressed() {
+        assert_eq!(cell_to_string(&Data::Float(0.18999999999999995)), "0.19");
+        assert_eq!(cell_to_string(&Data::Float(2500.0)), "2500");
+        assert_eq!(cell_to_string(&Data::Float(-0.5)), "-0.5");
+        assert_eq!(cell_to_string(&Data::Float(0.0)), "0");
+    }
+
+    /// A non-finite value has no honest decimal form; an empty cell is closer
+    /// to the truth than "NaN" or "inf" appearing as data.
+    #[test]
+    fn non_finite_values_render_empty() {
+        assert_eq!(cell_to_string(&Data::Float(f64::NAN)), "");
+        assert_eq!(cell_to_string(&Data::Float(f64::INFINITY)), "");
+    }
+
+    /// A broken cell is not an empty cell.
+    #[test]
+    fn error_cells_say_what_they_are() {
+        use calamine::CellErrorType;
+        assert_eq!(cell_to_string(&Data::Error(CellErrorType::Div0)), "#DIV/0!");
+        assert_eq!(cell_to_string(&Data::Error(CellErrorType::Ref)), "#REF!");
+        assert_ne!(cell_to_string(&Data::Error(CellErrorType::NA)), "");
+    }
 }
