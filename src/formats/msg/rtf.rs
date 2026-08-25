@@ -140,3 +140,5 @@ mod tests {
         assert_eq!(LZFU_INIT_DICT.len(), 207);
     }
 }
+
+

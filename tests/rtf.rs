@@ -274,3 +274,51 @@ fn all_modes_all_fixtures_well_formed() {
         }
     }
 }
+
+/// A file that is not RTF must fail, not return its bytes as text.
+///
+/// There was no `{\rtf` check at all, so the reader walked whatever it was
+/// given. Measured: a PNG renamed `.rtf` produced **one chunk of binary noise,
+/// reported as success**. Returning garbage that looks like content is worse
+/// than failing — a caller can handle an error but cannot detect this.
+#[test]
+fn a_file_that_is_not_rtf_is_rejected() {
+    let cases: &[(&str, &[u8])] = &[
+        ("png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR binary data here"),
+        ("jpeg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01 more binary"),
+        ("plain text", b"This is just prose, not a rich text document at all."),
+        ("html", b"<html><body><p>not rtf</p></body></html>"),
+        ("empty", b""),
+    ];
+    for (label, bytes) in cases {
+        let got = chunks_rs::formats::rtf::to_markdown_from_bytes(bytes);
+        let err = got.unwrap_or_else(|_| String::new());
+        assert!(
+            err.is_empty(),
+            "{label}: non-RTF input must not yield text, got {:?}",
+            &err[..err.len().min(60)]
+        );
+    }
+}
+
+/// Real RTF must be unaffected — including the leading BOM and whitespace the
+/// check deliberately tolerates.
+#[test]
+fn real_rtf_still_parses_with_a_bom_or_leading_whitespace() {
+    let body = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Times;}}\f0 Hello there, body text.\par}";
+    let plain = chunks_rs::formats::rtf::to_markdown_from_bytes(body)
+        .expect("plain rtf must parse");
+    assert!(plain.contains("Hello there"), "lost the text: {plain:?}");
+
+    let mut bom = vec![0xEF, 0xBB, 0xBF];
+    bom.extend_from_slice(body);
+    let with_bom =
+        chunks_rs::formats::rtf::to_markdown_from_bytes(&bom).expect("a BOM must be tolerated");
+    assert_eq!(with_bom, plain, "the BOM changed the result");
+
+    let mut ws = b"\n\n   ".to_vec();
+    ws.extend_from_slice(body);
+    let with_ws = chunks_rs::formats::rtf::to_markdown_from_bytes(&ws)
+        .expect("leading whitespace must be tolerated");
+    assert_eq!(with_ws, plain, "leading whitespace changed the result");
+}
