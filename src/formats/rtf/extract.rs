@@ -44,6 +44,12 @@ struct GroupState {
     in_info: bool,
     /// Inside `\listtext` — text is captured as a list marker, not as body.
     in_listtext: bool,
+    /// Inside `\fldinst` — text is captured as a field instruction, not body.
+    in_fldinst: bool,
+    /// A hyperlink target captured from this group's `\fldinst`, to be closed
+    /// when the group ends. On `GroupState` rather than `Ctx` so nested fields
+    /// nest correctly for free.
+    link: Option<String>,
 }
 
 /// Tokenizer state that is not per-group.
@@ -51,6 +57,10 @@ struct Ctx {
     out: Out,
     /// Captured `\listtext` content for the current list item.
     listtext: String,
+    /// Captured `\fldinst` content for the field being read.
+    fldinst: String,
+    /// A hyperlink target read from `\fldinst`, awaiting its `\fldrslt`.
+    pending_link: Option<String>,
     fonts: Fonts,
     heading_styles: HeadingStyles,
     /// Heading level of the paragraph being written, if it is a heading.
@@ -95,10 +105,14 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
         in_upr: false,
         in_info: false,
         in_listtext: false,
+        in_fldinst: false,
+        link: None,
     }];
     let mut ctx = Ctx {
         out: Out::default(),
         listtext: String::new(),
+        fldinst: String::new(),
+        pending_link: None,
         fonts: fonts::parse(bytes, default_enc),
         heading_styles: styles::parse(bytes, default_enc),
         heading_level: None,
@@ -127,6 +141,12 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
                 flush_raw_at_boundary(&mut raw, &top, &mut ctx);
                 if top.in_listtext {
                     end_listtext(&mut ctx);
+                }
+                if top.in_fldinst {
+                    end_fldinst(&mut ctx);
+                }
+                if let Some(url) = &top.link {
+                    ctx.out.close_link(url);
                 }
                 if stack.len() > 1 {
                     stack.pop();
@@ -239,6 +259,8 @@ fn flush_raw(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
     let (decoded, _, _) = top.encoding.decode(raw);
     if top.in_listtext {
         ctx.listtext.push_str(&decoded);
+    } else if top.in_fldinst {
+        ctx.fldinst.push_str(&decoded);
     } else {
         let fmt = ctx.fmt(top);
         ctx.out.push_text(&decoded, fmt);
@@ -259,10 +281,24 @@ fn flush_raw_at_boundary(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
 
 /// Whether text in this group reaches a sink at all.
 fn writable(top: &GroupState) -> bool {
-    !top.skip || top.in_listtext
+    !top.skip || top.in_listtext || top.in_fldinst
 }
 
 /// Close a `\listtext` group: its glyph becomes a markdown marker.
+/// Close a `\fldinst`. `HYPERLINK "target"` yields a link target; any other
+/// field type (PAGE, TOC, REF, …) yields nothing and stays invisible.
+fn end_fldinst(ctx: &mut Ctx) {
+    let inst = std::mem::take(&mut ctx.fldinst);
+    let Some(rest) = inst.trim().strip_prefix("HYPERLINK") else {
+        return;
+    };
+    // Switches may follow (`\l "anchor"`); the target is the first quoted run.
+    let url = rest.trim().trim_matches('"').trim();
+    if !url.is_empty() && !url.starts_with('\\') {
+        ctx.pending_link = Some(url.to_string());
+    }
+}
+
 fn end_listtext(ctx: &mut Ctx) {
     let marker = marker_for(&ctx.listtext);
     ctx.listtext.clear();
@@ -335,7 +371,6 @@ fn handle_control_word(
         | b"pict"
         | b"object"
         | b"nonshppict"
-        | b"fldinst"
         | b"xmlnstbl"
         | b"mmath"
         | b"header"
@@ -359,6 +394,20 @@ fn handle_control_word(
         b"listtext" => {
             stack[top_idx].skip = true;
             stack[top_idx].in_listtext = true;
+        }
+        // The target lives ONLY in `\fldinst`, so capture it instead of
+        // skipping the group: `[text](url)` was losing every url because
+        // `\fldinst` sat in the blanket skip-destination list.
+        b"fldinst" => {
+            stack[top_idx].skip = true;
+            stack[top_idx].in_fldinst = true;
+        }
+        b"fldrslt" if !top.skip => {
+            if let Some(url) = ctx.pending_link.take() {
+                flush_raw(raw, &top, ctx);
+                stack[top_idx].link = Some(url);
+                ctx.out.open_link();
+            }
         }
         // \upr holds an ANSI copy then a Unicode copy of the same content; skip
         // the ANSI copy (this group), and \ud re-enables the Unicode copy.

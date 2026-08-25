@@ -372,3 +372,52 @@ fn an_overlong_bin_count_is_clamped() {
         .expect("an overlong \\bin must not panic");
     assert!(md.contains("BEFORE"), "lost the leading text: {md:?}");
 }
+
+/// A hyperlink's target lives only in `\fldinst`, which sat in the blanket
+/// skip-destination list — so the anchor text survived and every URL was lost.
+/// `tika_testRTFHyperlink.rtf` carries 14 of them.
+#[test]
+fn hyperlink_targets_survive() {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("test_files/rtf/tika_testRTFHyperlink.rtf");
+    assert!(p.is_file(), "required fixture missing: {}", p.display());
+    let md = chunks_rs::formats::rtf::to_markdown(p.to_str().unwrap()).expect("must parse");
+
+    assert!(md.contains("http"), "no URL survived at all: {md:?}");
+    assert!(
+        md.contains("[frequently asked questions](http"),
+        "the anchor text is not linked to its target: {md:?}"
+    );
+    // The label must not be swallowed along with the instruction.
+    assert!(
+        !md.contains("HYPERLINK"),
+        "the field instruction leaked into the text: {md:?}"
+    );
+}
+
+/// A field that is not a HYPERLINK must stay invisible, and an empty result
+/// must not produce `[](url)`.
+#[test]
+fn other_field_types_stay_invisible() {
+    let page = br#"{\rtf1\ansi\deff0 Page {\field{\*\fldinst{PAGE}}{\fldrslt 7}} of 9\par}"#;
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(page).expect("must parse");
+    assert!(md.contains("Page"), "lost the surrounding text: {md:?}");
+    assert!(!md.contains("PAGE"), "the instruction leaked: {md:?}");
+    assert!(
+        !md.contains("]("),
+        "a non-hyperlink field became a link: {md:?}"
+    );
+
+    let empty = br#"{\rtf1\ansi\deff0 See {\field{\*\fldinst{HYPERLINK "http://example.com"}}{\fldrslt }} now\par}"#;
+    let md2 = chunks_rs::formats::rtf::to_markdown_from_bytes(empty).expect("must parse");
+    assert!(
+        !md2.contains("[]("),
+        "an empty result produced an empty label: {md2:?}"
+    );
+    assert!(
+        md2.contains("http://example.com"),
+        "the bare url should stand in for an empty label: {md2:?}"
+    );
+}

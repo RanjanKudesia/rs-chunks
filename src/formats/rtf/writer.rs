@@ -37,6 +37,8 @@ pub struct Out {
     open_pos: usize,
     /// Emitted at the next line start, before any visible text.
     prefix: Option<String>,
+    /// Byte index in `text` where an open link's label begins.
+    link_label_start: Option<usize>,
 }
 
 impl Out {
@@ -88,6 +90,33 @@ impl Out {
     pub fn push_structural(&mut self, s: &str) {
         self.close_span();
         self.text.push_str(s);
+    }
+
+    /// Open a markdown link: `[`, remembering where the label starts.
+    pub fn open_link(&mut self) {
+        self.close_span();
+        self.text.push('[');
+        self.link_label_start = Some(self.text.len());
+    }
+
+    /// Close a markdown link with its target.
+    ///
+    /// If nothing but whitespace was written since `open_link`, the `[` is
+    /// taken back off and the bare url emitted instead — an empty `\fldrslt`
+    /// would otherwise produce `[](url)`.
+    pub fn close_link(&mut self, url: &str) {
+        self.close_span();
+        let Some(start) = self.link_label_start.take() else {
+            return;
+        };
+        if self.text[start..].trim().is_empty() {
+            self.text.truncate(start.saturating_sub(1));
+            self.text.push_str(url);
+        } else {
+            self.text.push_str("](");
+            self.text.push_str(url);
+            self.text.push(')');
+        }
     }
 
     /// Begin a markdown table row: `| ` at the start of a fresh line.

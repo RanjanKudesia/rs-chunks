@@ -10,8 +10,8 @@ use std::io::Read;
 
 use encoding_rs::{Encoding, BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252};
 
-use crate::formats::html::to_markdown::html_to_markdown_str;
 use super::rtf::compressed_rtf_to_text;
+use crate::formats::html::to_markdown::html_to_markdown_str;
 
 type Cfb<'a> = cfb::CompoundFile<std::io::Cursor<&'a [u8]>>;
 
