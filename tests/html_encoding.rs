@@ -13,11 +13,30 @@
 
 use std::path::{Path, PathBuf};
 
-fn corpus() -> Option<PathBuf> {
+/// Asserts rather than returning `Option`. This used to be
+/// `Option<PathBuf>` with every test opening `let Some(corpus) = corpus() else
+/// { return }`, and every per-file guard was a silent `continue`/`return` too —
+/// so deleting the fixtures left all four tests **passing**. A test that pins
+/// nothing while appearing to pin C7 is worse than no test, because the gap it
+/// guards is then believed closed.
+fn corpus() -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
+        .parent()
+        .expect("CARGO_MANIFEST_DIR has a parent")
         .join("test_files");
-    dir.is_dir().then_some(dir)
+    assert!(
+        dir.is_dir(),
+        "corpus missing at {} — this test is not optional",
+        dir.display()
+    );
+    dir
+}
+
+/// A fixture named by a test is required, not best-effort.
+fn required(dir: &Path, rel: &str) -> PathBuf {
+    let p = dir.join(rel);
+    assert!(p.is_file(), "required fixture missing: {}", p.display());
+    p
 }
 
 /// Files whose declared encoding is not UTF-8, with the label they declare.
@@ -28,12 +47,9 @@ const DECLARED: &[(&str, &str)] = &[
 
 #[test]
 fn non_utf8_html_decodes_without_replacement_chars() {
-    let Some(corpus) = corpus() else { return };
+    let corpus = corpus();
     for (rel, label) in DECLARED {
-        let path = corpus.join(rel);
-        if !path.is_file() {
-            continue;
-        }
+        let path = required(&corpus, rel);
         let p = path.to_str().unwrap();
 
         let md = chunks_rs::formats::html::to_markdown(p)
@@ -65,12 +81,9 @@ fn non_utf8_html_decodes_without_replacement_chars() {
 /// mojibake.
 #[test]
 fn path_and_bytes_entry_points_agree() {
-    let Some(corpus) = corpus() else { return };
+    let corpus = corpus();
     for (rel, _) in DECLARED {
-        let path = corpus.join(rel);
-        if !path.is_file() {
-            continue;
-        }
+        let path = required(&corpus, rel);
         let p = path.to_str().unwrap();
         let bytes = std::fs::read(&path).unwrap();
 
@@ -96,11 +109,8 @@ fn path_and_bytes_entry_points_agree() {
 /// carried its own copy of the decode expression.
 #[test]
 fn every_mode_decodes_the_same_document() {
-    let Some(corpus) = corpus() else { return };
-    let path = corpus.join("html/tika_big-preamble.html");
-    if !path.is_file() {
-        return;
-    }
+    let corpus = corpus();
+    let path = required(&corpus, "html/tika_big-preamble.html");
     let p = path.to_str().unwrap();
     for mode in [
         "default",
@@ -130,11 +140,10 @@ fn every_mode_decodes_the_same_document() {
 /// or detection for bytes that are *not* valid UTF-8.
 #[test]
 fn utf8_html_is_unaffected() {
-    let Some(corpus) = corpus() else { return };
+    let corpus = corpus();
     let dir = corpus.join("html");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
+    let entries = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("html corpus unreadable at {}: {e}", dir.display()));
     let mut checked = 0;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -158,4 +167,39 @@ fn utf8_html_is_unaffected() {
         }
     }
     assert!(checked > 0, "no UTF-8 html fixtures exercised");
+}
+
+/// BOM-less UTF-16 must decode too.
+///
+/// `decode_html` checked valid-UTF-8 before sniffing UTF-16, which
+/// `text_encoding::decode_raw` documents as the wrong order: ASCII in UTF-16LE
+/// is `"T\0h\0e\0"`, and NUL is a valid UTF-8 codepoint, so `from_utf8`
+/// accepts it and returns the NUL-interleaved bytes. Measured before the fix,
+/// the page came back with its tags unparsed — while the identical bytes named
+/// `.txt` decoded correctly.
+#[test]
+fn bomless_utf16_html_decodes() {
+    let doc = "<html><body><h1>Heading One</h1><p>Body text here.</p></body></html>";
+    for (label, bytes) in [
+        ("utf-16le", doc.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>()),
+        ("utf-16be", doc.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>()),
+    ] {
+        let md = chunks_rs::formats::html::to_markdown_from_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert!(
+            !md.contains('\0'),
+            "{label}: returned NUL-interleaved bytes: {:?}",
+            &md[..md.len().min(40)]
+        );
+        assert!(
+            md.contains("Heading One"),
+            "{label}: text not decoded: {md:?}"
+        );
+        let chunks = chunks_rs::formats::html::chunk_from_bytes(&bytes, "structural", 3, 1, 3, 15)
+            .unwrap_or_else(|e| panic!("{label} chunks: {e}"));
+        assert!(
+            chunks.iter().any(|c| c.content_type == "heading"),
+            "{label}: markup was not parsed, so no heading was found: {chunks:?}"
+        );
+    }
 }

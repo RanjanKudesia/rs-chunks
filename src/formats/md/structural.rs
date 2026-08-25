@@ -225,7 +225,7 @@ impl StructuralBuilder {
 // ── Core build function ───────────────────────────────────────────────────────
 
 pub fn build_chunks_from_md_bytes(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = crate::text_encoding::decode_text(bytes).0;
 
     // Empty input is not a failure. A blank or whitespace-only document parsed
     // perfectly well; it simply has nothing to chunk, so it returns `[]` like

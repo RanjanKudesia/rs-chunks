@@ -45,7 +45,7 @@ pub fn build_sliding_window_chunks(
         return Err("overlap must be less than window_size".to_string());
     }
 
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = crate::text_encoding::decode_text(bytes).0;
     // Empty input is not a failure. A blank or whitespace-only document parsed
     // perfectly well; it simply has nothing to chunk, so it returns `[]` like
     // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine

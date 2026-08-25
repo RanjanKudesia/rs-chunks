@@ -95,31 +95,6 @@ pub fn normalize_newlines(text: String) -> String {
     out
 }
 
-/// Decode a UTF-8 document, falling back to lossy, with line endings
-/// normalised.
-///
-/// Markdown files are UTF-8 by contract, so this does not sniff encodings the
-/// way [`decode_text`] does — but it must normalise newlines for the same
-/// reason (TECH_DEBT #89): a CRLF `.md` file has no `"\n\n"` in it, so the
-/// block parser saw one block and returned the whole document as one chunk.
-///
-/// Six copies of the decode expression were spread across `md/`'s strategy
-/// files, which is why fixing this in one of them would have fixed one mode.
-pub fn decode_utf8_document(bytes: &[u8]) -> String {
-    // Strip the UTF-8 BOM, which `decode_text` has always done for `.txt` (see
-    // `decode_raw`) and this path never did. A leading U+FEFF is a *signature*,
-    // not content: left in place it prefixes the first line, so `\u{feff}# Title`
-    // stops matching the heading rule and classifies as an ordinary paragraph —
-    // a BOM'd markdown file silently lost its entire heading structure, and
-    // `structural` and `section` degraded to flat text.
-    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-    let text = match std::str::from_utf8(bytes) {
-        Ok(v) => v.to_string(),
-        Err(_) => String::from_utf8_lossy(bytes).to_string(),
-    };
-    normalize_newlines(text)
-}
-
 /// Decode plain-text bytes without touching line endings.
 fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
@@ -173,6 +148,12 @@ fn lossy_utf8(bytes: &[u8]) -> String {
 /// NULs cluster in one parity class: odd offsets for little-endian, even for
 /// big-endian. Requiring the *other* class to be nearly NUL-free is what keeps
 /// a binary blob from being mistaken for UTF-16.
+/// Whether BOM-less bytes look like UTF-16. Exposed so `html::decode_html` can
+/// apply the same ordering rule `decode_raw` documents above.
+pub(crate) fn sniffs_utf16(bytes: &[u8]) -> bool {
+    sniff_utf16(bytes).is_some()
+}
+
 fn sniff_utf16(bytes: &[u8]) -> Option<DetectedEncoding> {
     let window = &bytes[..bytes.len().min(SNIFF_BYTES)];
     if window.len() < 4 {

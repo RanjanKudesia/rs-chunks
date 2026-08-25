@@ -57,19 +57,30 @@ pub(crate) fn decode_html(bytes: &[u8]) -> String {
         return decode_text(bytes).0;
     }
 
-    // 2. Bytes that already decode as UTF-8 keep decoding as UTF-8, so nothing
+    // 2. BOM-less UTF-16, for the reason `text_encoding::decode_raw` spells out:
+    //    ASCII in UTF-16LE is "T\0h\0e\0", and NUL is a valid UTF-8 codepoint,
+    //    so `from_utf8` *accepts* it and returns the NUL-interleaved bytes. This
+    //    check sat after the UTF-8 one and so never ran — measured, a BOM-less
+    //    UTF-16 page came back with its tags unparsed, while the same bytes as
+    //    `.txt` decoded correctly. Prose that is genuinely UTF-8 never has 20%
+    //    NULs in one parity class, so nothing that decodes today can change.
+    if crate::text_encoding::sniffs_utf16(bytes) {
+        return decode_text(bytes).0;
+    }
+
+    // 3. Bytes that already decode as UTF-8 keep decoding as UTF-8, so nothing
     //    that worked before can change.
     if let Ok(text) = std::str::from_utf8(bytes) {
         return normalize_newlines(text.to_string());
     }
 
-    // 3. The document's own declaration.
+    // 4. The document's own declaration.
     if let Some(encoding) = declared_encoding(bytes) {
         let (text, _, _) = encoding.decode(bytes);
         return normalize_newlines(text.into_owned());
     }
 
-    // 4. Detection, shared with the other text formats.
+    // 5. Detection, shared with the other text formats.
     decode_text(bytes).0
 }
 

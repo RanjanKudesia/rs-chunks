@@ -120,7 +120,7 @@ fn flush_section(
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = crate::text_encoding::decode_text(bytes).0;
     // Empty input is not a failure. A blank or whitespace-only document parsed
     // perfectly well; it simply has nothing to chunk, so it returns `[]` like
     // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine

@@ -154,11 +154,16 @@ pub fn chunk_from_bytes(
 
 /// No-filesystem Markdown passthrough (a `.md` document is already Markdown).
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    // Normalised for the same reason `get_chunks` is: `get_markdown` and
-    // `get_chunks` must decode a document identically (TECH_DEBT #75, #89).
-    String::from_utf8(bytes.to_vec())
-        .map(crate::text_encoding::normalize_newlines)
-        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    // Decoded, not validated. `get_markdown` and `get_chunks` must decode a
+    // document identically (TECH_DEBT #75, #89, C7) and they did not: this
+    // hard-errored with "MD not valid UTF-8" on cp1252 bytes while the six
+    // chunk strategies decoded them lossily into U+FFFD. One document, two
+    // answers, neither of them the text.
+    //
+    // Markdown has no in-band encoding declaration, so unlike HTML there is
+    // nothing extra to consult — it is exactly the `.txt` ladder: BOM, UTF-16
+    // sniff, valid UTF-8, then cp1252. Never a hard error, never U+FFFD.
+    Ok(crate::text_encoding::decode_text(bytes).0)
 }
 
 /// Dispatch-layer entry: map a unified [`ChunkOptions`] onto MD's strategies.
@@ -196,7 +201,7 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
         )));
     }
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    String::from_utf8(bytes)
-        .map(crate::text_encoding::normalize_newlines)
-        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    // Delegate rather than repeat the decode, so the path and bytes entry
+    // points cannot drift apart again — which is how they came to disagree.
+    to_markdown_from_bytes(&bytes)
 }
