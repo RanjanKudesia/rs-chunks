@@ -209,3 +209,60 @@ fn an_unterminated_fence_is_left_alone() {
         "an unterminated fence swallowed the document: {joined:?}"
     );
 }
+
+/// CommonMark 6.1: only ASCII **punctuation** may be backslash-escaped.
+/// "Backslashes before other characters are treated as literal backslashes."
+///
+/// `strip_inline` dropped the backslash before any character at all, so an
+/// ordinary Windows path was rewritten: `C:\new\dir` -> `C:newdir`. The escape
+/// rule was quietly editing prose.
+#[test]
+fn a_backslash_before_a_letter_is_literal() {
+    let doc = "A path like C:\\new\\dir must keep its separators in this line.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(
+        joined.contains(r"C:\new\dir"),
+        "the path lost its backslashes: {joined:?}"
+    );
+}
+
+/// A real escape must still work — this is the half that must not regress.
+#[test]
+fn a_backslash_before_punctuation_still_escapes() {
+    let doc = "A literal asterisk \\* and a literal underscore \\_ in this line here.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(joined.contains("asterisk *"), "escape dropped: {joined:?}");
+    assert!(joined.contains("underscore _"), "escape dropped: {joined:?}");
+    assert!(!joined.contains("\\*"), "the backslash survived: {joined:?}");
+}
+
+/// An unterminated `<` is not a tag. The scan ran to end-of-string and deleted
+/// everything after it, so one stray `<a href=` removed the rest of the
+/// document. Measured before the fix: the sentence stopped at "An unterminated".
+#[test]
+fn an_unterminated_angle_bracket_does_not_eat_the_document() {
+    let doc = "An unterminated <a href= tag must not eat the rest of this text.\n\n\
+               A second paragraph that must also survive the stray bracket above.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(
+        joined.contains("eat the rest of this text"),
+        "the rest of the line was deleted: {joined:?}"
+    );
+    assert!(
+        joined.contains("second paragraph"),
+        "the rest of the document was deleted: {joined:?}"
+    );
+}
+
+/// Real inline HTML must still be stripped — `<em>` is markup, not content.
+#[test]
+fn real_inline_html_is_still_stripped() {
+    let doc = "Some <em>emphasised</em> text inside an ordinary paragraph here.\n";
+    let chunks = md::chunk_from_bytes(doc.as_bytes(), "structural", 3, 1, 3, 15).unwrap();
+    let joined: String = chunks.iter().map(|c| c.content.as_str()).collect();
+    assert!(joined.contains("emphasised"), "content lost: {joined:?}");
+    assert!(!joined.contains("<em>"), "the tag survived: {joined:?}");
+}

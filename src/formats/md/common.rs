@@ -838,7 +838,12 @@ pub fn strip_inline(s: &str) -> String {
 
     while i < n {
         match chars[i] {
-            '\\' if i + 1 < n => {
+            // CommonMark 6.1: only ASCII PUNCTUATION may be backslash-escaped.
+            // "Backslashes before other characters are treated as literal
+            // backslashes." This dropped the backslash before *any* character,
+            // so a Windows path `C:\new\dir` came out `C:newdir` — the escape
+            // rule silently rewriting ordinary prose.
+            '\\' if i + 1 < n && chars[i + 1].is_ascii_punctuation() => {
                 out.push(chars[i + 1]);
                 i += 2;
             }
@@ -856,13 +861,18 @@ pub fn strip_inline(s: &str) -> String {
                 i = end + 1;
             }
             '<' if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '/') => {
+                // An unterminated `<` is not a tag. CommonMark treats it as
+                // literal text; this scanned to end-of-string and deleted
+                // everything after it, so one stray `<a href=` in a document
+                // removed the entire remainder. Measured: "An unterminated
+                // <a href= tag should not eat the rest." -> "An unterminated".
+                let Some(close) = chars[i..].iter().position(|c| *c == '>') else {
+                    out.push('<');
+                    i += 1;
+                    continue;
+                };
                 let tag_start = i;
-                while i < n && chars[i] != '>' {
-                    i += 1;
-                }
-                if i < n {
-                    i += 1;
-                }
+                i += close + 1;
                 // Raw <img> is as much an image reference as ![](…) is, and
                 // Markdown allows it — Jupyter notebooks use it constantly. It
                 // was being swallowed with the rest of the inline HTML. (#41/#42)
