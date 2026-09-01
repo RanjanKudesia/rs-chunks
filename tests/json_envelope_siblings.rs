@@ -17,8 +17,14 @@ fn geojson_envelope_siblings_reach_the_output() {
         md.contains("FeatureCollection"),
         "envelope sibling `type` was deleted: {md:?}"
     );
-    assert!(md.contains("bbox"), "envelope sibling `bbox` deleted: {md:?}");
-    assert!(md.contains("AFG") && md.contains("ALB"), "records lost: {md:?}");
+    assert!(
+        md.contains("bbox"),
+        "envelope sibling `bbox` deleted: {md:?}"
+    );
+    assert!(
+        md.contains("AFG") && md.contains("ALB"),
+        "records lost: {md:?}"
+    );
 }
 
 /// Control: a bare array document has no envelope and must be unchanged.

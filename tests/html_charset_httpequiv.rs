@@ -78,7 +78,10 @@ fn a_declaration_past_the_prescan_window_is_still_recovered() {
     let bytes = std::fs::read(&p).expect("read fixture");
     let md = html::to_markdown_from_bytes(&bytes).expect("must parse");
 
-    let cyrillic = md.chars().filter(|c| ('\u{0410}'..='\u{044f}').contains(c)).count();
+    let cyrillic = md
+        .chars()
+        .filter(|c| ('\u{0410}'..='\u{044f}').contains(c))
+        .count();
     assert!(
         cyrillic > 100,
         "expected recovered Cyrillic, got {cyrillic} chars: {:?}",

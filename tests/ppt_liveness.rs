@@ -34,7 +34,11 @@ fn total_slides(name: &str) -> u64 {
 #[test]
 fn a_multi_save_deck_reports_live_slides_not_every_saves_list() {
     // 22 saves × one SlideListWithText each summed to 305; live = 14.
-    assert_eq!(total_slides("poi_47261.ppt"), 14, "dead slide lists counted");
+    assert_eq!(
+        total_slides("poi_47261.ppt"),
+        14,
+        "dead slide lists counted"
+    );
 }
 
 #[test]

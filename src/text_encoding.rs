@@ -154,11 +154,13 @@ fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     // `Utf8Detection::Deny`: the UTF-8 branch above already returned for anything
     // that decodes as UTF-8, so allowing it here would let the detector
     // re-propose an encoding this function has ruled out.
-    let mut detector =
-        chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+    let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
     detector.feed(bytes, true);
     let enc = detector.guess(None, chardetng::Utf8Detection::Deny);
-    (enc.decode(bytes).0.into_owned(), DetectedEncoding::Detected(enc))
+    (
+        enc.decode(bytes).0.into_owned(),
+        DetectedEncoding::Detected(enc),
+    )
 }
 
 fn lossy_utf8(bytes: &[u8]) -> String {

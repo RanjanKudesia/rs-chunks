@@ -40,10 +40,7 @@ fn run_tabs_separate_words_mid_line() {
     // tab characters and adjacent fields fused.
     let md = docx::to_markdown(&fixture("dotm/tika_02_testDOTM.dotm")).expect("must parse");
     let tabs = md.matches('\t').count();
-    assert!(
-        tabs > 50,
-        "run tabs still vanish (found {tabs} in output)"
-    );
+    assert!(tabs > 50, "run tabs still vanish (found {tabs} in output)");
 }
 
 #[test]

@@ -9,8 +9,8 @@ use crate::entities::read_event_folding_entities;
 
 use super::block_model::{DocxBlock, DocxBlockKind};
 use super::harvest::{harvest_blip_embed, harvest_image_alt, harvest_note_id};
-use super::table_render::{render_table_inline, render_table_markdown, TableState};
 use super::sym_table::sym_lookup;
+use super::table_render::{render_table_inline, render_table_markdown, TableState};
 use super::xml_text::{push_text, qname_eq};
 
 /// Returns true when the paragraph style name indicates a list item without
@@ -406,7 +406,11 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                         let target = if let Some(top) = table_stack.last_mut() {
                             top.in_cell.then_some(&mut top.current_cell)
                         } else if in_paragraph {
-                            Some(if in_run { &mut cur_run_text } else { &mut para_text })
+                            Some(if in_run {
+                                &mut cur_run_text
+                            } else {
+                                &mut para_text
+                            })
                         } else {
                             None
                         };
@@ -692,10 +696,10 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                             cur_run_text.clone()
                         } else {
                             match (cur_bold, cur_italic) {
-                            (true, true) => format!("***{}***", cur_run_text),
-                            (true, false) => format!("**{}**", cur_run_text),
-                            (false, true) => format!("*{}*", cur_run_text),
-                            (false, false) => cur_run_text.clone(),
+                                (true, true) => format!("***{}***", cur_run_text),
+                                (true, false) => format!("**{}**", cur_run_text),
+                                (false, true) => format!("*{}*", cur_run_text),
+                                (false, false) => cur_run_text.clone(),
                             }
                         };
                         push_text(&mut para_text, &formatted);

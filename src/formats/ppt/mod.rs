@@ -146,7 +146,12 @@ pub fn chunk(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    Ok(ppt_records_to_chunks(file_path, records, &paragraphs, live_total))
+    Ok(ppt_records_to_chunks(
+        file_path,
+        records,
+        &paragraphs,
+        live_total,
+    ))
 }
 
 fn build_by_mode(
@@ -185,7 +190,8 @@ pub fn chunk_from_bytes(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    let (paragraphs, live_total) = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
+    let (paragraphs, live_total) =
+        structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     let records = build_by_mode(
         paragraphs.clone(),
         mode,
@@ -194,11 +200,17 @@ pub fn chunk_from_bytes(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    Ok(ppt_records_to_chunks(source, records, &paragraphs, live_total))
+    Ok(ppt_records_to_chunks(
+        source,
+        records,
+        &paragraphs,
+        live_total,
+    ))
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
-    let (paragraphs, _live_total) = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
+    let (paragraphs, _live_total) =
+        structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     Ok(crate::formats::doc::to_markdown::render_paragraphs_markdown(paragraphs))
 }
 

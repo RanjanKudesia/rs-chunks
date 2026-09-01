@@ -17,8 +17,14 @@ use zip::write::SimpleFileOptions;
 
 /// Manifest order is deliberately neither alphabetical nor ZIP order.
 const IMAGE_IDS: [&str; 8] = [
-    "img-echo", "img-alpha", "img-hotel", "img-charlie",
-    "img-golf", "img-bravo", "img-foxtrot", "img-delta",
+    "img-echo",
+    "img-alpha",
+    "img-hotel",
+    "img-charlie",
+    "img-golf",
+    "img-bravo",
+    "img-foxtrot",
+    "img-delta",
 ];
 
 fn build_epub() -> Vec<u8> {
@@ -73,7 +79,8 @@ fn build_epub() -> Vec<u8> {
     sorted.sort();
     for id in sorted {
         zw.start_file(format!("OEBPS/{id}.png"), d).unwrap();
-        zw.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        zw.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
         zw.write_all(id.as_bytes()).unwrap();
     }
     zw.finish().unwrap().into_inner()

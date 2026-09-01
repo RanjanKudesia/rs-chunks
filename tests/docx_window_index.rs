@@ -50,7 +50,11 @@ fn window_index_counts_windows_and_split_parts_share_one() {
     let bytes = docx_with_paragraphs(&paras);
     let chunks = chunks_rs::formats::docx::chunk_from_bytes(&bytes, "sliding_window", 2, 0, 5, 3)
         .expect("must parse");
-    assert!(chunks.len() > 3, "expected a split window: {}", chunks.len());
+    assert!(
+        chunks.len() > 3,
+        "expected a split window: {}",
+        chunks.len()
+    );
 
     let idx: Vec<u64> = chunks
         .iter()

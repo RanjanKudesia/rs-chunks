@@ -41,5 +41,8 @@ pub(crate) fn load_ppt_paragraphs_bytes(
         }
         _ => None,
     };
-    Ok((text_extractor::extract_paragraphs_live(&stream, &live), total))
+    Ok((
+        text_extractor::extract_paragraphs_live(&stream, &live),
+        total,
+    ))
 }

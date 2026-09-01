@@ -193,8 +193,9 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
                                 if mime.starts_with("image/") {
                                     // Same multiline_string union as outputs.
                                     let joined = join_source(data);
-                                    if let Some(img) =
-                                        (!joined.is_empty()).then_some(joined.as_str()).and_then(decode_b64_image)
+                                    if let Some(img) = (!joined.is_empty())
+                                        .then_some(joined.as_str())
+                                        .and_then(decode_b64_image)
                                     {
                                         let ext = mime.rsplit('/').next().unwrap_or("png");
                                         let fname = format!("attachment_{name}.{ext}");

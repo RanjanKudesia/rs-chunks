@@ -87,9 +87,14 @@ fn find_in(
             return Some(h);
         }
         if h.rec_ver == REC_VER_CONTAINER {
-            if let Some(found) =
-                find_in(stream, h.body_start, h.body_end, want, want_instance, depth + 1)
-            {
+            if let Some(found) = find_in(
+                stream,
+                h.body_start,
+                h.body_end,
+                want,
+                want_instance,
+                depth + 1,
+            ) {
                 return Some(found);
             }
         }
