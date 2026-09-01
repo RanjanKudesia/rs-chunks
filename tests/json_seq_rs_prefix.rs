@@ -37,5 +37,8 @@ fn a_plain_ndjson_record_is_unchanged() {
     let md = json::to_markdown_from_bytes(raw.as_bytes(), "plain.ndjson")
         .expect("a line-oriented json path does not fail");
     assert!(md.contains("alpha") && md.contains("beta"), "{md:?}");
-    assert!(!md.contains("{\"id\":1"), "should be rendered, not raw: {md:?}");
+    assert!(
+        !md.contains("{\"id\":1"),
+        "should be rendered, not raw: {md:?}"
+    );
 }

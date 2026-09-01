@@ -122,8 +122,8 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                     b"fld" => {
                         for a in e.attributes().flatten() {
                             if a.key.as_ref().ends_with(b"type") {
-                                let v = String::from_utf8_lossy(a.value.as_ref())
-                                    .to_ascii_lowercase();
+                                let v =
+                                    String::from_utf8_lossy(a.value.as_ref()).to_ascii_lowercase();
                                 if v == "slidenum" || v == "ftr" || v.starts_with("datetime") {
                                     in_chrome_fld = true;
                                 }

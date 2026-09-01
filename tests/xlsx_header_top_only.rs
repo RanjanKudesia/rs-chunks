@@ -17,9 +17,18 @@ fn rows_above_a_deep_header_shaped_row_are_not_deleted() {
         .unwrap()
         .join("test_files/excel/poi_46535.xlsx");
     assert!(p.is_file(), "required fixture missing: {}", p.display());
-    let chunks =
-        xlsx::chunk(p.to_str().unwrap(), "row", 1, 1, 0, true, Vec::new(), false, 1200)
-            .expect("must parse");
+    let chunks = xlsx::chunk(
+        p.to_str().unwrap(),
+        "row",
+        1,
+        1,
+        0,
+        true,
+        Vec::new(),
+        false,
+        1200,
+    )
+    .expect("must parse");
     let others = chunks
         .iter()
         .filter(|c| c.metadata["sheet_name"] == "Others")

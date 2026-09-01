@@ -44,11 +44,11 @@ fn no_row_is_silently_dropped() {
     let chunks = csv::chunk_from_bytes(
         WITH_HASH.as_bytes(),
         "row",
-        1,     // rows_per_chunk
-        1,     // window_size
-        0,     // overlap
-        true,  // include_headers
-        None,  // delimiter -> sniff
+        1,    // rows_per_chunk
+        1,    // window_size
+        0,    // overlap
+        true, // include_headers
+        None, // delimiter -> sniff
         "auto",
         false, // skip_empty_rows
     )
@@ -65,5 +65,8 @@ fn tsv_keeps_hash_records_too() {
     let tsv = "id\tname\n1\talpha\n#2\tbeta\n";
     let md = csv::to_markdown_from_bytes(tsv.as_bytes(), Some(b'\t'), "auto")
         .expect("well-formed tsv must parse");
-    assert!(md.contains("beta"), "the `#2` tsv record was deleted: {md:?}");
+    assert!(
+        md.contains("beta"),
+        "the `#2` tsv record was deleted: {md:?}"
+    );
 }

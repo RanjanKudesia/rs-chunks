@@ -108,7 +108,8 @@ fn a_stale_link_does_not_steal_text_that_arrived_after_it() {
 /// was not broken in the process.
 #[test]
 fn an_ordinary_link_still_renders() {
-    let body = "<text:p>see <text:a xlink:href=\"http://example.invalid\">the docs</text:a> now</text:p>";
+    let body =
+        "<text:p>see <text:a xlink:href=\"http://example.invalid\">the docs</text:a> now</text:p>";
     let md = odf::to_markdown_from_bytes(&odt_with_body(body), "probe.odt")
         .expect("a well-formed .odt must parse");
 

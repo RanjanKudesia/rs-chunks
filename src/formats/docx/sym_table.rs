@@ -1249,9 +1249,13 @@ pub(super) fn sym_lookup(font: &str, code: u8) -> Option<char> {
         f if f.eq_ignore_ascii_case("Wingdings") => WINGDINGS,
         f if f.eq_ignore_ascii_case("Wingdings 2") => WINGDINGS_2,
         f if f.eq_ignore_ascii_case("Wingdings 3") => WINGDINGS_3,
-        f if f.eq_ignore_ascii_case("ZapfDingbats")
-            || f.eq_ignore_ascii_case("Zapf Dingbats") => ZAPFDINGBATS,
+        f if f.eq_ignore_ascii_case("ZapfDingbats") || f.eq_ignore_ascii_case("Zapf Dingbats") => {
+            ZAPFDINGBATS
+        }
         _ => return None,
     };
-    table.binary_search_by_key(&code, |&(c, _)| c).ok().map(|i| table[i].1)
+    table
+        .binary_search_by_key(&code, |&(c, _)| c)
+        .ok()
+        .map(|i| table[i].1)
 }
