@@ -68,11 +68,28 @@ fn build_sliding_window_chunks(
             &raw_content,
             MAX_WINDOW_CONTENT_CHARS,
         ) {
+            // The splitter can yield an empty part (an all-whitespace window,
+            // or a trailing separator). An empty chunk violates the standard
+            // schema — `content` must be a non-empty string — which pytest
+            // enforces and the golden snapshot does not.
+            if content.trim().is_empty() {
+                continue;
+            }
             chunks.push(ChunkRecordInput {
                 content,
                 metadata: json!({
                     "window_size": window_size,
                     "overlap": overlap,
+                    // Per WINDOW, not per emitted chunk. The published contract
+                    // (`chunking-modes/sliding-window.mdx`: "which window this
+                    // is, 0-based") and all six sibling modules — txt, md,
+                    // html, pptx, xlsx, csv — count windows, so the parts of a
+                    // size-split window share one index. An uncommitted draft
+                    // briefly counted emitted chunks instead, citing an "SDK
+                    // contract asserted by test_window_index_increments_from_
+                    // zero" — a test that did not exist anywhere in the
+                    // workspace. It does now (tests/docx_window_index.rs), and
+                    // it pins THIS semantics.
                     "window_index": window_index,
                     "paragraph_indices": paragraph_indices,
                     "paragraph_meta": paragraph_meta,

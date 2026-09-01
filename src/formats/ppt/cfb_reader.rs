@@ -74,6 +74,38 @@ impl<'a> PptCfb<'a> {
     }
 }
 
+impl<'a> PptCfb<'a> {
+    /// Reads the document stream AND the "Current User" stream from the SAME
+    /// storage. The pairing is load-bearing: `offsetToCurrentEdit` inside
+    /// `Current User` indexes the document stream it was saved beside, so a
+    /// root-level `Current User` combined with a `PP97_DUALSTORAGE` document
+    /// stream would index the wrong bytes. `Current User` being absent is not
+    /// an error — the caller falls back to a whole-stream scan.
+    pub fn document_and_current_user(&mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        let dual = !self.compound.is_stream("/PowerPoint Document")
+            && self
+                .compound
+                .is_stream("/PP97_DUALSTORAGE/PowerPoint Document");
+        let doc = self.powerpoint_document_stream()?;
+        let cu_path = if dual {
+            "/PP97_DUALSTORAGE/Current User"
+        } else {
+            "/Current User"
+        };
+        let cu = match self.compound.open_stream(cu_path) {
+            Ok(mut s) => {
+                let mut buf = Vec::new();
+                match s.read_to_end(&mut buf) {
+                    Ok(_) => Some(buf),
+                    Err(_) => None,
+                }
+            }
+            Err(_) => None,
+        };
+        Ok((doc, cu))
+    }
+}
+
 /// Reads the "PowerPoint Document" stream from the CFB (OLE) container.
 ///
 /// Convenience wrapper for the text-only path, which needs exactly one stream.

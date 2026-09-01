@@ -10,6 +10,7 @@ use crate::entities::read_event_folding_entities;
 use super::block_model::{DocxBlock, DocxBlockKind};
 use super::harvest::{harvest_blip_embed, harvest_image_alt, harvest_note_id};
 use super::table_render::{render_table_inline, render_table_markdown, TableState};
+use super::sym_table::sym_lookup;
 use super::xml_text::{push_text, qname_eq};
 
 /// Returns true when the paragraph style name indicates a list item without
@@ -373,6 +374,89 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                     }
                 } else if qname_eq(name, b"numPr") && in_paragraph {
                     para_is_list = true;
+                } else if qname_eq(name, b"tab") && !in_rpr && ruby_rt_depth == 0 {
+                    // A RUN-content tab (`<w:r><w:tab/></w:r>`). The tab-stop
+                    // DEFINITION in `w:pPr/w:tabs` shares the element name but
+                    // carries `w:val`/`w:pos` attributes — it is layout, not
+                    // text, and must not emit a character.
+                    //
+                    // Before this arm existed a tab produced NOTHING: 171 tabs
+                    // in one .dotm and 283 in one .docx each became zero
+                    // characters, fusing `column1<tab>Mid` into `column1Mid`
+                    // and flattening an 88-row tab-delimited table into prose.
+                    //
+                    // Rendering rule (research-settled, see the review
+                    // register X4): a MID-LINE tab is inert in GFM and is
+                    // emitted literally, preserving tab-delimited structure.
+                    // A tab while the accumulator is still empty is in the
+                    // line's leading-whitespace run, where any tab (or 4
+                    // columns of spaces) turns the line into indented code —
+                    // so leading tabs are dropped, which the paragraph-edge
+                    // trim would do anyway.
+                    let is_tab_stop = e
+                        .attributes()
+                        .flatten()
+                        .any(|a| qname_eq(a.key, b"pos") || qname_eq(a.key, b"val"));
+                    if !is_tab_stop {
+                        // Unconditionally: producers put tabs in their OWN
+                        // runs, so "is the accumulator empty" tests run-start,
+                        // not line-start. Line-edge tabs are trimmed at every
+                        // flush (paragraph, br sub-segment), which is what
+                        // keeps the GFM hazard closed.
+                        let target = if let Some(top) = table_stack.last_mut() {
+                            top.in_cell.then_some(&mut top.current_cell)
+                        } else if in_paragraph {
+                            Some(if in_run { &mut cur_run_text } else { &mut para_text })
+                        } else {
+                            None
+                        };
+                        if let Some(t) = target {
+                            t.push('\t');
+                        }
+                    }
+                } else if qname_eq(name, b"sym") && ruby_rt_depth == 0 {
+                    // `<w:sym w:font="Wingdings" w:char="F04A"/>` — a glyph
+                    // from a symbol font. Previously ignored entirely, so a
+                    // Wingdings check mark or smiley simply vanished (F9).
+                    // ISO/IEC 29500-1: the character code is the low octet;
+                    // producers write both the `F0xx` PUA form and the bare
+                    // form, so both are accepted. An unmapped glyph emits
+                    // NOTHING — a wrong character is worse than a dropped one
+                    // (the table generator's contract, see sym_table.rs).
+                    let (mut font, mut chr) = (None, None);
+                    for a in e.attributes().flatten() {
+                        if qname_eq(a.key, b"font") {
+                            font = Some(String::from_utf8_lossy(a.value.as_ref()).to_string());
+                        } else if qname_eq(a.key, b"char") {
+                            chr = Some(String::from_utf8_lossy(a.value.as_ref()).to_string());
+                        }
+                    }
+                    if let (Some(font), Some(chr)) = (font, chr) {
+                        if let Ok(v) = u32::from_str_radix(chr.trim(), 16) {
+                            let code = if (0xF000..=0xF0FF).contains(&v) {
+                                Some((v - 0xF000) as u8)
+                            } else {
+                                u8::try_from(v).ok()
+                            };
+                            if let Some(ch) = code.and_then(|c| sym_lookup(&font, c)) {
+                                let text = ch.to_string();
+                                if let Some(top) = table_stack.last_mut() {
+                                    if top.in_cell {
+                                        push_text(&mut top.current_cell, &text);
+                                    }
+                                } else if in_paragraph {
+                                    if in_run {
+                                        push_text(&mut cur_run_text, &text);
+                                    } else {
+                                        push_text(&mut para_text, &text);
+                                    }
+                                    if in_hyperlink {
+                                        push_text(&mut hyperlink_text, &text);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if qname_eq(name, b"tblHeader") {
                     if let Some(top) = table_stack.last_mut() {
                         if top.in_tr_pr {
@@ -602,11 +686,17 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
                     in_rpr = false;
                 } else if qname_eq(name, b"r") && in_paragraph {
                     if !cur_run_text.is_empty() {
-                        let formatted = match (cur_bold, cur_italic) {
+                        // A whitespace-only run (a lone tab) must not be
+                        // emphasis-wrapped: `**\t**` is literal asterisks.
+                        let formatted = if cur_run_text.trim().is_empty() {
+                            cur_run_text.clone()
+                        } else {
+                            match (cur_bold, cur_italic) {
                             (true, true) => format!("***{}***", cur_run_text),
                             (true, false) => format!("**{}**", cur_run_text),
                             (false, true) => format!("*{}*", cur_run_text),
                             (false, false) => cur_run_text.clone(),
+                            }
                         };
                         push_text(&mut para_text, &formatted);
                     }

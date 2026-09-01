@@ -273,6 +273,12 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
     // ── Parse the OPF: metadata + manifest (id→href,media-type) + spine order ──
     let mut pkg = EpubPackage::default();
     let mut manifest: HashMap<String, (String, String, String)> = HashMap::new();
+    // The map is for id lookups; iteration must NOT use it. `HashMap` seeds its
+    // hasher per process, so `manifest.values()` yields a different order every
+    // run — measured as image chunks arriving in 6 distinct orders across 8
+    // processes, which breaks the byte-identical-output claim against itself.
+    // This records the OPF's own document order for every whole-manifest pass.
+    let mut manifest_order: Vec<String> = Vec::new();
     let mut spine_idrefs: Vec<String> = Vec::new();
 
     let mut reader = XmlReader::from_reader(opf.as_slice());
@@ -298,6 +304,7 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
                             let props = attr(e, b"properties").unwrap_or_default();
+                            manifest_order.push(id.clone());
                             manifest.insert(id, (href, mt, props));
                         }
                     }
@@ -316,6 +323,7 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
                             let props = attr(e, b"properties").unwrap_or_default();
+                            manifest_order.push(id.clone());
                             manifest.insert(id, (href, mt, props));
                         }
                     }
@@ -408,7 +416,10 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
         }
     }
 
-    for (href, mt, _props) in manifest.values() {
+    for id in &manifest_order {
+        let Some((href, mt, _props)) = manifest.get(id) else {
+            continue;
+        };
         if mt.starts_with("image/") {
             let full = resolve_href(&opf_dir, href);
             if let Some(bytes) = read_entry(&mut zip, &full) {

@@ -246,6 +246,13 @@ fn flush_raw(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
     if raw.is_empty() {
         return;
     }
+    // Intervening text breaks a surrogate pair. A `\uN` high surrogate is only
+    // half a character and is valid ONLY when the very next thing is its low
+    // half; holding it across other content let a stale high surrogate pair with
+    // an unrelated low one from a later paragraph and SYNTHESISE a character
+    // that is not in the file. Measured on `tika_testRTFInvalidUnicode.rtf`,
+    // which contains only unpaired escapes and yet produced U+10000.
+    ctx.pending_surrogate = None;
     if !writable(top) {
         raw.clear();
         return;
@@ -336,6 +343,9 @@ fn handle_control_symbol(next: u8, stack: &mut [GroupState], raw: &mut Vec<u8>, 
 
 fn push_literal(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx, ch: char) {
     flush_raw(raw, top, ctx);
+    // Same rule: this literal is itself intervening content, so any half-pair
+    // still being held is now unpairable and must be dropped, not carried.
+    ctx.pending_surrogate = None;
     if top.in_listtext {
         ctx.listtext.push(ch);
     } else if !top.skip {

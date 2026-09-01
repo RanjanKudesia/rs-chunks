@@ -136,24 +136,69 @@ struct Run {
 /// pre-flattening view used by the image extractor to attribute images to
 /// slides; `extract_paragraphs` flattens it.
 pub fn extract_slides(stream: &[u8]) -> Vec<Vec<DocParagraph>> {
-    // Per-slide paragraph lists from the slides SlideListWithText.
-    let mut slides: Vec<Vec<DocParagraph>> = Vec::new();
-    collect_slwt_slides(stream, 0, stream.len(), &mut slides);
+    extract_slides_live(stream, &super::persist::LiveModel::Fallback)
+}
 
-    if slides.is_empty() {
-        // No central slide list: fall back to walking slide drawings directly.
-        let mut escher: Vec<Vec<String>> = Vec::new();
-        collect_escher_slides(stream, 0, stream.len(), &mut escher);
-        for raw in escher {
-            slides.push(build_slide_paragraphs(&raw));
+/// As [`extract_slides`], constrained by the [MS-PPT] §2.1.2 liveness model.
+///
+/// Without the model this walker was a whole-stream linear scan, which has two
+/// wrong assumptions baked in: that every record in the stream is current (a
+/// multi-save deck keeps one superseded `SlideListWithText` PER SAVE — 22 of
+/// them summed to the infamous `total_slides` 305 on a 14-slide deck, and
+/// deleted slide text was emitted as live), and that stream order is
+/// presentation order (false in 3 of 28 corpus fixtures). Bounding the SLWT
+/// scan to the live `DocumentContainer` and taking slides from the live,
+/// ordered offset list fixes both — and also stops title masters (live
+/// `0x03EE`-shaped records reachable only via the master list) from being
+/// emitted as slides, a defect no record-type filter could cure.
+///
+/// `Fallback` reproduces the old behaviour byte-for-byte, on purpose: a
+/// readable-but-odd `.ppt` must not become an unreadable one.
+pub(super) fn extract_slides_live(
+    stream: &[u8],
+    live: &super::persist::LiveModel,
+) -> Vec<Vec<DocParagraph>> {
+    let mut slides: Vec<Vec<DocParagraph>> = Vec::new();
+    match live {
+        super::persist::LiveModel::Persist {
+            document_body,
+            slide_offsets,
+        } => {
+            collect_slwt_slides(stream, document_body.0, document_body.1, &mut slides);
+            let mut escher: Vec<Vec<String>> = Vec::with_capacity(slide_offsets.len());
+            for &off in slide_offsets {
+                let mut raw = Vec::new();
+                if let Some((h, _)) = parse_header(stream, off, stream.len()) {
+                    collect_text_strings(stream, h.body_start, h.body_end, &mut raw);
+                }
+                escher.push(raw);
+            }
+            if slides.is_empty() {
+                for raw in escher {
+                    slides.push(build_slide_paragraphs(&raw));
+                }
+            } else if escher.len() == slides.len() {
+                for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
+                    merge_freeform(slide, raw);
+                }
+            }
         }
-    } else {
-        // Merge in freeform text boxes (Escher) not already in the SLWT text.
-        let mut escher: Vec<Vec<String>> = Vec::new();
-        collect_escher_slides(stream, 0, stream.len(), &mut escher);
-        if escher.len() == slides.len() {
-            for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
-                merge_freeform(slide, raw);
+        super::persist::LiveModel::Fallback => {
+            collect_slwt_slides(stream, 0, stream.len(), &mut slides);
+            if slides.is_empty() {
+                let mut escher: Vec<Vec<String>> = Vec::new();
+                collect_escher_slides(stream, 0, stream.len(), &mut escher);
+                for raw in escher {
+                    slides.push(build_slide_paragraphs(&raw));
+                }
+            } else {
+                let mut escher: Vec<Vec<String>> = Vec::new();
+                collect_escher_slides(stream, 0, stream.len(), &mut escher);
+                if escher.len() == slides.len() {
+                    for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
+                        merge_freeform(slide, raw);
+                    }
+                }
             }
         }
     }
@@ -161,7 +206,15 @@ pub fn extract_slides(stream: &[u8]) -> Vec<Vec<DocParagraph>> {
 }
 
 pub fn extract_paragraphs(stream: &[u8]) -> Vec<DocParagraph> {
-    let slides = extract_slides(stream);
+    extract_paragraphs_live(stream, &super::persist::LiveModel::Fallback)
+}
+
+/// As [`extract_paragraphs`], constrained by the liveness model.
+pub(super) fn extract_paragraphs_live(
+    stream: &[u8],
+    live: &super::persist::LiveModel,
+) -> Vec<DocParagraph> {
+    let slides = extract_slides_live(stream, live);
 
     // Flatten with PageBreak separators between non-empty slides.
     //

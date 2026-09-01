@@ -138,6 +138,18 @@ fn block_starts(rendered: &[String]) -> Vec<usize> {
     starts
 }
 
+/// A compact one-line rendering for envelope siblings: scalars verbatim,
+/// containers summarised through the ordinary record renderer.
+fn render_scalarish(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        other => render_record(other).replace('\n', " "),
+    }
+}
+
 /// Determine the record set for a parsed `.json` value.
 fn document_records(root: &Value) -> (Vec<&Value>, &'static str, Option<String>) {
     match root {
@@ -167,8 +179,33 @@ pub fn parse_document(raw: &[u8]) -> Result<JsonDoc, String> {
     let raw = crate::text_encoding::to_utf8_bytes(raw);
     let root: Value = serde_json::from_slice(&raw).map_err(|e| format!("Invalid JSON: {e}"))?;
     let (records, top_level, envelope_key) = document_records(&root);
-    let record_count = records.len();
-    let rendered: Vec<String> = records.iter().map(|v| render_record(v)).collect();
+    let mut record_count = records.len();
+    let mut rendered: Vec<String> = records.iter().map(|v| render_record(v)).collect();
+    // The envelope's SIBLING keys are document content, not packaging. They
+    // were silently deleted: vega_earthquakes.json carries top-level `type`,
+    // `metadata` (title, source URL) and `bbox` beside `features`, and none of
+    // them reached 1.5 MB of output. Render them as a preamble record so the
+    // records themselves stay untouched (record_starts still index them).
+    if let (Some(key), Value::Object(map)) = (envelope_key.as_deref(), &root) {
+        let mut preamble = String::new();
+        for (k, v) in map {
+            if k == key {
+                continue;
+            }
+            if !preamble.is_empty() {
+                preamble.push('\n');
+            }
+            preamble.push_str(&format!("{k}: {}", render_scalarish(v)));
+        }
+        if !preamble.is_empty() {
+            rendered.insert(0, preamble);
+            // The envelope IS a record of the document: `record_starts` keeps
+            // its one-start-per-record invariant (asserted over every shipped
+            // fixture by `record_starts_match_the_documents_own_blocks`), and
+            // `record_count` counts what a caller can address.
+            record_count += 1;
+        }
+    }
     let record_starts = block_starts(&rendered);
     Ok(JsonDoc {
         markdown: rendered.join("\n\n").trim().to_string(),
@@ -191,7 +228,14 @@ pub fn parse_lines(raw: &[u8]) -> JsonDoc {
     let mut sections: Vec<String> = Vec::new();
     let mut count = 0usize;
     for line in text.lines() {
-        let trimmed = line.trim();
+        // RFC 7464 `application/json-seq` prefixes every record with RS
+        // (U+001E). Such a file is routinely named `.ndjson`, and `str::trim`
+        // does NOT remove RS — it is not Unicode White_Space — so the byte
+        // survived into the record, `serde_json` then rejected the line, and
+        // the raw source was pushed instead. Three failures compounded: a raw
+        // control byte in chunk `content`, total loss of key/value rendering,
+        // and no signal that either happened.
+        let trimmed = line.trim().trim_start_matches('\u{1e}').trim();
         if trimmed.is_empty() {
             continue;
         }

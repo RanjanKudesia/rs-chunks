@@ -54,6 +54,11 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
     let mut shape_paragraphs: Vec<String> = Vec::new();
     let mut t_buf = String::new();
     let mut in_t = false;
+    // Inside an <a:fld> whose cached value is slide chrome (slide number,
+    // date/time, footer). The cache is whatever the value was at save time;
+    // emitting it made a slide whose only content is its number render as
+    // body text `- 10` (poi_2411 slide 10) and put stale numbers into notes.
+    let mut in_chrome_fld = false;
     // ── Table-cell extraction state ──────────────────────────────────────────
     let mut in_tbl = false;
     let mut in_tc = false; // inside <a:tc>
@@ -114,7 +119,18 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                         in_para = true;
                         para_text.clear();
                     }
-                    b"t" if in_para || in_tc_para => {
+                    b"fld" => {
+                        for a in e.attributes().flatten() {
+                            if a.key.as_ref().ends_with(b"type") {
+                                let v = String::from_utf8_lossy(a.value.as_ref())
+                                    .to_ascii_lowercase();
+                                if v == "slidenum" || v == "ftr" || v.starts_with("datetime") {
+                                    in_chrome_fld = true;
+                                }
+                            }
+                        }
+                    }
+                    b"t" if (in_para || in_tc_para) && !in_chrome_fld => {
                         in_t = true;
                         t_buf.clear();
                     }
@@ -205,6 +221,7 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
             Ok(Event::End(ref e)) => {
                 let local = local_name(e.name());
                 match local.as_slice() {
+                    b"fld" => in_chrome_fld = false,
                     b"t" if in_t => {
                         in_t = false;
                         let t_buf = std::mem::take(&mut t_buf).trim().to_string();

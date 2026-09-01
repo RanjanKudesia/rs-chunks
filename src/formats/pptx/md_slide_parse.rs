@@ -87,6 +87,9 @@ pub(super) fn parse_slide_for_markdown(
 
     // <a:t> tracking
     let mut in_t = false;
+    // Inside an <a:fld> carrying slide chrome (slide number, date/time,
+    // footer): the cached value is stale by definition and is not content.
+    let mut in_chrome_fld = false;
     // Whole `<a:t>` text, accumulated verbatim and trimmed ONCE at `</a:t>`.
     let mut t_buf = String::new();
     // True until the first text event of the current <a:t> has been appended.
@@ -235,7 +238,18 @@ pub(super) fn parse_slide_for_markdown(
                             }
                         }
                     }
-                    b"t" if in_para && !in_tc_para => {
+                    b"fld" => {
+                        for a in e.attributes().flatten() {
+                            if a.key.as_ref().ends_with(b"type") {
+                                let v = String::from_utf8_lossy(a.value.as_ref())
+                                    .to_ascii_lowercase();
+                                if v == "slidenum" || v == "ftr" || v.starts_with("datetime") {
+                                    in_chrome_fld = true;
+                                }
+                            }
+                        }
+                    }
+                    b"t" if in_para && !in_tc_para && !in_chrome_fld => {
                         in_t = true;
                         t_buf.clear();
                     }
@@ -334,7 +348,7 @@ pub(super) fn parse_slide_for_markdown(
                         in_tc_para = true;
                         tc_para_text.clear();
                     }
-                    b"t" if in_tc_para => {
+                    b"t" if in_tc_para && !in_chrome_fld => {
                         in_tc_t = true;
                         tc_t_buf.clear();
                     }
@@ -527,6 +541,9 @@ pub(super) fn parse_slide_for_markdown(
                 let ename = e.name();
                 let ebytes = ename.as_ref();
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+                if local == b"fld" {
+                    in_chrome_fld = false;
+                }
 
                 match local {
                     b"grpSp" => {}
@@ -700,8 +717,8 @@ mod graphic_pointer_tests {
   </a:graphicData></a:graphic></p:graphicFrame>
  </p:spTree></p:cSld></p:sld>"#;
 
-        let slide = super::parse_slide_for_markdown(xml, &Default::default())
-            .expect("slide must parse");
+        let slide =
+            super::parse_slide_for_markdown(xml, &Default::default()).expect("slide must parse");
         assert_eq!(
             slide.chart_rids,
             vec!["rId9".to_string()],
@@ -722,8 +739,8 @@ mod graphic_pointer_tests {
  <p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData>
    <c:chart r:id="rId3"/>
  </a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"#;
-        let slide = super::parse_slide_for_markdown(xml, &Default::default())
-            .expect("slide must parse");
+        let slide =
+            super::parse_slide_for_markdown(xml, &Default::default()).expect("slide must parse");
         assert_eq!(slide.chart_rids, vec!["rId3".to_string()]);
     }
 }

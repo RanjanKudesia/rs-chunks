@@ -129,9 +129,17 @@ fn charset_label(tag: &str) -> Option<String> {
     let value = match after.strip_prefix(['"', '\'']) {
         // Quoted: run to the closing quote.
         Some(inner) => inner.split(['"', '\'']).next().unwrap_or(inner),
-        // Bare: run to the first delimiter.
+        // Bare: run to the first delimiter. The quote characters belong in this
+        // set even though the value is unquoted, because of the `http-equiv`
+        // long form: in
+        //   <meta http-equiv="Content-Type" content="text/html; charset=cp1251">
+        // the `charset=` value is not itself quoted — the quote that follows it
+        // terminates the *enclosing* `content` attribute. Without them the label
+        // came out as `cp1251"` and `Encoding::for_label` rejected it, so the
+        // document silently fell back to windows-1252. An unquoted attribute
+        // value cannot legally contain a quote in any case.
         None => after
-            .split([' ', '\t', '\n', '\r', ';', '/', '>'])
+            .split([' ', '\t', '\n', '\r', ';', '/', '>', '"', '\''])
             .next()
             .unwrap_or(after),
     };

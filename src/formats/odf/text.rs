@@ -198,6 +198,13 @@ impl Walker {
     fn flush_paragraph(&mut self) {
         let content = collapse_ws(&self.text);
         self.text.clear();
+        // `link` holds a byte index into `text`; clearing `text` invalidates it.
+        // A `text:a` left open across a paragraph boundary — which happens for
+        // real, because `office:annotation` and `text:note` legally contain
+        // their own `text:p` — would otherwise resolve against the NEXT
+        // paragraph's bytes, slicing unrelated text as the link label and
+        // panicking outright when the stale index lands mid-codepoint.
+        self.link = None;
         let level = self.heading_level.take();
         if content.is_empty() {
             return;
@@ -421,7 +428,10 @@ pub fn content_to_markdown(
                     b"p" | b"h" => w.flush_paragraph(),
                     b"a" => {
                         if let Some((href, start)) = w.link.take() {
-                            if start <= w.text.len() && !href.is_empty() {
+                            if start <= w.text.len()
+                                && w.text.is_char_boundary(start)
+                                && !href.is_empty()
+                            {
                                 let label = w.text[start..].to_string();
                                 w.text.truncate(start);
                                 w.text.push_str(&format!("[{label}]({href})"));

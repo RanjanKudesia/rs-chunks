@@ -295,21 +295,32 @@ pub fn cell_to_string(cell: &Data) -> String {
 }
 
 pub fn detect_header_row(rows: &[&[Data]]) -> Option<usize> {
+    // A header can only sit at the TOP of the data — above it there can be
+    // nothing but blank rows. This used to keep scanning until it found
+    // something header-shaped anywhere in the sheet, and every caller treats
+    // rows above the header as non-data: on `poi_46535.xlsx` sheet `Others`,
+    // rows 1-331 are `#REF!` error cells, the first all-string row is row 332,
+    // and the sheet emitted **2 chunks for 331 rows** with `skipped_sheets`
+    // empty — 99.4% of the sheet silently deleted, invisible to every oracle.
+    // The first NON-EMPTY row now decides: header-shaped or there is no header.
     for (i, row) in rows.iter().enumerate() {
         let non_empty: Vec<_> = row.iter().filter(|c| !matches!(c, Data::Empty)).collect();
         if non_empty.is_empty() {
+            // Leading blank rows are the one thing legitimately above a header.
             continue;
         }
         if non_empty.iter().all(|c| matches!(c, Data::String(_))) {
             return Some(i);
         }
-        // Numeric index column (e.g. 0, 1, 2…) followed by all-string labels → treat as header
+        // Numeric index column (e.g. 0, 1, 2…) followed by all-string labels → header
         if non_empty.len() >= 2
             && matches!(non_empty[0], Data::Float(_) | Data::Int(_))
             && non_empty[1..].iter().all(|c| matches!(c, Data::String(_)))
         {
             return Some(i);
         }
+        // First non-empty row is data: the sheet has no header row.
+        return None;
     }
     None
 }

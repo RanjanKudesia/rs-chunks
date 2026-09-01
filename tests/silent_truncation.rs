@@ -145,3 +145,44 @@ fn msg_and_eml_read_html_the_same_way() {
         "style body leaked into the text: {eml_md:?}"
     );
 }
+
+/// An embedded `.msg` was read for subject and body only.
+///
+/// Its envelope — who sent it, who it went to, when — sits in the same
+/// sub-storage and was being dropped, so an attached message arrived stripped
+/// of everything that identifies it as a message. `.eml` has always rendered
+/// nested `message/rfc822` parts in full.
+///
+/// The property-stream header is 24 bytes inside a sub-storage, not the 32 used
+/// at the top level, which is why the date needed its own accessor rather than
+/// reusing `read_date`.
+#[test]
+fn an_embedded_message_keeps_its_envelope() {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("test_files/msg/poi_attachment_msg_pdf.msg");
+    assert!(p.is_file(), "required fixture missing: {}", p.display());
+
+    let md = chunks_rs::formats::msg::to_markdown(p.to_str().unwrap()).expect("must parse");
+
+    assert!(
+        md.contains("Blah blah blah"),
+        "lost the embedded body: {md:?}"
+    );
+    assert!(
+        md.contains("**From:** Nick Booth"),
+        "the embedded sender was dropped: {md:?}"
+    );
+    assert!(
+        md.contains("**Sent:** 2010-06-17"),
+        "the embedded sent date was dropped — check the 24-byte sub-storage \
+         header, not 32: {md:?}"
+    );
+    // The envelope must not be rendered as a heading: an h1 nested under the
+    // attachment list would invert the document's heading hierarchy.
+    assert!(
+        !md.contains("# Test Attachment"),
+        "the embedded subject became a heading: {md:?}"
+    );
+}

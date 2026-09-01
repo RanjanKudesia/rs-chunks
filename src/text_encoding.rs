@@ -25,7 +25,7 @@
 //! Latin-1 everywhere except 0x80–0x9F — where Latin-1 has unused control codes
 //! and cp1252 has the punctuation people actually type.
 
-use encoding_rs::{UTF_16BE, UTF_16LE, WINDOWS_1252};
+use encoding_rs::{UTF_16BE, UTF_16LE};
 
 /// How many leading bytes the UTF-16 sniff looks at.
 const SNIFF_BYTES: usize = 4096;
@@ -39,7 +39,10 @@ pub enum DetectedEncoding {
     Utf8Bom,
     Utf16Le,
     Utf16Be,
-    Windows1252,
+    /// What the statistical detector concluded for an 8-bit document. This
+    /// replaced a fixed `Windows1252` variant: the fallback is no longer a
+    /// single hardcoded encoding, so naming one in the type would be a lie.
+    Detected(&'static encoding_rs::Encoding),
 }
 
 impl DetectedEncoding {
@@ -52,7 +55,7 @@ impl DetectedEncoding {
             DetectedEncoding::Utf8Bom => "utf-8-bom",
             DetectedEncoding::Utf16Le => "utf-16le",
             DetectedEncoding::Utf16Be => "utf-16be",
-            DetectedEncoding::Windows1252 => "windows-1252",
+            DetectedEncoding::Detected(enc) => enc.name(),
         }
     }
 }
@@ -126,13 +129,36 @@ fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_string(), DetectedEncoding::Utf8);
     }
-    // Not UTF-8 and not UTF-16: an 8-bit encoding. cp1252 maps every byte to
-    // something, so this never produces U+FFFD — it may be the wrong character
-    // for a cp1251 or Big5 file, but it is never a destroyed one.
-    (
-        WINDOWS_1252.decode(bytes).0.into_owned(),
-        DetectedEncoding::Windows1252,
-    )
+    // Not UTF-8 and not UTF-16: an 8-bit encoding, and which one has to be
+    // guessed from the byte statistics.
+    //
+    // This used to be a blanket cp1252 decode, justified as "it may be the wrong
+    // character for a cp1251 or Big5 file, but it is never a destroyed one".
+    // That reasoning is what made the defect invisible: cp1252 maps 251 of 256
+    // bytes to *some* character, so a mis-decode produces mojibake rather than
+    // U+FFFD — and `tests/html_encoding.rs` asserted the absence of U+FFFD,
+    // which a cp1252 fallback can essentially never produce. The test passed
+    // while `tika_big-preamble.html` came back with 0 Cyrillic characters and
+    // 927 mojibake runs, and `tika_noisy-meta-encoding-arabic.html` with 0
+    // Arabic.
+    //
+    // `allow_utf8` is false because the UTF-8 branch above already returned for
+    // anything that decodes as UTF-8; telling the detector otherwise would let
+    // it re-propose an encoding we have ruled out.
+    // `Iso2022JpDetection::Allow`: chardetng's docs tell *browsers* to deny this,
+    // because a page that can run scripts plus a stateful escape-based encoding
+    // is an XSS surface. Nothing here executes anything — this is a document
+    // extractor, and `.eml`/`.mbox` carry genuine ISO-2022-JP Japanese mail — so
+    // the email-client guidance applies, not the browser guidance.
+    //
+    // `Utf8Detection::Deny`: the UTF-8 branch above already returned for anything
+    // that decodes as UTF-8, so allowing it here would let the detector
+    // re-propose an encoding this function has ruled out.
+    let mut detector =
+        chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+    detector.feed(bytes, true);
+    let enc = detector.guess(None, chardetng::Utf8Detection::Deny);
+    (enc.decode(bytes).0.into_owned(), DetectedEncoding::Detected(enc))
 }
 
 fn lossy_utf8(bytes: &[u8]) -> String {
@@ -272,7 +298,7 @@ mod tests {
         let (text, enc) = decode_text(&bytes);
         assert_eq!(text, "Say “hi” — é £5");
         assert!(!text.contains('\u{fffd}'));
-        assert_eq!(enc, DetectedEncoding::Windows1252);
+        assert_eq!(enc.as_str(), "windows-1252", "detector chose {:?}", enc);
     }
 
     #[test]

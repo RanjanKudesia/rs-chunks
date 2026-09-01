@@ -36,9 +36,17 @@ all-features = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps object members in document order instead of
+# alphabetising them through a BTreeMap. Without it `{"name":"Andy","age":30}`
+# rendered as `age: 30` then `name: Andy`, which scrambles the causal order of
+# every log record in a .jsonl/.ndjson file and reorders every .json object.
+serde_json = { version = "1", features = ["preserve_order"] }
 csv = "1"
 encoding_rs = "0.8"
+# Firefox's legacy-web charset detector, by the encoding_rs author. Replaces a
+# blanket cp1252 fallback that silently mis-decoded every non-UTF-8, non-UTF-16
+# document (measured: a windows-1251 page returned 0 Cyrillic, 927 mojibake runs).
+chardetng = "1"
 quick-xml = "0.38"
 # deflate-only: Office/ODF/epub ZIPs use deflate/store; dropping bzip2/zstd/lzma
 # keeps the dependency C-free so it compiles to wasm32.
@@ -53,3 +61,7 @@ mail-parser = { version = "0.11", default-features = false, features = ["full_en
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 weezl = "0.2.1"
 flate2 = "1.1.9"
+
+[dev-dependencies]
+# For building crafted .msg specimens in tests (same crate the reader uses).
+cfb = "0.10"

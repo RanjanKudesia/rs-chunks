@@ -96,9 +96,13 @@ fn select_body(msg: &Message) -> String {
             return md.trim().to_string();
         }
     }
-    // Fallback: gather every text part in document order.
+    // Fallback: gather every text part in document order — except
+    // styling/scripting resources (see `is_non_prose_text`).
     let mut collected = String::new();
     for part in &msg.parts {
+        if is_non_prose_text(full_content_type(part).as_deref()) {
+            continue;
+        }
         if let PartType::Text(t) = &part.body {
             let t = t.trim();
             if !t.is_empty() {
@@ -226,6 +230,21 @@ fn header_ids(value: &mail_parser::HeaderValue<'_>) -> Vec<String> {
     }
 }
 
+/// A `text/*` part whose content is styling or scripting, not prose. In a
+/// `multipart/related` HTML message these are RESOURCES the root part
+/// references (RFC 2387), yet they were inlined as body text:
+/// `tika_testRFC822_oddfrom.eml` produced 54 chunks of which 44 were pure CSS
+/// — 94.5% of the output, and for a retrieval index worse than dropping the
+/// message, because every stylesheet chunk becomes a confident, meaningless
+/// vector. The printability gate cannot catch this: CSS is perfectly
+/// printable. The subtype is the only honest discriminator.
+fn is_non_prose_text(mime: Option<&str>) -> bool {
+    matches!(
+        mime.map(|m| m.to_ascii_lowercase()).as_deref(),
+        Some("text/css") | Some("text/javascript") | Some("application/javascript")
+    )
+}
+
 fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
     part.content_type().map(|ct| match ct.subtype() {
         Some(sub) => format!("{}/{}", ct.ctype(), sub),
@@ -294,13 +313,19 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
                 });
             }
             PartType::Text(t) => {
-                // A text attachment's content is content. It was decoded and
-                // then thrown away, so only the filename line rendered. (#35)
+                // A text attachment's content is content (#35) — unless it is
+                // styling/scripting, which is listed by name and size only.
+                let mime = full_content_type(part);
+                let embedded = if is_non_prose_text(mime.as_deref()) {
+                    None
+                } else {
+                    readable_attachment_text(t.as_ref())
+                };
                 doc.attachments.push(EmlAttachment {
                     filename: part.attachment_name().map(|s| s.to_string()),
-                    mime: full_content_type(part),
+                    mime,
                     size: t.len(),
-                    embedded_text: readable_attachment_text(t.as_ref()),
+                    embedded_text: embedded,
                 });
             }
             PartType::Html(t) => {

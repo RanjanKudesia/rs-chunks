@@ -288,7 +288,14 @@ fn open_csv_reader(
         .delimiter(delimiter)
         .flexible(true)
         .has_headers(false)
-        .comment(Some(b'#'))
+        // No `.comment(...)`: RFC 4180 defines no comment convention, and neither
+        // does the `text/tab-separated-values` registration. `#` is ordinary
+        // TEXTDATA. Treating a leading `#` as a comment silently DELETED whole
+        // records — measured, a row `#4,legacy sku,archived` vanished with no
+        // error and no metadata trace, while the same character mid-field
+        // survived. Any file whose first column holds issue numbers, SKUs, hex
+        // colours or hashtags lost exactly those rows. A `#` preamble now
+        // arrives as data, which is the honest reading: it IS in the file.
         .from_reader(boxed);
     Ok((reader, delimiter))
 }

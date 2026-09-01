@@ -144,8 +144,15 @@ fn read_binary(cfb: &mut Cfb<'_>, prefix: &str, pid: u16) -> Option<Vec<u8>> {
 }
 
 /// Fixed-width property lookup in `<prefix>/__properties_version1.0`. Entries are
-/// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. `header` is 32 at the top
-/// level, 24 inside recipient/attachment/embedded sub-storages.
+/// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. The header before the
+/// entries differs BY STORAGE KIND ([MS-OXMSG] §2.4.1): **32** at the top
+/// level, **24** inside an embedded-message storage, and **8** inside a
+/// recipient or attachment storage. This comment previously said 24 for all
+/// three sub-storage kinds; with header=24 the scan started one entry past the
+/// first property, so 8 of 11 corpus fixtures never found
+/// `PidTagRecipientType` at its offset-8 home and `.unwrap_or(1)` silently
+/// defaulted every recipient to "To" — the empty `Cc:` column across the
+/// corpus WAS this bug, not an absence of Cc recipients.
 fn read_fixed_prop(
     cfb: &mut Cfb<'_>,
     prefix: &str,
@@ -202,7 +209,14 @@ fn filetime_to_iso(ft: u64) -> Option<String> {
 }
 
 fn read_date(cfb: &mut Cfb<'_>, pid: u16) -> Option<String> {
-    let (_, v) = read_fixed_prop(cfb, "", pid, 32)?;
+    read_date_at(cfb, "", pid, 32)
+}
+
+/// Read a date from an arbitrary storage. The property-stream header is 32
+/// bytes at the top level but **24 inside a sub-storage**, which is why an
+/// embedded message needs its own call rather than reusing `read_date`.
+fn read_date_at(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<String> {
+    let (_, v) = read_fixed_prop(cfb, prefix, pid, header)?;
     filetime_to_iso(u64::from_le_bytes(v))
 }
 
@@ -302,7 +316,7 @@ fn read_recipients(cfb: &mut Cfb<'_>, codepage: u32, doc: &mut MsgDocument) {
             (None, Some(e)) => e,
             (None, None) => continue,
         };
-        let rtype = read_u32_prop(cfb, &prefix, PID_RECIP_TYPE, 24).unwrap_or(1);
+        let rtype = read_u32_prop(cfb, &prefix, PID_RECIP_TYPE, 8).unwrap_or(1);
         match recipient_type_label(rtype) {
             "cc" => doc.cc.push(display),
             "bcc" => doc.bcc.push(display),
@@ -387,23 +401,39 @@ fn read_attachments(
             filename: read_string(cfb, &prefix, PID_ATTACH_LONG_FILENAME, codepage)
                 .or_else(|| read_string(cfb, &prefix, PID_ATTACH_FILENAME, codepage)),
             mime: read_string(cfb, &prefix, PID_ATTACH_MIME, codepage),
-            size: read_u32_prop(cfb, &prefix, PID_ATTACH_SIZE, 24).map(|s| s as u64),
+            size: read_u32_prop(cfb, &prefix, PID_ATTACH_SIZE, 8).map(|s| s as u64),
             embedded_text: None,
         };
         // Embedded message (attach method 5): the data property is a sub-storage
         // holding a full nested message → recurse and inline its text.
-        let method = read_u32_prop(cfb, &prefix, PID_ATTACH_METHOD, 24).unwrap_or(0);
+        let method = read_u32_prop(cfb, &prefix, PID_ATTACH_METHOD, 8).unwrap_or(0);
         if method == 5 {
             let embed_prefix = format!("{prefix}/__substg1.0_{PID_ATTACH_DATA:04X}000D");
             if let Some(sub) = extract_embedded(cfb, &embed_prefix, depth + 1)? {
-                let mut parts = Vec::new();
+                // Rendered here rather than via `document_to_markdown`, which
+                // emits `# {subject}` — an h1 nested under the attachment list
+                // would invert the document's heading hierarchy and move
+                // `section`-mode boundaries for every .msg with an embedment.
+                let mut head = Vec::new();
                 if let Some(s) = &sub.subject {
-                    parts.push(s.clone());
+                    head.push(format!("**Subject:** {s}"));
                 }
+                if let Some(f) = &sub.from {
+                    head.push(format!("**From:** {f}"));
+                }
+                if !sub.to.is_empty() {
+                    head.push(format!("**To:** {}", sub.to.join(", ")));
+                }
+                if let Some(d) = &sub.sent_date {
+                    head.push(format!("**Sent:** {d}"));
+                }
+                let mut text = head.join("  \n");
                 if let Some(b) = &sub.body {
-                    parts.push(b.clone());
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(b);
                 }
-                let text = parts.join("\n\n");
                 if !text.trim().is_empty() {
                     att.embedded_text = Some(text);
                 }
@@ -450,12 +480,38 @@ fn extract_embedded(
     let codepage = read_u32_prop(cfb, prefix, PID_CODEPAGE, 24).unwrap_or(1252);
     let subject = read_string(cfb, prefix, PID_SUBJECT, codepage);
     let body = read_body(cfb, prefix, codepage)?;
-    if subject.is_none() && body.is_none() {
+
+    // Subject + body alone is not a message. The envelope — who sent it, who
+    // it went to, when — is present in the sub-storage and was being dropped,
+    // so an embedded message arrived stripped of everything that identifies it.
+    // `.eml` has always rendered nested `message/rfc822` parts in full.
+    let from_name = read_string(cfb, prefix, PID_SENDER_NAME, codepage);
+    let addr_type = read_string(cfb, prefix, PID_SENDER_ADDRTYPE, codepage);
+    let from_email = usable_email(None, read_string(cfb, prefix, PID_SENDER_SMTP, codepage))
+        .or_else(|| {
+            usable_email(
+                addr_type.as_deref(),
+                read_string(cfb, prefix, PID_SENDER_EMAIL, codepage),
+            )
+        });
+    let from = match (from_name, from_email) {
+        (Some(n), Some(e)) if n != e => Some(format!("{n} <{e}>")),
+        (Some(n), _) => Some(n),
+        (None, Some(e)) => Some(e),
+        (None, None) => None,
+    };
+    let to = read_string(cfb, prefix, PID_DISPLAY_TO, codepage);
+    let sent = read_date_at(cfb, prefix, PID_CLIENT_SUBMIT_TIME, 24);
+
+    if subject.is_none() && body.is_none() && from.is_none() && to.is_none() {
         return Ok(None);
     }
     Ok(Some(MsgDocument {
         subject,
         body,
+        from,
+        to: to.into_iter().collect(),
+        sent_date: sent,
         ..Default::default()
     }))
 }

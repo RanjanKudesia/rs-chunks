@@ -70,6 +70,22 @@ impl Matrix {
     }
 }
 
+/// Intersect two PDF rectangles ([x0,y0,x1,y1], any corner order). Degenerate
+/// results fall back to the second box — a CropBox that misses the MediaBox
+/// entirely is author error, and the spec's remedy is the MediaBox.
+pub(crate) fn intersect_boxes(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let (ax0, ax1) = (a[0].min(a[2]), a[0].max(a[2]));
+    let (ay0, ay1) = (a[1].min(a[3]), a[1].max(a[3]));
+    let (bx0, bx1) = (b[0].min(b[2]), b[0].max(b[2]));
+    let (by0, by1) = (b[1].min(b[3]), b[1].max(b[3]));
+    let (x0, x1) = (ax0.max(bx0), ax1.min(bx1));
+    let (y0, y1) = (ay0.max(by0), ay1.min(by1));
+    if x1 <= x0 || y1 <= y0 {
+        return b;
+    }
+    [x0, y0, x1, y1]
+}
+
 /// Build the transform from PDF user space to upright page space: origin at the
 /// visible bottom-left, `y` increasing upward, `/Rotate` already applied.
 pub(crate) fn page_transform(media_box: [f32; 4], rotate: i64) -> (Matrix, f32, f32) {

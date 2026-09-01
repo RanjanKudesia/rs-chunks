@@ -14,6 +14,7 @@ mod semantic;
 mod sentence;
 mod sliding_window;
 mod stream_walker;
+mod sym_table;
 mod structural;
 mod structural_build;
 mod structural_build_images;

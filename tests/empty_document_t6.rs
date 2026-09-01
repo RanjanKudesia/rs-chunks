@@ -132,18 +132,38 @@ fn csv_and_tsv_agree_on_empty_input() {
     }
 }
 
-/// A file of nothing but comments has no data line to sniff a delimiter from.
-/// That is the same "detection failed" path, and it must not raise either.
+/// A file of nothing but `#` lines must not raise — that is this test's actual
+/// contract, and it still holds.
+///
+/// It previously also asserted `is_empty()`, which encoded a *different*
+/// behaviour: the readers passed `.comment(Some(b'#'))`, so `#` lines were
+/// stripped before parsing and such a file genuinely had nothing left. That
+/// stripping is now removed, because RFC 4180 defines no comment convention and
+/// neither does the `text/tab-separated-values` registration — `#` is TEXTDATA.
+///
+/// The stripping deleted real records silently: a row `#4,legacy sku,archived`
+/// vanished with no error and no metadata trace, while the same character
+/// mid-field survived. And the only fixture in this corpus with a `#` preamble,
+/// `plotly_clustergram_mtcars.tsv`, was losing exactly this:
+///
+///     # Name: Motor Trend Car Road Tests
+///     # Description: The data was extracted from the 1974 Motor Trend US ...
+///     # Source: https://gist.github.com/seankross/a412dfbd88b3db70b74b
+///
+/// — the dataset's title, description and source URL, which is the most
+/// retrieval-valuable text in the file. A `#` preamble arriving as data is
+/// recoverable by a caller; silent deletion is not detectable by one.
 #[test]
-fn csv_with_only_comments_returns_empty() {
+fn csv_with_only_comments_does_not_raise() {
     let bytes = b"# just a comment\n# and another\n";
     for mode in DELIM_MODES {
-        let got = csv::chunk_from_bytes(bytes, mode, 10, 3, 1, true, None, "auto", true);
-        let chunks = got
+        let chunks = csv::chunk_from_bytes(bytes, mode, 10, 3, 1, true, None, "auto", true)
             .unwrap_or_else(|e| panic!("csv {mode} on comments-only: must not raise, got {e:?}"));
+        // Not empty any more, and that is the point: the text is in the file.
+        let all: String = chunks.iter().map(|c| c.content.as_str()).collect();
         assert!(
-            chunks.is_empty(),
-            "csv {mode} on comments-only: expected [], got {chunks:?}"
+            all.contains("just a comment"),
+            "csv {mode}: the `#` lines were deleted rather than kept as data: {chunks:?}"
         );
     }
 }

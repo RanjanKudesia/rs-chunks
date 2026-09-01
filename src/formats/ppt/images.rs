@@ -33,8 +33,13 @@ pub struct PptImage {
 }
 
 /// Blip-store entries decoded to images (index = 0-based store position).
-fn decode_bstore(doc_stream: &[u8], pictures: Option<&[u8]>) -> Vec<Option<DecodedBlip>> {
-    let Some(bstore) = find_record(doc_stream, 0, doc_stream.len(), RT_BSTORE_CONTAINER) else {
+fn decode_bstore(
+    doc_stream: &[u8],
+    start: usize,
+    end: usize,
+    pictures: Option<&[u8]>,
+) -> Vec<Option<DecodedBlip>> {
+    let Some(bstore) = find_record(doc_stream, start, end, RT_BSTORE_CONTAINER) else {
         return Vec::new();
     };
     let mut entries = Vec::new();
@@ -65,6 +70,13 @@ fn collect_slide_pibs(data: &[u8], start: usize, end: usize, out: &mut Vec<Vec<u
 /// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
 /// descent is a stack-overflow abort (SIGABRT) from a small file — see
 /// `odraw::MAX_RECORD_DEPTH`.
+/// PIBs inside ONE already-verified slide container body — the live-path
+/// counterpart of [`collect_slide_pibs`], which discovers containers by
+/// scanning and therefore cannot distinguish live from dead.
+fn collect_pibs_in_container(data: &[u8], start: usize, end: usize, out: &mut Vec<u32>) {
+    crate::formats::odraw::collect_pib_values(data, start, end, out);
+}
+
 fn collect_slide_pibs_at(
     data: &[u8],
     start: usize,
@@ -137,13 +149,41 @@ pub fn extract_ppt_images_bytes(bytes: &[u8]) -> Result<Vec<PptImage>, String> {
     // the whole CFB directory tree a second time for every image-bearing deck
     // (TECH_DEBT X9).
     let mut cfb = cfb_reader::PptCfb::open(bytes)?;
-    let doc_stream = cfb.powerpoint_document_stream()?;
+    let (doc_stream, current_user) = cfb.document_and_current_user()?;
     let pictures = cfb.pictures_stream()?;
 
-    let bstore = decode_bstore(&doc_stream, pictures.as_deref());
+    // Liveness first (see persist.rs). Both scans below honour it: a
+    // multi-save deck keeps one superseded blip store PER SAVE (22 in
+    // poi_47261.ppt, and a whole-stream `find_record` returned the DEAD one at
+    // offset 1100 instead of the live store at 201287), and dead
+    // SlideContainers otherwise mis-number every image after them.
+    let live = super::persist::resolve(&doc_stream, current_user.as_deref());
+    let (scan_start, scan_end, live_slides) = match &live {
+        super::persist::LiveModel::Persist {
+            document_body,
+            slide_offsets,
+        } => (document_body.0, document_body.1, Some(slide_offsets)),
+        super::persist::LiveModel::Fallback => (0, doc_stream.len(), None),
+    };
+
+    let bstore = decode_bstore(&doc_stream, scan_start, scan_end, pictures.as_deref());
 
     let mut slide_pibs: Vec<Vec<u32>> = Vec::new();
-    collect_slide_pibs(&doc_stream, 0, doc_stream.len(), &mut slide_pibs);
+    match live_slides {
+        Some(offsets) => {
+            // Live, presentation-ordered slide containers only.
+            for &off in offsets {
+                if let Some((h, _)) =
+                    super::records::parse_header(&doc_stream, off, doc_stream.len())
+                {
+                    let mut pibs = Vec::new();
+                    collect_pibs_in_container(&doc_stream, h.body_start, h.body_end, &mut pibs);
+                    slide_pibs.push(pibs);
+                }
+            }
+        }
+        None => collect_slide_pibs(&doc_stream, 0, doc_stream.len(), &mut slide_pibs),
+    }
 
     // `collect_slide_pibs` pushes one entry per `RT_SLIDE_CONTAINER` in
     // document order, skipping notes and masters — so `drawing_idx` *is* the
@@ -206,7 +246,7 @@ pub(super) fn chunk_with_images_impl_bytes(
     build: impl FnOnce(Vec<DocParagraph>) -> Vec<crate::formats::doc::structural::ChunkRecord>,
 ) -> Result<crate::chunk::ChunksWithImages, String> {
     let file_path = source;
-    let paragraphs = super::structural::load_ppt_paragraphs_bytes(bytes)?;
+    let (paragraphs, live_total) = super::structural::load_ppt_paragraphs_bytes(bytes)?;
     let paragraphs_for_meta = paragraphs.clone();
     let images = extract_ppt_images_bytes(bytes).unwrap_or_default();
     let text_chunks = build(paragraphs);
@@ -236,7 +276,7 @@ pub(super) fn chunk_with_images_impl_bytes(
 
     // Text chunks carry the same slide metadata the plain `chunk` path emits,
     // so a caller does not lose provenance by asking for images (TECH_DEBT #18).
-    let deck = super::DeckInfo::of(&paragraphs_for_meta);
+    let deck = super::DeckInfo::of(&paragraphs_for_meta, live_total);
     let offset = images.len();
     for chunk in &text_chunks {
         chunk_list.push(crate::chunk::Chunk::new(
@@ -285,7 +325,7 @@ mod tests {
         // Wrap in a container so find_record has to descend.
         let dgg = record(0xF, crate::formats::odraw::RT_DGG_CONTAINER, &bstore);
 
-        let entries = decode_bstore(&dgg, Some(&pictures));
+        let entries = decode_bstore(&dgg, 0, dgg.len(), Some(&pictures));
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_some());
         assert_eq!(entries[0].as_ref().unwrap().ext, ".png");

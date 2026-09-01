@@ -4,6 +4,7 @@
 
 pub mod cfb_reader;
 pub mod images;
+mod persist;
 pub mod records;
 pub mod structural;
 pub mod text_extractor;
@@ -53,15 +54,19 @@ pub(super) struct DeckInfo {
 }
 
 impl DeckInfo {
-    pub(super) fn of(paragraphs: &[DocParagraph]) -> Self {
+    pub(super) fn of(paragraphs: &[DocParagraph], live_total: Option<usize>) -> Self {
         DeckInfo {
             titles: slide_titles(paragraphs),
-            total_slides: paragraphs
-                .iter()
-                .filter_map(|p| p.page_index)
-                .max()
-                .map(|m| m + 1)
-                .unwrap_or(0),
+            // The live slide list is the true denominator; the paragraph
+            // derivation undercounts when a trailing slide carries no text.
+            total_slides: live_total.unwrap_or_else(|| {
+                paragraphs
+                    .iter()
+                    .filter_map(|p| p.page_index)
+                    .max()
+                    .map(|m| m + 1)
+                    .unwrap_or(0)
+            }),
         }
     }
 
@@ -103,8 +108,9 @@ fn ppt_records_to_chunks(
     source: &str,
     records: Vec<ChunkRecord>,
     paragraphs: &[DocParagraph],
+    live_total: Option<usize>,
 ) -> Vec<Chunk> {
-    let deck = DeckInfo::of(paragraphs);
+    let deck = DeckInfo::of(paragraphs, live_total);
     let total = records.len();
     records
         .into_iter()
@@ -131,7 +137,7 @@ pub fn chunk(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    let paragraphs = load_ppt_paragraphs(file_path).map_err(ChunkError::Parse)?;
+    let (paragraphs, live_total) = load_ppt_paragraphs(file_path).map_err(ChunkError::Parse)?;
     let records = build_by_mode(
         paragraphs.clone(),
         mode,
@@ -140,7 +146,7 @@ pub fn chunk(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    Ok(ppt_records_to_chunks(file_path, records, &paragraphs))
+    Ok(ppt_records_to_chunks(file_path, records, &paragraphs, live_total))
 }
 
 fn build_by_mode(
@@ -179,7 +185,7 @@ pub fn chunk_from_bytes(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    let paragraphs = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
+    let (paragraphs, live_total) = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     let records = build_by_mode(
         paragraphs.clone(),
         mode,
@@ -188,11 +194,11 @@ pub fn chunk_from_bytes(
         sentences_per_chunk,
         paragraphs_per_page,
     )?;
-    Ok(ppt_records_to_chunks(source, records, &paragraphs))
+    Ok(ppt_records_to_chunks(source, records, &paragraphs, live_total))
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
-    let paragraphs = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
+    let (paragraphs, _live_total) = structural::load_ppt_paragraphs_bytes(data).map_err(ChunkError::Parse)?;
     Ok(crate::formats::doc::to_markdown::render_paragraphs_markdown(paragraphs))
 }
 
@@ -262,7 +268,7 @@ pub fn chunk_with_images(
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
     validate_ppt_path(file_path).map_err(ChunkError::InvalidArg)?;
-    let paragraphs = load_ppt_paragraphs(file_path).map_err(ChunkError::Parse)?;
+    let (paragraphs, _live_total) = load_ppt_paragraphs(file_path).map_err(ChunkError::Parse)?;
     Ok(crate::formats::doc::to_markdown::render_paragraphs_markdown(paragraphs))
 }
 

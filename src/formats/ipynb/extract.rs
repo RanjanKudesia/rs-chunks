@@ -191,7 +191,11 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
                         if let Some(obj) = mimes.as_object() {
                             for (mime, data) in obj {
                                 if mime.starts_with("image/") {
-                                    if let Some(img) = data.as_str().and_then(decode_b64_image) {
+                                    // Same multiline_string union as outputs.
+                                    let joined = join_source(data);
+                                    if let Some(img) =
+                                        (!joined.is_empty()).then_some(joined.as_str()).and_then(decode_b64_image)
+                                    {
                                         let ext = mime.rsplit('/').next().unwrap_or("png");
                                         let fname = format!("attachment_{name}.{ext}");
                                         body = body.replace(&format!("attachment:{name}"), &fname);
@@ -256,10 +260,17 @@ fn render_outputs(
             "execute_result" | "display_data" => {
                 let data = out.get("data");
                 // Image?
+                // nbformat's `multiline_string` union: a mimebundle value is a
+                // string OR an array of strings (base64 split across lines).
+                // `as_str()` returned None for the array form, silently dropping
+                // the image — a 9,216-byte PNG in the corpus was lost this way.
+                // `join_source` handles both forms; `decode_b64_image` already
+                // strips the embedded newlines.
                 if let Some(img) = data
                     .and_then(|d| d.get("image/png"))
-                    .and_then(|v| v.as_str())
-                    .and_then(decode_b64_image)
+                    .map(join_source)
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| decode_b64_image(&s))
                 {
                     *image_counter += 1;
                     let name = format!("output_image_{image_counter}.png");
