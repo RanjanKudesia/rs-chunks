@@ -54,7 +54,17 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Unit + doc tests
-        run: cargo test --all-features
+        # `--lib` + `--doc` only. The fixture corpus (~280 MB) is
+        # workspace-private and deliberately not in this repo, and the
+        # corpus-driven integration tests PANIC rather than skip when a fixture
+        # is missing — a test that quietly passes without its corpus pins
+        # nothing. Running them here would fail every bare clone (caught by
+        # CI's first-ever run). The two integration suites below are the
+        # CI-safe ones: they carry an explicit corpus-absent skip. The full
+        # integration gate runs in the workspace, where the corpus lives.
+        run: |
+          cargo test --all-features --lib
+          cargo test --all-features --doc
 
       - name: Adversarial inputs must fail cleanly, never panic
         run: cargo test --all-features --test adversarial_inputs
