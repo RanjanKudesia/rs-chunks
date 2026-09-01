@@ -85,6 +85,6 @@ fn a_declaration_past_the_prescan_window_is_still_recovered() {
     assert!(
         cyrillic > 100,
         "expected recovered Cyrillic, got {cyrillic} chars: {:?}",
-        &md.chars().take(80).collect::<String>()
+        md.chars().take(80).collect::<String>()
     );
 }
