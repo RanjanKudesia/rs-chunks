@@ -37,7 +37,11 @@ pub struct DocParagraph {
 impl DocParagraph {
     /// A plain paragraph carrying no `.doc`-specific structure — the shape
     /// `.ppt` and the markdown image interleaver build.
-    pub fn plain(content: String, paragraph_type: ParagraphType, page_index: Option<usize>) -> Self {
+    pub fn plain(
+        content: String,
+        paragraph_type: ParagraphType,
+        page_index: Option<usize>,
+    ) -> Self {
         let heading_level = match paragraph_type {
             ParagraphType::Heading(level) => Some(level),
             _ => None,
@@ -361,7 +365,10 @@ mod tests {
         let story = story_of("Chapter One\rSection Two\rbody text here.\r");
         let props = vec![prop(1), prop(2), prop(0), None];
         let paragraphs = extract_paragraphs(&story, &props, &heading_styles());
-        let kinds: Vec<_> = paragraphs.iter().map(|p| p.paragraph_type.clone()).collect();
+        let kinds: Vec<_> = paragraphs
+            .iter()
+            .map(|p| p.paragraph_type.clone())
+            .collect();
         assert_eq!(
             kinds,
             vec![
@@ -377,9 +384,21 @@ mod tests {
     fn a_list_paragraph_reports_its_nesting_depth() {
         let story = story_of("Top level\rNested\rDeeper\r");
         let props = vec![
-            Some(ParagraphProp { ilfo: 1, ilvl: 0, ..Default::default() }),
-            Some(ParagraphProp { ilfo: 1, ilvl: 1, ..Default::default() }),
-            Some(ParagraphProp { ilfo: 1, ilvl: 2, ..Default::default() }),
+            Some(ParagraphProp {
+                ilfo: 1,
+                ilvl: 0,
+                ..Default::default()
+            }),
+            Some(ParagraphProp {
+                ilfo: 1,
+                ilvl: 1,
+                ..Default::default()
+            }),
+            Some(ParagraphProp {
+                ilfo: 1,
+                ilvl: 2,
+                ..Default::default()
+            }),
             None,
         ];
         let paragraphs = extract_paragraphs(&story, &props, &empty_styles());
@@ -397,8 +416,15 @@ mod tests {
     #[test]
     fn a_table_is_rebuilt_into_rows_and_columns() {
         let story = story_of("a\x07b\x07\x07c\x07d\x07\x07after\r");
-        let cell = ParagraphProp { f_in_table: true, ..Default::default() };
-        let row_end = ParagraphProp { f_in_table: true, f_tt_p: true, ..Default::default() };
+        let cell = ParagraphProp {
+            f_in_table: true,
+            ..Default::default()
+        };
+        let row_end = ParagraphProp {
+            f_in_table: true,
+            f_tt_p: true,
+            ..Default::default()
+        };
         let props = vec![
             Some(cell.clone()),
             Some(cell.clone()),
@@ -410,12 +436,20 @@ mod tests {
             None,
         ];
         let paragraphs = extract_paragraphs(&story, &props, &empty_styles());
-        assert_eq!(paragraphs.len(), 2, "one table paragraph, then the body text");
+        assert_eq!(
+            paragraphs.len(),
+            2,
+            "one table paragraph, then the body text"
+        );
         let table = &paragraphs[0];
         assert_eq!(table.paragraph_type, ParagraphType::Table);
         assert_eq!(
             table.table,
-            Some(TableShape { rows: 2, columns: 2, cells: 4 })
+            Some(TableShape {
+                rows: 2,
+                columns: 2,
+                cells: 4
+            })
         );
         assert_eq!(table.content, "| a | b |\n| --- | --- |\n| c | d |");
         assert_eq!(paragraphs[1].content, "after");
@@ -431,7 +465,11 @@ mod tests {
         assert_eq!(paragraphs.len(), 1);
         assert_eq!(
             paragraphs[0].table,
-            Some(TableShape { rows: 2, columns: 2, cells: 4 })
+            Some(TableShape {
+                rows: 2,
+                columns: 2,
+                cells: 4
+            })
         );
     }
 

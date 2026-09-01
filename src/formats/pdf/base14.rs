@@ -2769,9 +2769,7 @@ const SYMBOL: [(u32, u16); 190] = [
 ];
 
 /// `ZapfDingbats` — 1 glyphs, from `ZapfDingbats.afm`.
-const ZAPF_DINGBATS: [(u32, u16); 1] = [
-    (32, 278),
-];
+const ZAPF_DINGBATS: [(u32, u16); 1] = [(32, 278)];
 
 /// Widths for a base-14 font, if `base_font` names one.
 ///
@@ -2850,7 +2848,12 @@ mod tests {
 
     #[test]
     fn every_courier_face_is_monospaced() {
-        for name in ["Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"] {
+        for name in [
+            "Courier",
+            "Courier-Bold",
+            "Courier-Oblique",
+            "Courier-BoldOblique",
+        ] {
             let t = widths_for(name).unwrap();
             assert_eq!(t.width('i'), Some(0.6));
             assert_eq!(t.width('M'), Some(0.6));
@@ -2861,12 +2864,18 @@ mod tests {
     /// defect in place under a different name.
     #[test]
     fn standard_aliases_and_subset_prefixes_resolve() {
-        assert_eq!(widths_for("ABCDEF+Times-Roman").unwrap().width('M'), Some(0.889));
+        assert_eq!(
+            widths_for("ABCDEF+Times-Roman").unwrap().width('M'),
+            Some(0.889)
+        );
         assert_eq!(
             widths_for("Arial").unwrap().width('M'),
             widths_for("Helvetica").unwrap().width('M')
         );
-        assert_eq!(widths_for("TimesNewRomanPSMT").unwrap().width('M'), Some(0.889));
+        assert_eq!(
+            widths_for("TimesNewRomanPSMT").unwrap().width('M'),
+            Some(0.889)
+        );
         assert_eq!(widths_for("CourierNew").unwrap().width('x'), Some(0.6));
     }
 
@@ -2893,7 +2902,10 @@ mod tests {
     fn tables_are_sorted() {
         for name in ["Times-Roman", "Helvetica", "Symbol", "ZapfDingbats"] {
             if let Some(Base14::Table(t)) = widths_for(name) {
-                assert!(t.windows(2).all(|w| w[0].0 < w[1].0), "{name} table is unsorted");
+                assert!(
+                    t.windows(2).all(|w| w[0].0 < w[1].0),
+                    "{name} table is unsorted"
+                );
             }
         }
     }

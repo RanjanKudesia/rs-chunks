@@ -54,6 +54,11 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
     let mut shape_paragraphs: Vec<String> = Vec::new();
     let mut t_buf = String::new();
     let mut in_t = false;
+    // Inside an <a:fld> whose cached value is slide chrome (slide number,
+    // date/time, footer). The cache is whatever the value was at save time;
+    // emitting it made a slide whose only content is its number render as
+    // body text `- 10` (poi_2411 slide 10) and put stale numbers into notes.
+    let mut in_chrome_fld = false;
     // ── Table-cell extraction state ──────────────────────────────────────────
     let mut in_tbl = false;
     let mut in_tc = false; // inside <a:tc>
@@ -114,7 +119,18 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                         in_para = true;
                         para_text.clear();
                     }
-                    b"t" if in_para || in_tc_para => {
+                    b"fld" => {
+                        for a in e.attributes().flatten() {
+                            if a.key.as_ref().ends_with(b"type") {
+                                let v = String::from_utf8_lossy(a.value.as_ref())
+                                    .to_ascii_lowercase();
+                                if v == "slidenum" || v == "ftr" || v.starts_with("datetime") {
+                                    in_chrome_fld = true;
+                                }
+                            }
+                        }
+                    }
+                    b"t" if (in_para || in_tc_para) && !in_chrome_fld => {
                         in_t = true;
                         t_buf.clear();
                     }
@@ -188,18 +204,24 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                     }
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_t {
-                    // One <a:t> arrives as several events when it contains
-                    // entity references, so concatenate verbatim here and let
-                    // the flush at </a:t> do the trimming and joining. Trimming
-                    // per event would put a space inside a word.
-                    t_buf.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            // CDATA inside `<a:t>` is text. Without this arm it fell through
+            // `_ => {}` and the whole paragraph vanished from `get_chunks`,
+            // while `get_markdown` kept it — the third way these two parsers
+            // have disagreed.
+            Ok(Event::CData(ref e)) if in_t => {
+                t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+            }
+            Ok(Event::Text(ref e)) if in_t => {
+                // One <a:t> arrives as several events when it contains
+                // entity references, so concatenate verbatim here and let
+                // the flush at </a:t> do the trimming and joining. Trimming
+                // per event would put a space inside a word.
+                t_buf.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => {
                 let local = local_name(e.name());
                 match local.as_slice() {
+                    b"fld" => in_chrome_fld = false,
                     b"t" if in_t => {
                         in_t = false;
                         let t_buf = std::mem::take(&mut t_buf).trim().to_string();
@@ -244,12 +266,20 @@ pub fn parse_slide_xml(xml_bytes: &[u8]) -> Result<SlideContent, String> {
                         tc_cell_paras.clear();
                     }
                     b"tr" if in_tbl => {
-                        let row = table_row_cells
-                            .iter()
-                            .filter(|c| !c.trim().is_empty())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" | ");
+                        // A blank cell is a POSITION, not noise. Filtering them
+                        // shifted every column right of the gap one place left,
+                        // so the value ended up under the wrong header.
+                        // Measured on oxml_03_2006Calendar_TP10081921.potx:
+                        // February 2006 starts on a Wednesday, and `get_chunks`
+                        // filed the 1st under SUNDAY while `get_markdown` — which
+                        // keeps blanks — had it right. Plausible, wrong, and
+                        // undetectable downstream.
+                        //
+                        // An all-blank row is still dropped: that is a spacer,
+                        // and emitting `|  |  |  |` would put noise in every
+                        // retrieval chunk. One deliberate divergence from the
+                        // markdown surface, which renders it.
+                        let row = table_row_cells.join(" | ");
                         if !row.trim().is_empty() {
                             table_all_rows.push(row);
                         }
@@ -336,4 +366,35 @@ pub fn read_all_slides(
         slides.push((*slide_num, slide));
     }
     Ok(slides)
+}
+
+#[cfg(test)]
+mod cdata_tests {
+    /// CDATA inside `<a:t>` is text, and dropping it lost the whole paragraph.
+    ///
+    /// There was no `CData` arm, so the event fell through `_ => {}` and the
+    /// paragraph vanished from `get_chunks` while `get_markdown` kept it — the
+    /// third way these two parsers disagreed. No fixture contains CDATA (Power-
+    /// Point never writes it), so only a synthetic input can pin this.
+    #[test]
+    fn cdata_in_a_text_run_is_not_dropped() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>
+ <p:sp><p:txBody>
+  <a:p><a:r><a:t><![CDATA[Quarterly review notes]]></a:t></a:r></a:p>
+  <a:p><a:r><a:t>before <![CDATA[middle]]> after</a:t></a:r></a:p>
+ </p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"#;
+
+        let slide = super::parse_slide_xml(xml).expect("slide must parse");
+        let text = slide.all_text();
+        assert!(
+            text.contains("Quarterly review notes"),
+            "a CDATA-only paragraph was dropped: {text:?}"
+        );
+        assert!(
+            text.contains("before middle after"),
+            "CDATA mixed with text was dropped: {text:?}"
+        );
+    }
 }

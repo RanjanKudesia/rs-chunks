@@ -8,6 +8,9 @@
 use base64::Engine;
 use serde_json::Value;
 
+/// Cap on the base64 text of a single embedded image.
+const MAX_IMAGE_B64_BYTES: usize = 64 * 1024 * 1024;
+
 /// Per-output text is capped to avoid a single huge output bloating chunks.
 const MAX_OUTPUT_CHARS: usize = 4000;
 
@@ -21,7 +24,7 @@ pub struct IpynbDoc {
     pub markdown_cell_count: usize,
     pub markdown: String,
     /// Extracted images: name → bytes.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// A cell `source`/`text` is a list of line strings (or occasionally one string).
@@ -51,15 +54,13 @@ fn strip_ansi(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                let mut j = i + 2;
-                while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
-                    j += 1;
-                }
-                i = (j + 1).min(bytes.len());
-                continue;
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !(0x40..=0x7E).contains(&bytes[j]) {
+                j += 1;
             }
+            i = (j + 1).min(bytes.len());
+            continue;
         }
         // copy this UTF-8 char whole
         let ch_len = utf8_len(bytes[i]);
@@ -111,18 +112,33 @@ fn html_to_text(html: &str) -> String {
 
 fn decode_b64_image(data: &str) -> Option<Vec<u8>> {
     // Notebook image payloads may contain newlines.
+    // The encoded string is already resident, but `clean` doubles it and the
+    // decode doubles again. A notebook can legitimately embed a large plot;
+    // 64 MB of base64 is far past that and past anything worth chunking.
+    if data.len() > MAX_IMAGE_B64_BYTES {
+        return None;
+    }
     let clean: String = data.split_whitespace().collect();
     base64::engine::general_purpose::STANDARD.decode(clean).ok()
 }
 
 pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
-    let root: Value = serde_json::from_slice(bytes)
+    // A notebook is JSON, so it inherits JSON's byte-level handling: strip a
+    // BOM and transcode only when the bytes are not already UTF-8, without
+    // normalising newlines (TECH_DEBT C4). A BOM'd notebook was rejected as
+    // "expected value at line 1 column 1".
+    let bytes = crate::text_encoding::to_utf8_bytes(bytes);
+    let root: Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Not a valid .ipynb (JSON) file: {e}"))?;
 
     let mut doc = IpynbDoc {
-        nbformat: root
-            .get("nbformat")
-            .map(|v| format!("{}.{}", v, root.get("nbformat_minor").unwrap_or(&Value::from(0)))),
+        nbformat: root.get("nbformat").map(|v| {
+            format!(
+                "{}.{}",
+                v,
+                root.get("nbformat_minor").unwrap_or(&Value::from(0))
+            )
+        }),
         ..Default::default()
     };
 
@@ -175,13 +191,14 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
                         if let Some(obj) = mimes.as_object() {
                             for (mime, data) in obj {
                                 if mime.starts_with("image/") {
-                                    if let Some(img) = data.as_str().and_then(decode_b64_image) {
+                                    // Same multiline_string union as outputs.
+                                    let joined = join_source(data);
+                                    if let Some(img) =
+                                        (!joined.is_empty()).then_some(joined.as_str()).and_then(decode_b64_image)
+                                    {
                                         let ext = mime.rsplit('/').next().unwrap_or("png");
                                         let fname = format!("attachment_{name}.{ext}");
-                                        body = body.replace(
-                                            &format!("attachment:{name}"),
-                                            &fname,
-                                        );
+                                        body = body.replace(&format!("attachment:{name}"), &fname);
                                         doc.images.push((fname, img));
                                     }
                                 }
@@ -222,14 +239,17 @@ pub fn extract(bytes: &[u8]) -> Result<IpynbDoc, String> {
 fn render_outputs(
     cell: &Value,
     md: &mut String,
-    images: &mut Vec<(String, Vec<u8>)>,
+    images: &mut crate::chunk::ExtractedImages,
     image_counter: &mut usize,
 ) {
     let Some(outputs) = cell.get("outputs").and_then(|v| v.as_array()) else {
         return;
     };
     for out in outputs {
-        let otype = out.get("output_type").and_then(|v| v.as_str()).unwrap_or("");
+        let otype = out
+            .get("output_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         match otype {
             "stream" => {
                 let text = out.get("text").map(join_source).unwrap_or_default();
@@ -240,10 +260,17 @@ fn render_outputs(
             "execute_result" | "display_data" => {
                 let data = out.get("data");
                 // Image?
+                // nbformat's `multiline_string` union: a mimebundle value is a
+                // string OR an array of strings (base64 split across lines).
+                // `as_str()` returned None for the array form, silently dropping
+                // the image — a 9,216-byte PNG in the corpus was lost this way.
+                // `join_source` handles both forms; `decode_b64_image` already
+                // strips the embedded newlines.
                 if let Some(img) = data
                     .and_then(|d| d.get("image/png"))
-                    .and_then(|v| v.as_str())
-                    .and_then(decode_b64_image)
+                    .map(join_source)
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| decode_b64_image(&s))
                 {
                     *image_counter += 1;
                     let name = format!("output_image_{image_counter}.png");
@@ -341,7 +368,11 @@ mod ansi_tests {
         // Cursor up (A), erase display (J), set mode (h), and colour (m).
         for final_byte in ['A', 'J', 'h', 'm'] {
             let input = format!("{ESC}[1{final_byte}kept");
-            assert_eq!(strip_ansi(&input), "kept", "ESC[1{final_byte} was mishandled");
+            assert_eq!(
+                strip_ansi(&input),
+                "kept",
+                "ESC[1{final_byte} was mishandled"
+            );
         }
     }
 

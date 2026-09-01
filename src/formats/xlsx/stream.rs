@@ -24,9 +24,9 @@ use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 
 use super::common::{
-    cell_to_string, data_start_with_header_fallback, detect_header_row, open_spreadsheet_from_bytes,
-    read_worksheet_range, row_is_empty_public, serialize_row_kv, serialize_row_values_public,
-    XlsxChunkRecord, CT_ROW, CT_SLIDING_WINDOW,
+    cell_to_string, data_start_with_header_fallback, detect_header_row,
+    open_spreadsheet_from_bytes, read_worksheet_range, row_is_empty_public, serialize_row_kv,
+    serialize_row_values_public, XlsxChunkRecord, CT_ROW, CT_SLIDING_WINDOW,
 };
 
 // ── Pre-parsed sheet data (row / sliding_window state machines) ───────────────
@@ -130,8 +130,7 @@ fn parse_sheets_for_streaming(
         let headers = build_headers_from_rows(&rows, header_row_index, col_count);
         // Shared with every batch builder, so the two paths cannot drift — they
         // did, and that was TECH_DEBT #80.
-        let data_start =
-            data_start_with_header_fallback(&rows, header_row_index, skip_empty_rows);
+        let data_start = data_start_with_header_fallback(&rows, header_row_index, skip_empty_rows);
 
         let mut data_rows: Vec<(usize, Vec<Data>)> = Vec::new();
         for (row_index, row) in rows.iter().enumerate().skip(data_start) {
@@ -196,7 +195,15 @@ impl RowStreamState {
             let end = (self.row_cursor + self.rows_per_chunk).min(sheet_len);
 
             // Collect chunk data while sheet is borrowed, then mutate self.
-            let (content, first_row_index, actual_row_count, sheet_name, sheet_index, headers, col_count) = {
+            let (
+                content,
+                first_row_index,
+                actual_row_count,
+                sheet_name,
+                sheet_index,
+                headers,
+                col_count,
+            ) = {
                 let sheet = &self.sheets[self.sheet_idx];
                 let group = &sheet.data_rows[self.row_cursor..end];
                 let include_headers = self.include_headers;
@@ -280,7 +287,16 @@ impl SlidingWindowStreamState {
 
             let end = (self.window_start + self.window_size).min(sheet_len);
 
-            let (content, start_row, end_row, actual_row_count, sheet_name, sheet_index, headers, col_count) = {
+            let (
+                content,
+                start_row,
+                end_row,
+                actual_row_count,
+                sheet_name,
+                sheet_index,
+                headers,
+                col_count,
+            ) = {
                 let sheet = &self.sheets[self.sheet_idx];
                 let window = &sheet.data_rows[self.window_start..end];
                 let include_headers = self.include_headers;
@@ -438,7 +454,9 @@ pub fn stream_from_bytes(
         }
         "sliding_window" => {
             if window_size < 1 {
-                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "window_size must be greater than 0".into(),
+                ));
             }
             if overlap >= window_size {
                 return Err(ChunkError::InvalidArg(
@@ -462,28 +480,48 @@ pub fn stream_from_bytes(
         }
         "table" => Backend::Batch(BatchDrainState {
             chunks: super::table_region::build_table_chunks(
-                data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars,
+                data,
+                ext,
+                include_headers,
+                sheet_names,
+                skip_empty_rows,
+                max_chunk_chars,
             )
             .map_err(build_err)?
             .into_iter(),
         }),
         "sheet" => Backend::Batch(BatchDrainState {
             chunks: super::sheet::build_sheet_chunks(
-                data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars,
+                data,
+                ext,
+                include_headers,
+                sheet_names,
+                skip_empty_rows,
+                max_chunk_chars,
             )
             .map_err(build_err)?
             .into_iter(),
         }),
         "page_aware" => Backend::Batch(BatchDrainState {
             chunks: super::page_aware::build_page_aware_chunks(
-                data, ext, include_headers, sheet_names, skip_empty_rows, max_chunk_chars,
+                data,
+                ext,
+                include_headers,
+                sheet_names,
+                skip_empty_rows,
+                max_chunk_chars,
             )
             .map_err(build_err)?
             .into_iter(),
         }),
         "semantic" => Backend::Batch(BatchDrainState {
             chunks: super::semantic::build_semantic_chunks(
-                data, ext, rows_per_chunk, include_headers, sheet_names, skip_empty_rows,
+                data,
+                ext,
+                rows_per_chunk,
+                include_headers,
+                sheet_names,
+                skip_empty_rows,
             )
             .map_err(build_err)?
             .into_iter(),

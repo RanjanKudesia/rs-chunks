@@ -14,21 +14,42 @@ struct PageAccum {
 
 impl PageAccum {
     fn new(sh: Option<String>, hp: Vec<String>, bt: &'static str) -> Self {
-        PageAccum { parts: Vec::new(), section_heading: sh, heading_path: hp, break_type: bt }
+        PageAccum {
+            parts: Vec::new(),
+            section_heading: sh,
+            heading_path: hp,
+            break_type: bt,
+        }
     }
-    fn push(&mut self, s: String) { self.parts.push(s); }
-    fn len(&self) -> usize { self.parts.len() }
-    fn is_empty(&self) -> bool { self.parts.is_empty() }
-    fn into_content(self) -> String { self.parts.join("\n\n") }
+    fn push(&mut self, s: String) {
+        self.parts.push(s);
+    }
+    fn len(&self) -> usize {
+        self.parts.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+    fn into_content(self) -> String {
+        self.parts.join("\n\n")
+    }
 }
 
 pub fn build_page_aware_chunks(
     bytes: &[u8],
     paragraphs_per_page: usize,
 ) -> Result<Vec<ChunkRecordInput>, String> {
-    if paragraphs_per_page == 0 { return Err("paragraphs_per_page must be greater than 0".to_string()); }
+    if paragraphs_per_page == 0 {
+        return Err("paragraphs_per_page must be greater than 0".to_string());
+    }
     let text = crate::text_encoding::decode_text(bytes).0;
-    if text.trim().is_empty() { return Err("TXT file is empty".to_string()); }
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
 
     let blocks = parse_txt_blocks(&text);
     let total = blocks.len();
@@ -91,11 +112,13 @@ pub fn build_page_aware_chunks(
                 "heading_boundary",
             ));
         } else {
-            let a = accum.get_or_insert_with(|| PageAccum::new(
-                current_section_heading(&heading_stack),
-                heading_path_strings(&heading_stack),
-                "estimated",
-            ));
+            let a = accum.get_or_insert_with(|| {
+                PageAccum::new(
+                    current_section_heading(&heading_stack),
+                    heading_path_strings(&heading_stack),
+                    "estimated",
+                )
+            });
             a.push(block.content.clone());
             if a.len() >= paragraphs_per_page {
                 flush(&mut accum, &mut result, &mut chunk_index, total);
@@ -103,7 +126,12 @@ pub fn build_page_aware_chunks(
         }
     }
     flush(&mut accum, &mut result, &mut chunk_index, total);
-    if result.is_empty() { return Err("No page-aware chunks generated".to_string()); }
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
+    if result.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(result)
 }
-

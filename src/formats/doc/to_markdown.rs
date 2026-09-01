@@ -1,4 +1,3 @@
-
 use super::text_extractor::{DocParagraph, ParagraphType};
 
 /// Render a paragraph list to Markdown. Shared by `.doc` and `.ppt`, both of
@@ -61,17 +60,20 @@ pub(crate) fn render_paragraphs_markdown(paragraphs: Vec<DocParagraph>) -> Strin
     out.trim().to_string()
 }
 
-
 /// `.doc` → Markdown with image markers interleaved by raw paragraph ordinal,
 /// plus extracted image bytes.
-pub(super) fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images(
+    file_path: &str,
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     super::structural::validate_doc_path(file_path)?;
     let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .doc file: {e}"))?;
     to_markdown_with_images_bytes(&bytes)
 }
 
-pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
-    let indexed = super::structural::load_doc_paragraphs_indexed_bytes(bytes)?;
+pub(super) fn to_markdown_with_images_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages, String> {
+    let (indexed, side_stories) = super::structural::load_doc_paragraphs_indexed_bytes(bytes)?;
     let images = super::images::extract_doc_images_bytes(bytes).unwrap_or_default();
 
     let mut anchored: Vec<(usize, &str)> = images
@@ -85,7 +87,8 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
         DocParagraph::plain(format!("![]({hash_name})"), ParagraphType::Normal, None)
     };
 
-    let mut paragraphs: Vec<DocParagraph> = Vec::with_capacity(indexed.len() + images.len());
+    let mut paragraphs: Vec<DocParagraph> =
+        Vec::with_capacity(indexed.len() + side_stories.len() + images.len());
     for (raw_idx, para) in indexed {
         while let Some((rp, _)) = anchored_iter.peek() {
             if *rp < raw_idx {
@@ -103,8 +106,13 @@ pub(super) fn to_markdown_with_images_bytes(bytes: &[u8]) -> Result<(String, Vec
     for img in images.iter().filter(|i| i.raw_para.is_none()) {
         paragraphs.push(image_paragraph(&img.hash_name));
     }
+    // Footnotes, headers/footers, comments, endnotes and text boxes go last,
+    // exactly where `to_markdown` puts them — so stripping every `![](…)` line
+    // from this output yields `to_markdown` byte for byte. Omitting them is
+    // what made asking for images return less text than not asking (L5).
+    paragraphs.extend(side_stories);
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     for img in &images {
         if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
             image_out.push((img.hash_name.clone(), img.bytes.clone()));

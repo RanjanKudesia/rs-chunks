@@ -148,4 +148,16 @@ pub(super) struct DocxBlock {
     /// `word/_rels/document.xml.rels` by the markdown serialiser.
     /// Empty for table blocks and paragraphs with no `<w:hyperlink>`.
     pub hyperlinks: Vec<(String, String)>,
+    /// `r:id` of a `<w:altChunk>` (ECMA-376 §17.17.2.1) standing at this
+    /// block's position.
+    ///
+    /// The block is a placeholder: `parse_docx_blocks` resolves the
+    /// relationship, converts the imported part, and replaces it in place.
+    /// The walker cannot do that itself — it is handed a `Read` over the main
+    /// part and has no archive handle.
+    ///
+    /// A `<w:altChunk>` is a body-level sibling of `<w:p>`, so a document whose
+    /// body is only an altChunk produced no blocks at all and every mode
+    /// returned 0 chunks, with no error.
+    pub alt_chunk_rid: Option<String>,
 }

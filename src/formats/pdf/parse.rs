@@ -29,16 +29,24 @@ use super::regions;
 
 pub(crate) struct Parsed {
     pub markdown: String,
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
     pub total_pages: usize,
     /// Whether any *text* was extracted. A document whose pages hold nothing but
     /// pictures still renders `![](…)` references, so the markdown being
     /// non-empty is not the same question as the PDF having text.
     pub has_text: bool,
     /// Images present on a page but left out of `images`, with the reason.
-    /// Populated for diagnostics; no current consumer reads it.
-    #[allow(dead_code)]
+    ///
+    /// Read by the diagnosis in `mod.rs`: a text-less PDF whose images were all
+    /// undecodable is a different problem from a scan, and the caller can only
+    /// act on the difference if it is stated.
     pub skipped: Vec<String>,
+    /// The document declares an `/Encrypt` dictionary.
+    ///
+    /// The single most common real-world failure, and it used to surface as
+    /// "scanned or image-only… pass list_images" — a wrong cause with a remedy
+    /// that cannot work, since rendering an encrypted page fails too.
+    pub encrypted: bool,
 }
 
 struct PageLayout {
@@ -98,7 +106,10 @@ impl Reader {
                 let page = doc::read_page(&mut extractor, &document, *id);
                 let regions = regions::split(&page.content.glyphs);
                 lines.extend(regions.iter().flatten().cloned());
-                sampled.push_back(PageLayout { regions, images: page.content.images });
+                sampled.push_back(PageLayout {
+                    regions,
+                    images: page.content.images,
+                });
             }
             style = Some(Style::of(&lines));
             parsed = page_ids.len();
@@ -146,7 +157,10 @@ impl Reader {
                 let id = self.page_ids[self.next_to_parse];
                 self.next_to_parse += 1;
                 let page = doc::read_page(&mut self.extractor, &self.document, id);
-                PageLayout { regions: regions::split(&page.content.glyphs), images: page.content.images }
+                PageLayout {
+                    regions: regions::split(&page.content.glyphs),
+                    images: page.content.images,
+                }
             }
         };
         let page_number = self.next_to_render + 1;
@@ -162,7 +176,11 @@ impl Reader {
                 Some(Style::of(&lines))
             }
         };
-        let style = self.style.as_ref().or(page_style.as_ref()).expect("a ranking");
+        let style = self
+            .style
+            .as_ref()
+            .or(page_style.as_ref())
+            .expect("a ranking");
 
         let mut items: Vec<(f32, Item)> = Vec::new();
         for region in &layout.regions {
@@ -180,13 +198,15 @@ impl Reader {
             &mut self.names,
             &mut self.skipped,
         );
-        Some(markdown::page(&items.into_iter().map(|(_, item)| item).collect::<Vec<_>>()))
+        Some(markdown::page(
+            &items.into_iter().map(|(_, item)| item).collect::<Vec<_>>(),
+        ))
     }
 
     /// Decode every image the markdown referenced. Only meaningful once the
     /// pages have been read, since reading them is what discovers the images.
-    pub fn take_images(&mut self) -> Vec<(String, Vec<u8>)> {
-        let mut out: Vec<(String, Vec<u8>)> = Vec::with_capacity(self.names.len());
+    pub fn take_images(&mut self) -> crate::chunk::ExtractedImages {
+        let mut out: crate::chunk::ExtractedImages = Vec::with_capacity(self.names.len());
         for (id, name) in &self.names {
             match images::extract(&self.document, *id) {
                 Ok(image) => out.push((name.clone(), image.bytes)),
@@ -201,6 +221,11 @@ impl Reader {
 
     pub fn take_skipped(&mut self) -> Vec<String> {
         std::mem::take(&mut self.skipped)
+    }
+
+    /// Whether the document carries an `/Encrypt` dictionary.
+    pub fn is_encrypted(&self) -> bool {
+        self.document.is_encrypted()
     }
 }
 
@@ -219,12 +244,17 @@ pub(crate) fn parse(bytes: &[u8], want_images: bool, headings: Headings) -> Resu
         markdown.push_str(&page);
     }
 
-    let images = if want_images { reader.take_images() } else { Vec::new() };
+    let images = if want_images {
+        reader.take_images()
+    } else {
+        Vec::new()
+    };
     Ok(Parsed {
         markdown,
         images,
         total_pages,
         has_text: reader.has_text(),
+        encrypted: reader.is_encrypted(),
         skipped: reader.take_skipped(),
     })
 }
@@ -239,9 +269,14 @@ fn place_images(
     skipped: &mut Vec<String>,
 ) {
     placed.sort_by(|a, b| {
-        b.top.partial_cmp(&a.top).unwrap_or(std::cmp::Ordering::Equal).then(
-            a.left.partial_cmp(&b.left).unwrap_or(std::cmp::Ordering::Equal),
-        )
+        b.top
+            .partial_cmp(&a.top)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                a.left
+                    .partial_cmp(&b.left)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
     let mut ordinal = 0usize;
     for image in placed {
@@ -256,7 +291,10 @@ fn place_images(
             let extension = images::extension_of(document, image.id);
             format!("image_p{page_number}_{ordinal}.{extension}")
         });
-        let position = items.iter().position(|(top, _)| *top < image.top).unwrap_or(items.len());
+        let position = items
+            .iter()
+            .position(|(top, _)| *top < image.top)
+            .unwrap_or(items.len());
         items.insert(position, (image.top, Item::Image(name.clone())));
     }
 }

@@ -1,8 +1,6 @@
 use serde_json::{json, Value};
 
-use super::common::{
-    parse_docx_paragraph_events, PageBreakSignal, ParagraphEvent,
-};
+use super::common::{parse_docx_paragraph_events, PageBreakSignal, ParagraphEvent};
 
 const MAX_PAGE_AWARE_CHUNK_CHARS: usize = 2000;
 
@@ -104,6 +102,8 @@ fn build_page_aware_chunks(
     chunks
 }
 
+// Assembles one chunk from eight already-computed, unrelated values.
+#[allow(clippy::too_many_arguments)]
 fn build_page_chunk(
     paragraphs: &[String],
     page_number: usize,
@@ -223,8 +223,10 @@ fn split_long_text(text: &str, max_chars: usize) -> Vec<String> {
     }
 }
 
-
-pub(super) fn chunk(bytes: &[u8], paragraphs_per_page: usize) -> Result<Vec<crate::chunk::Chunk>, String> {
+pub(super) fn chunk(
+    bytes: &[u8],
+    paragraphs_per_page: usize,
+) -> Result<Vec<crate::chunk::Chunk>, String> {
     let events = parse_docx_paragraph_events(bytes)?;
     Ok(build_page_aware_chunks(events, paragraphs_per_page)
         .into_iter()
@@ -232,7 +234,10 @@ pub(super) fn chunk(bytes: &[u8], paragraphs_per_page: usize) -> Result<Vec<crat
         .collect())
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8], paragraphs_per_page: usize) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(
+    bytes: &[u8],
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let items = super::common::parse_docx_paragraph_events_with_images(bytes)?;
     let mut text_events: Vec<ParagraphEvent> = Vec::new();
@@ -253,8 +258,18 @@ pub(super) fn chunk_with_images(bytes: &[u8], paragraphs_per_page: usize) -> Res
         }
     }
     let text_chunks = build_page_aware_chunks(text_events, paragraphs_per_page);
-    let (entries, image_out) = super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
-    let mut chunks: Vec<crate::chunk::Chunk> = entries.into_iter().map(|(n, m)| crate::chunk::Chunk::new(n, "image", m)).collect();
-    for c in text_chunks { chunks.push(crate::chunk::Chunk::new(c.content, "page_aware", c.metadata)); }
+    let (entries, image_out) =
+        super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
+    let mut chunks: Vec<crate::chunk::Chunk> = entries
+        .into_iter()
+        .map(|(n, m)| crate::chunk::Chunk::new(n, "image", m))
+        .collect();
+    for c in text_chunks {
+        chunks.push(crate::chunk::Chunk::new(
+            c.content,
+            "page_aware",
+            c.metadata,
+        ));
+    }
     Ok((chunks, image_out))
 }

@@ -51,7 +51,11 @@ fn nested_rows_do_not_leak_into_the_parent() {
         "the outer table has two rows; got:\n{table}"
     );
     assert!(
-        table.lines().next().unwrap().starts_with("Outer A1 | Outer B1"),
+        table
+            .lines()
+            .next()
+            .unwrap()
+            .starts_with("Outer A1 | Outer B1"),
         "first row wrong: {table}"
     );
 }

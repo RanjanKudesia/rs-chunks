@@ -15,9 +15,8 @@ pub const CT_SEMANTIC: &str = "semantic_group";
 
 /// Every spreadsheet extension routed through the calamine-backed xlsx chunkers.
 /// Adding a new calamine-readable format is a one-line change here.
-pub const SPREADSHEET_EXTS: &[&str] = &[
-    ".xlsx", ".xls", ".xlsm", ".xlsb", ".ods", ".xltx", ".xltm",
-];
+pub const SPREADSHEET_EXTS: &[&str] =
+    &[".xlsx", ".xls", ".xlsm", ".xlsb", ".ods", ".xltx", ".xltm"];
 
 thread_local! {
     /// Set while we are deliberately catching a calamine panic, so the custom
@@ -138,7 +137,8 @@ pub fn open_spreadsheet_from_bytes(data: &[u8], ext: &str) -> Result<Workbook, S
             Err(specific_open_error(&repaired_bytes(data, ext), ext).unwrap_or(generic))
         }
         Err(_) => Err(
-            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)".to_string(),
+            "Failed to open workbook: malformed or unsupported spreadsheet (parser panic)"
+                .to_string(),
         ),
     }
 }
@@ -175,9 +175,7 @@ fn specific_open_error(data: &[u8], ext: &str) -> Option<String> {
     // Wrap in calamine's own `Error` so the text matches what the path-based
     // `open_workbook_auto` produced ("Xlsx error: …", not bare "…").
     let err = match ext {
-        "xlsx" | "xlsm" | "xltx" | "xltm" => {
-            Xlsx::new(cursor()).err().map(calamine::Error::Xlsx)
-        }
+        "xlsx" | "xlsm" | "xltx" | "xltm" => Xlsx::new(cursor()).err().map(calamine::Error::Xlsx),
         "xlsb" => Xlsb::new(cursor()).err().map(calamine::Error::Xlsb),
         "ods" => Ods::new(cursor()).err().map(calamine::Error::Ods),
         "xls" => Xls::new(cursor()).err().map(calamine::Error::Xls),
@@ -239,14 +237,34 @@ pub fn split_content_lines(lines: Vec<String>, max_chunk_chars: usize) -> Vec<Ve
 pub fn cell_to_string(cell: &Data) -> String {
     match cell {
         Data::String(s) => s.clone(),
+        // Excel keeps 15 significant digits and no more; anything past that in
+        // the file is IEEE-754 noise from whatever wrote it (`899.20000000000073`
+        // is what is stored, `899.20` is what Excel shows). So: round to 15
+        // significant digits, then print the shortest decimal that round-trips.
+        //
+        // `{:.4}` did that noise suppression by accident and charged three ways
+        // for it. It picks decimal PLACES where the contract is significant
+        // DIGITS, and places are magnitude-dependent:
+        //   - `3.5E-4` came out `0.0003` — a 14% error
+        //     (poi_NumberFormatTests.xlsx)
+        //   - anything below 5e-5 collapsed to the literal string "0", so a
+        //     satoshi, FX-rate or concentration column rendered as all zeros
+        //   - `as i64` SATURATES in Rust, so any integral value past i64::MAX
+        //     rendered as 9223372036854775807 — Avogadro's number became that
+        // The last two are unexercised by this corpus, so only unit tests can
+        // pin them; the snapshot never will.
         Data::Float(f) => {
-            if f.fract() == 0.0 {
-                format!("{}", *f as i64)
+            let f = *f;
+            if !f.is_finite() {
+                String::new()
+            } else if f.fract() == 0.0 && (f as i64) as f64 == f {
+                // A round-trip guard, not a magnitude guard: take the integer
+                // form only when i64 represents this value exactly, which makes
+                // the saturating cast unreachable.
+                format!("{}", f as i64)
             } else {
-                format!("{:.4}", f)
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                    .to_string()
+                let snapped: f64 = format!("{f:.14e}").parse().unwrap_or(f);
+                format!("{snapped}")
             }
         }
         Data::Int(i) => i.to_string(),
@@ -267,36 +285,76 @@ pub fn cell_to_string(cell: &Data) -> String {
             .unwrap_or_else(|| dt.as_f64().to_string()),
         Data::DateTimeIso(s) => s.clone(),
         Data::DurationIso(s) => s.clone(),
-        Data::Error(_) => String::new(),
+        // A broken cell is not an empty cell. `#REF!` in a chunk is
+        // information; a blank is a lie about what the sheet contains.
+        // poi_46535.xlsx carries 331 of these.
+        Data::Error(e) => format!("{e}"),
         // Data::Empty and any future calamine variant → empty cell.
         _ => String::new(),
     }
 }
 
 pub fn detect_header_row(rows: &[&[Data]]) -> Option<usize> {
+    // A header can only sit at the TOP of the data — above it there can be
+    // nothing but blank rows. This used to keep scanning until it found
+    // something header-shaped anywhere in the sheet, and every caller treats
+    // rows above the header as non-data: on `poi_46535.xlsx` sheet `Others`,
+    // rows 1-331 are `#REF!` error cells, the first all-string row is row 332,
+    // and the sheet emitted **2 chunks for 331 rows** with `skipped_sheets`
+    // empty — 99.4% of the sheet silently deleted, invisible to every oracle.
+    // The first NON-EMPTY row now decides: header-shaped or there is no header.
     for (i, row) in rows.iter().enumerate() {
         let non_empty: Vec<_> = row.iter().filter(|c| !matches!(c, Data::Empty)).collect();
         if non_empty.is_empty() {
+            // Leading blank rows are the one thing legitimately above a header.
             continue;
         }
         if non_empty.iter().all(|c| matches!(c, Data::String(_))) {
             return Some(i);
         }
-        // Numeric index column (e.g. 0, 1, 2…) followed by all-string labels → treat as header
+        // Numeric index column (e.g. 0, 1, 2…) followed by all-string labels → header
         if non_empty.len() >= 2
             && matches!(non_empty[0], Data::Float(_) | Data::Int(_))
             && non_empty[1..].iter().all(|c| matches!(c, Data::String(_)))
         {
             return Some(i);
         }
+        // First non-empty row is data: the sheet has no header row.
+        return None;
     }
     None
 }
 
+/// Excel's own grid limits. A `ref=` attribute or `_xlnm.Print_Area` string is
+/// attacker-controlled, and both feed per-row allocations and row loops, so a
+/// reference beyond the real grid is rejected rather than honoured:
+/// `ref="A1:AAAAAAAAAA1"` otherwise yields a column count around 1.4e14.
+pub const MAX_SHEET_COLS: usize = 16_384; // XFD
+pub const MAX_SHEET_ROWS: usize = 1_048_576;
+
+/// Convert a column label (`A`, `AB`, `XFD`) to a 0-based index.
+///
+/// Saturating and underflow-free on purpose: the old body was
+/// `fold(...) - 1`, which underflowed to `usize::MAX` for an empty label and
+/// overflowed `acc * 26` for a long run of letters — both reachable from a
+/// crafted `ref=`.
 pub fn col_letter_to_index(col: &str) -> usize {
-    col.chars().fold(0usize, |acc, c| {
-        acc * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
+    let mut acc = 0usize;
+    for c in col.chars() {
+        if !c.is_ascii_alphabetic() {
+            break;
+        }
+        acc = acc
+            .saturating_mul(26)
+            .saturating_add(c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+        if acc > MAX_SHEET_COLS {
+            // One past the last real column, so `parse_range_ref` rejects the
+            // reference instead of silently accepting a clamped one. Saturating
+            // to XFD would make `A1:AAAAAAAAAA1` look like a legal range.
+            return MAX_SHEET_COLS;
+        }
+    }
+    acc.saturating_sub(1)
 }
 
 pub fn parse_cell_ref(cell_ref: &str) -> Option<(usize, usize)> {
@@ -323,10 +381,17 @@ pub fn parse_range_ref(range_ref: &str) -> Option<(usize, usize, usize, usize)> 
     }
     let (r1, c1) = parse_cell_ref(parts[0])?;
     let (r2, c2) = parse_cell_ref(parts[1])?;
+    // Outside the real grid this is not a range, it is an allocation request.
+    if r1.max(r2) >= MAX_SHEET_ROWS || c1.max(c2) >= MAX_SHEET_COLS {
+        return None;
+    }
     Some((r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
 }
 
-fn read_zip_entry(archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> Result<Option<Vec<u8>>, String> {
+fn read_zip_entry(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+) -> Result<Option<Vec<u8>>, String> {
     match archive.by_name(name) {
         Ok(mut entry) => {
             let mut buf = Vec::new();
@@ -383,21 +448,21 @@ fn parse_table_relationship_targets(rels_xml: &[u8]) -> Result<Vec<String>, Stri
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse worksheet relationships XML: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"Relationship" {
-                    let mut rel_type = String::new();
-                    let mut target = String::new();
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        if key.as_slice() == b"Type" {
-                            rel_type = attr_value(&attr);
-                        } else if key.as_slice() == b"Target" {
-                            target = attr_value(&attr);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"Relationship" =>
+            {
+                let mut rel_type = String::new();
+                let mut target = String::new();
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    if key.as_slice() == b"Type" {
+                        rel_type = attr_value(&attr);
+                    } else if key.as_slice() == b"Target" {
+                        target = attr_value(&attr);
                     }
-                    if rel_type.ends_with("/table") && !target.is_empty() {
-                        targets.push(target);
-                    }
+                }
+                if rel_type.ends_with("/table") && !target.is_empty() {
+                    targets.push(target);
                 }
             }
             _ => {}
@@ -416,21 +481,21 @@ fn parse_table_name(table_xml: &[u8]) -> Result<Option<String>, String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse table XML: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"table" {
-                    let mut table_name: Option<String> = None;
-                    let mut display_name: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        if key.as_slice() == b"name" {
-                            table_name = Some(value);
-                        } else if key.as_slice() == b"displayName" {
-                            display_name = Some(value);
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"table" =>
+            {
+                let mut table_name: Option<String> = None;
+                let mut display_name: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    if key.as_slice() == b"name" {
+                        table_name = Some(value);
+                    } else if key.as_slice() == b"displayName" {
+                        display_name = Some(value);
                     }
-                    return Ok(table_name.or(display_name));
                 }
+                return Ok(table_name.or(display_name));
             }
             _ => {}
         }
@@ -438,6 +503,119 @@ fn parse_table_name(table_xml: &[u8]) -> Result<Option<String>, String> {
     }
 
     Ok(None)
+}
+
+/// Resolve a worksheet's part name from `xl/workbook.xml` + its rels.
+///
+/// The sheet's position in the workbook is **not** its part number. OOXML lists
+/// `<sheet name="X" r:id="rIdN"/>` and the rels map `rIdN` to an arbitrary
+/// target, so `sheet{ordinal}.xml` is a guess. Measured on
+/// `poi_xlmmacro.xlsm`, where an XLM macro sheet occupies a slot and shifts
+/// every worksheet after it: ordinal 2 resolves to `sheet1.xml`, ordinal 3 to
+/// `sheet2.xml`. Named tables, images and drawings were therefore read from the
+/// **wrong sheet** — silently, since the wrong sheet is still a valid sheet.
+///
+/// Returns the part path without the `xl/` prefix (e.g. `worksheets/sheet1.xml`),
+/// or `None` when the workbook or its rels cannot be read — the caller then
+/// keeps the historical ordinal guess, which is correct for 60 of the 62
+/// zip-backed workbooks in the corpus.
+pub fn resolve_sheet_part(
+    archive: &mut ZipArchive<std::io::Cursor<Vec<u8>>>,
+    sheet_name: &str,
+) -> Option<String> {
+    let wb = read_zip_entry(archive, "xl/workbook.xml").ok()??;
+    let rels = read_zip_entry(archive, "xl/_rels/workbook.xml.rels").ok()??;
+
+    let rid = sheet_rid_for_name(&wb, sheet_name)?;
+    let target = rels_target_for_id(&rels, &rid)?;
+    Some(
+        target
+            .trim_start_matches('/')
+            .trim_start_matches("xl/")
+            .to_string(),
+    )
+}
+
+fn sheet_rid_for_name(workbook_xml: &[u8], want: &str) -> Option<String> {
+    let mut reader = XmlReader::from_reader(workbook_xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let local: &[u8] = name
+                    .as_ref()
+                    .rsplit(|b| *b == b':')
+                    .next()
+                    .unwrap_or(name.as_ref());
+                if local == b"sheet" {
+                    let mut this_name = String::new();
+                    let mut rid = String::new();
+                    for attr in e.attributes().flatten() {
+                        let key = attr.key.as_ref();
+                        let local_key: &[u8] = key.rsplit(|b| *b == b':').next().unwrap_or(key);
+                        let val = crate::entities::decode_attr(&attr);
+                        match local_key {
+                            b"name" => this_name = val,
+                            b"id" => rid = val,
+                            _ => {}
+                        }
+                    }
+                    if this_name == want && !rid.is_empty() {
+                        return Some(rid);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+fn rels_target_for_id(rels_xml: &[u8], want: &str) -> Option<String> {
+    let mut reader = XmlReader::from_reader(rels_xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let local: &[u8] = name
+                    .as_ref()
+                    .rsplit(|b| *b == b':')
+                    .next()
+                    .unwrap_or(name.as_ref());
+                if local == b"Relationship" {
+                    let mut id = String::new();
+                    let mut target = String::new();
+                    for attr in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                        let val = crate::entities::decode_attr(&attr);
+                        match key.as_str() {
+                            "Id" => id = val,
+                            "Target" => target = val,
+                            _ => {}
+                        }
+                    }
+                    if id == want && !target.is_empty() {
+                        return Some(target);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// The `_rels` path for a worksheet part, e.g.
+/// `worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
+pub fn sheet_rels_path(part: &str) -> String {
+    match part.rsplit_once('/') {
+        Some((dir, file)) => format!("xl/{dir}/_rels/{file}.rels"),
+        None => format!("xl/_rels/{part}.rels"),
+    }
 }
 
 pub fn get_named_table_names_for_sheet(
@@ -463,8 +641,14 @@ pub fn get_named_table_names_for_sheet(
 
     // .xlsx/.xlsm/.xltx/.xltm → sheetN.xml.rels; .xlsb → sheetN.bin.rels.
     // The referenced table parts (xl/tables/tableN.xml) are XML in both.
-    let xml_rels = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based);
-    let bin_rels = format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based);
+    // Prefer the workbook relationship over the ordinal guess — the sheet's
+    // position is not its part number (see `resolve_sheet_part`).
+    let resolved = resolve_sheet_part(&mut archive, sheet_name).map(|p| sheet_rels_path(&p));
+    let xml_rels = resolved
+        .clone()
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_index_1based));
+    let bin_rels = resolved
+        .unwrap_or_else(|| format!("xl/worksheets/_rels/sheet{}.bin.rels", sheet_index_1based));
     let rels_xml = match read_zip_entry(&mut archive, &xml_rels)? {
         Some(b) => b,
         None => match read_zip_entry(&mut archive, &bin_rels)? {
@@ -531,10 +715,7 @@ fn parse_ods_cell_ref(reference: &str) -> Option<(usize, usize)> {
 /// [`get_named_table_names_for_sheet`] returns only the names, which is all
 /// `sheet` mode needs. `table` mode has to know *where* each range is to decide
 /// whether a detected region is that named table (TECH_DEBT #20).
-pub fn get_ods_named_ranges_for_sheet(
-    content: &[u8],
-    sheet_name: &str,
-) -> Vec<OdsNamedRange> {
+pub fn get_ods_named_ranges_for_sheet(content: &[u8], sheet_name: &str) -> Vec<OdsNamedRange> {
     let mut reader = XmlReader::from_reader(content);
     let mut buf = Vec::new();
     let mut out = Vec::new();
@@ -542,42 +723,42 @@ pub fn get_ods_named_ranges_for_sheet(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"named-range" {
-                    let mut name: Option<String> = None;
-                    let mut address: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        match key.as_slice() {
-                            b"name" => name = Some(value),
-                            b"cell-range-address" => address = Some(value),
-                            _ => {}
-                        }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"named-range" =>
+            {
+                let mut name: Option<String> = None;
+                let mut address: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    match key.as_slice() {
+                        b"name" => name = Some(value),
+                        b"cell-range-address" => address = Some(value),
+                        _ => {}
                     }
-                    if let (Some(name), Some(address)) = (name, address) {
-                        let on_sheet = address
-                            .split('.')
-                            .next()
-                            .map(|s| s.trim_start_matches('$').trim_matches('\''))
-                            .is_some_and(|s| s == sheet_name);
-                        // A single-cell range has no ':' — `Sheet1.$A$1`. It is
-                        // still a named range, and its region is that one cell.
-                        let (from, to) = match address.split_once(':') {
-                            Some((a, b)) => (a, b),
-                            None => (address.as_str(), address.as_str()),
-                        };
-                        if let (true, Some(a), Some(b)) =
-                            (on_sheet, parse_ods_cell_ref(from), parse_ods_cell_ref(to))
-                        {
-                            out.push(OdsNamedRange {
-                                name,
-                                start_row: a.0.min(b.0),
-                                end_row: a.0.max(b.0),
-                                start_col: a.1.min(b.1),
-                                end_col: a.1.max(b.1),
-                            });
-                        }
+                }
+                if let (Some(name), Some(address)) = (name, address) {
+                    let on_sheet = address
+                        .split('.')
+                        .next()
+                        .map(|s| s.trim_start_matches('$').trim_matches('\''))
+                        .is_some_and(|s| s == sheet_name);
+                    // A single-cell range has no ':' — `Sheet1.$A$1`. It is
+                    // still a named range, and its region is that one cell.
+                    let (from, to) = match address.split_once(':') {
+                        Some((a, b)) => (a, b),
+                        None => (address.as_str(), address.as_str()),
+                    };
+                    if let (true, Some(a), Some(b)) =
+                        (on_sheet, parse_ods_cell_ref(from), parse_ods_cell_ref(to))
+                    {
+                        out.push(OdsNamedRange {
+                            name,
+                            start_row: a.0.min(b.0),
+                            end_row: a.0.max(b.0),
+                            start_col: a.1.min(b.1),
+                            end_col: a.1.max(b.1),
+                        });
                     }
                 }
             }
@@ -596,30 +777,28 @@ fn parse_ods_named_ranges_for_sheet(content: &[u8], sheet_name: &str) -> Vec<Str
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"named-range" {
-                    let mut name: Option<String> = None;
-                    let mut range_sheet: Option<String> = None;
-                    for attr in e.attributes().flatten() {
-                        let key = local_name(QName(attr.key.as_ref()));
-                        let value = attr_value(&attr);
-                        match key.as_slice() {
-                            b"name" => name = Some(value),
-                            b"cell-range-address" | b"base-cell-address"
-                                if range_sheet.is_none() =>
-                            {
-                                // "Sheet1.$A$1" → sheet is the part before the first '.'
-                                let raw = value.split('.').next().unwrap_or("");
-                                range_sheet =
-                                    Some(raw.trim_start_matches('$').trim_matches('\'').to_string());
-                            }
-                            _ => {}
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"named-range" =>
+            {
+                let mut name: Option<String> = None;
+                let mut range_sheet: Option<String> = None;
+                for attr in e.attributes().flatten() {
+                    let key = local_name(QName(attr.key.as_ref()));
+                    let value = attr_value(&attr);
+                    match key.as_slice() {
+                        b"name" => name = Some(value),
+                        b"cell-range-address" | b"base-cell-address" if range_sheet.is_none() => {
+                            // "Sheet1.$A$1" → sheet is the part before the first '.'
+                            let raw = value.split('.').next().unwrap_or("");
+                            range_sheet =
+                                Some(raw.trim_start_matches('$').trim_matches('\'').to_string());
                         }
+                        _ => {}
                     }
-                    if let (Some(name), Some(rs)) = (name, range_sheet) {
-                        if rs == sheet_name {
-                            names.push(name);
-                        }
+                }
+                if let (Some(name), Some(rs)) = (name, range_sheet) {
+                    if rs == sheet_name {
+                        names.push(name);
                     }
                 }
             }
@@ -941,4 +1120,62 @@ pub fn build_row_chunks(
 
     stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
+}
+
+#[cfg(test)]
+mod cell_rendering_tests {
+    use super::cell_to_string;
+    use calamine::Data;
+
+    /// `{:.4}` truncated to four decimal PLACES where the contract is fifteen
+    /// significant DIGITS. Places are magnitude-dependent, so small values lost
+    /// everything: `3.5E-4` came out `0.0003`, a 14% error, and anything below
+    /// 5e-5 collapsed to the literal string "0".
+    #[test]
+    fn small_magnitudes_keep_their_value() {
+        assert_eq!(cell_to_string(&Data::Float(3.5e-4)), "0.00035");
+        assert_eq!(cell_to_string(&Data::Float(1e-8)), "0.00000001");
+        assert_ne!(cell_to_string(&Data::Float(1e-8)), "0");
+    }
+
+    /// Rust's float->int `as` cast SATURATES. Any integral value past i64::MAX
+    /// rendered as 9223372036854775807 — Avogadro's number became that literal.
+    #[test]
+    fn huge_integral_values_do_not_saturate() {
+        let out = cell_to_string(&Data::Float(6.02214076e23));
+        assert_ne!(out, "9223372036854775807", "the cast still saturates");
+        assert!(out.starts_with("602214076"), "unexpected rendering: {out}");
+        assert_ne!(
+            cell_to_string(&Data::Float(1e19)),
+            "9223372036854775807",
+            "the cast still saturates"
+        );
+    }
+
+    /// The half that must not regress: IEEE-754 noise is still suppressed, and
+    /// ordinary values still render cleanly.
+    #[test]
+    fn ieee_noise_is_still_suppressed() {
+        assert_eq!(cell_to_string(&Data::Float(0.18999999999999995)), "0.19");
+        assert_eq!(cell_to_string(&Data::Float(2500.0)), "2500");
+        assert_eq!(cell_to_string(&Data::Float(-0.5)), "-0.5");
+        assert_eq!(cell_to_string(&Data::Float(0.0)), "0");
+    }
+
+    /// A non-finite value has no honest decimal form; an empty cell is closer
+    /// to the truth than "NaN" or "inf" appearing as data.
+    #[test]
+    fn non_finite_values_render_empty() {
+        assert_eq!(cell_to_string(&Data::Float(f64::NAN)), "");
+        assert_eq!(cell_to_string(&Data::Float(f64::INFINITY)), "");
+    }
+
+    /// A broken cell is not an empty cell.
+    #[test]
+    fn error_cells_say_what_they_are() {
+        use calamine::CellErrorType;
+        assert_eq!(cell_to_string(&Data::Error(CellErrorType::Div0)), "#DIV/0!");
+        assert_eq!(cell_to_string(&Data::Error(CellErrorType::Ref)), "#REF!");
+        assert_ne!(cell_to_string(&Data::Error(CellErrorType::NA)), "");
+    }
 }

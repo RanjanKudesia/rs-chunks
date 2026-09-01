@@ -21,7 +21,9 @@ const MODES: &[&str] = &[
 ];
 
 fn corpus() -> Vec<PathBuf> {
-    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf"].iter().collect();
+    let dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf"]
+        .iter()
+        .collect();
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("fixtures")
         .filter_map(|e| e.ok())
@@ -35,7 +37,9 @@ fn corpus() -> Vec<PathBuf> {
 /// Skip the two fixtures whose size makes a 7-mode sweep take minutes; they are
 /// covered on their own below.
 fn is_huge(path: &PathBuf) -> bool {
-    std::fs::metadata(path).map(|m| m.len() > 8_000_000).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.len() > 8_000_000)
+        .unwrap_or(false)
 }
 
 #[test]
@@ -45,8 +49,9 @@ fn stream_matches_batch_for_every_mode() {
         let name = path.to_string_lossy().to_string();
         for mode in MODES {
             let batch = pdf::chunk(&name, mode, 3, 1, 3, 15);
-            let streamed: Result<Vec<_>, _> =
-                pdf::stream(&name, mode, 3, 1, 3, 15).expect("construct").collect();
+            let streamed: Result<Vec<_>, _> = pdf::stream(&name, mode, 3, 1, 3, 15)
+                .expect("construct")
+                .collect();
 
             match (batch, streamed) {
                 (Ok(batch), Ok(streamed)) => {
@@ -74,7 +79,10 @@ fn stream_matches_batch_for_every_mode() {
             }
         }
     }
-    assert!(compared >= 140, "only {compared} comparisons — the corpus shrank");
+    assert!(
+        compared >= 140,
+        "only {compared} comparisons — the corpus shrank"
+    );
 }
 
 /// [#55](TECH_DEBT.md): construction used to do the entire parse. On a
@@ -82,10 +90,15 @@ fn stream_matches_batch_for_every_mode() {
 /// back, and the whole point of a stream is that it does not.
 #[test]
 fn construction_does_not_parse_the_document() {
-    let path: PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", "sample-5000-page.pdf"]
-            .iter()
-            .collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "test_files",
+        "pdf",
+        "sample-5000-page.pdf",
+    ]
+    .iter()
+    .collect();
     if !path.exists() {
         return;
     }
@@ -110,10 +123,15 @@ fn construction_does_not_parse_the_document() {
 /// A consumer that stops early must not leave the worker wedged.
 #[test]
 fn abandoning_a_stream_early_is_clean() {
-    let path: PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", "sample-5000-page.pdf"]
-            .iter()
-            .collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "test_files",
+        "pdf",
+        "sample-5000-page.pdf",
+    ]
+    .iter()
+    .collect();
     if !path.exists() {
         return;
     }
@@ -126,13 +144,22 @@ fn abandoning_a_stream_early_is_clean() {
 /// A failure reaches the caller whichever path it takes.
 #[test]
 fn a_text_less_pdf_reports_its_error_through_the_stream() {
-    let path: PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", "large-doc.pdf"].iter().collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "test_files",
+        "pdf",
+        "large-doc.pdf",
+    ]
+    .iter()
+    .collect();
     if !path.exists() {
         return;
     }
     let name = path.to_string_lossy().to_string();
-    let first = pdf::stream(&name, "default", 3, 1, 3, 15).expect("construct").next();
+    let first = pdf::stream(&name, "default", 3, 1, 3, 15)
+        .expect("construct")
+        .next();
     match first {
         Some(Err(error)) => assert!(error.to_string().contains("no extractable text"), "{error}"),
         other => panic!("expected an error, got {:?}", other.map(|r| r.is_ok())),

@@ -11,6 +11,7 @@ use std::io::Read;
 use encoding_rs::{Encoding, BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252};
 
 use super::rtf::compressed_rtf_to_text;
+use crate::formats::html::to_markdown::html_to_markdown_str;
 
 type Cfb<'a> = cfb::CompoundFile<std::io::Cursor<&'a [u8]>>;
 
@@ -76,7 +77,7 @@ pub struct MsgDocument {
     pub item_fields: Vec<(String, String)>,
     pub attachments: Vec<Attachment>,
     /// Attached images as (filename, bytes) for `list_images`, mirroring `.eml`.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 // ── Low-level CFB / property access ───────────────────────────────────────────
@@ -143,9 +144,21 @@ fn read_binary(cfb: &mut Cfb<'_>, prefix: &str, pid: u16) -> Option<Vec<u8>> {
 }
 
 /// Fixed-width property lookup in `<prefix>/__properties_version1.0`. Entries are
-/// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. `header` is 32 at the top
-/// level, 24 inside recipient/attachment/embedded sub-storages.
-fn read_fixed_prop(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<(u16, [u8; 8])> {
+/// 16 bytes: `[2B type][2B pid][4B flags][8B value]`. The header before the
+/// entries differs BY STORAGE KIND ([MS-OXMSG] §2.4.1): **32** at the top
+/// level, **24** inside an embedded-message storage, and **8** inside a
+/// recipient or attachment storage. This comment previously said 24 for all
+/// three sub-storage kinds; with header=24 the scan started one entry past the
+/// first property, so 8 of 11 corpus fixtures never found
+/// `PidTagRecipientType` at its offset-8 home and `.unwrap_or(1)` silently
+/// defaulted every recipient to "To" — the empty `Cc:` column across the
+/// corpus WAS this bug, not an absence of Cc recipients.
+fn read_fixed_prop(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    pid: u16,
+    header: usize,
+) -> Option<(u16, [u8; 8])> {
     let data = read_stream(cfb, &format!("{prefix}/__properties_version1.0"))?;
     let mut off = header;
     while off + 16 <= data.len() {
@@ -196,7 +209,14 @@ fn filetime_to_iso(ft: u64) -> Option<String> {
 }
 
 fn read_date(cfb: &mut Cfb<'_>, pid: u16) -> Option<String> {
-    let (_, v) = read_fixed_prop(cfb, "", pid, 32)?;
+    read_date_at(cfb, "", pid, 32)
+}
+
+/// Read a date from an arbitrary storage. The property-stream header is 32
+/// bytes at the top level but **24 inside a sub-storage**, which is why an
+/// embedded message needs its own call rather than reusing `read_date`.
+fn read_date_at(cfb: &mut Cfb<'_>, prefix: &str, pid: u16, header: usize) -> Option<String> {
+    let (_, v) = read_fixed_prop(cfb, prefix, pid, header)?;
     filetime_to_iso(u64::from_le_bytes(v))
 }
 
@@ -296,7 +316,7 @@ fn read_recipients(cfb: &mut Cfb<'_>, codepage: u32, doc: &mut MsgDocument) {
             (None, Some(e)) => e,
             (None, None) => continue,
         };
-        let rtype = read_u32_prop(cfb, &prefix, PID_RECIP_TYPE, 24).unwrap_or(1);
+        let rtype = read_u32_prop(cfb, &prefix, PID_RECIP_TYPE, 8).unwrap_or(1);
         match recipient_type_label(rtype) {
             "cc" => doc.cc.push(display),
             "bcc" => doc.bcc.push(display),
@@ -313,7 +333,9 @@ fn read_recipients(cfb: &mut Cfb<'_>, codepage: u32, doc: &mut MsgDocument) {
 fn image_ext_for(mime: Option<&str>, filename: Option<&str>) -> Option<&'static str> {
     if let Some(name) = filename {
         let lower = name.to_ascii_lowercase();
-        for ext in [".png", ".jpeg", ".jpg", ".gif", ".webp", ".bmp", ".tiff", ".tif"] {
+        for ext in [
+            ".png", ".jpeg", ".jpg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+        ] {
             if lower.ends_with(ext) {
                 return Some(match ext {
                     ".jpg" => ".jpg",
@@ -356,15 +378,21 @@ fn sniff_image_ext(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"BM") {
         return Some(".bmp");
     }
-    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A]) {
+    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+    {
         return Some(".tiff");
     }
     None
 }
 
-fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut MsgDocument) {
+fn read_attachments(
+    cfb: &mut Cfb<'_>,
+    codepage: u32,
+    depth: usize,
+    doc: &mut MsgDocument,
+) -> std::result::Result<(), String> {
     if depth > 3 {
-        return; // guard against pathological nesting
+        return Ok(()); // guard against pathological nesting
     }
     let storages = child_storages(cfb, "/", "__attach_version1.0");
     for st in storages {
@@ -373,23 +401,39 @@ fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut Ms
             filename: read_string(cfb, &prefix, PID_ATTACH_LONG_FILENAME, codepage)
                 .or_else(|| read_string(cfb, &prefix, PID_ATTACH_FILENAME, codepage)),
             mime: read_string(cfb, &prefix, PID_ATTACH_MIME, codepage),
-            size: read_u32_prop(cfb, &prefix, PID_ATTACH_SIZE, 24).map(|s| s as u64),
+            size: read_u32_prop(cfb, &prefix, PID_ATTACH_SIZE, 8).map(|s| s as u64),
             embedded_text: None,
         };
         // Embedded message (attach method 5): the data property is a sub-storage
         // holding a full nested message → recurse and inline its text.
-        let method = read_u32_prop(cfb, &prefix, PID_ATTACH_METHOD, 24).unwrap_or(0);
+        let method = read_u32_prop(cfb, &prefix, PID_ATTACH_METHOD, 8).unwrap_or(0);
         if method == 5 {
             let embed_prefix = format!("{prefix}/__substg1.0_{PID_ATTACH_DATA:04X}000D");
-            if let Some(sub) = extract_embedded(cfb, &embed_prefix, depth + 1) {
-                let mut parts = Vec::new();
+            if let Some(sub) = extract_embedded(cfb, &embed_prefix, depth + 1)? {
+                // Rendered here rather than via `document_to_markdown`, which
+                // emits `# {subject}` — an h1 nested under the attachment list
+                // would invert the document's heading hierarchy and move
+                // `section`-mode boundaries for every .msg with an embedment.
+                let mut head = Vec::new();
                 if let Some(s) = &sub.subject {
-                    parts.push(s.clone());
+                    head.push(format!("**Subject:** {s}"));
                 }
+                if let Some(f) = &sub.from {
+                    head.push(format!("**From:** {f}"));
+                }
+                if !sub.to.is_empty() {
+                    head.push(format!("**To:** {}", sub.to.join(", ")));
+                }
+                if let Some(d) = &sub.sent_date {
+                    head.push(format!("**Sent:** {d}"));
+                }
+                let mut text = head.join("  \n");
                 if let Some(b) = &sub.body {
-                    parts.push(b.clone());
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(b);
                 }
-                let text = parts.join("\n\n");
                 if !text.trim().is_empty() {
                     att.embedded_text = Some(text);
                 }
@@ -420,72 +464,95 @@ fn read_attachments(cfb: &mut Cfb<'_>, codepage: u32, depth: usize, doc: &mut Ms
         }
         doc.attachments.push(att);
     }
+    Ok(())
 }
 
 /// Minimal recursive extraction of an embedded message sub-storage (subject +
 /// body only — enough to inline attachment content).
-fn extract_embedded(cfb: &mut Cfb<'_>, prefix: &str, depth: usize) -> Option<MsgDocument> {
+fn extract_embedded(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    depth: usize,
+) -> std::result::Result<Option<MsgDocument>, String> {
     if depth > 3 {
-        return None;
+        return Ok(None);
     }
     let codepage = read_u32_prop(cfb, prefix, PID_CODEPAGE, 24).unwrap_or(1252);
     let subject = read_string(cfb, prefix, PID_SUBJECT, codepage);
-    let body = read_body(cfb, prefix, codepage);
-    if subject.is_none() && body.is_none() {
-        return None;
+    let body = read_body(cfb, prefix, codepage)?;
+
+    // Subject + body alone is not a message. The envelope — who sent it, who
+    // it went to, when — is present in the sub-storage and was being dropped,
+    // so an embedded message arrived stripped of everything that identifies it.
+    // `.eml` has always rendered nested `message/rfc822` parts in full.
+    let from_name = read_string(cfb, prefix, PID_SENDER_NAME, codepage);
+    let addr_type = read_string(cfb, prefix, PID_SENDER_ADDRTYPE, codepage);
+    let from_email = usable_email(None, read_string(cfb, prefix, PID_SENDER_SMTP, codepage))
+        .or_else(|| {
+            usable_email(
+                addr_type.as_deref(),
+                read_string(cfb, prefix, PID_SENDER_EMAIL, codepage),
+            )
+        });
+    let from = match (from_name, from_email) {
+        (Some(n), Some(e)) if n != e => Some(format!("{n} <{e}>")),
+        (Some(n), _) => Some(n),
+        (None, Some(e)) => Some(e),
+        (None, None) => None,
+    };
+    let to = read_string(cfb, prefix, PID_DISPLAY_TO, codepage);
+    let sent = read_date_at(cfb, prefix, PID_CLIENT_SUBMIT_TIME, 24);
+
+    if subject.is_none() && body.is_none() && from.is_none() && to.is_none() {
+        return Ok(None);
     }
-    Some(MsgDocument {
+    Ok(Some(MsgDocument {
         subject,
         body,
+        from,
+        to: to.into_iter().collect(),
+        sent_date: sent,
         ..Default::default()
-    })
+    }))
 }
 
 // ── Body (HTML → plain → RTF) ─────────────────────────────────────────────────
 
-/// Drop HTML tags and collapse whitespace (lightweight HTML → text).
-fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn read_body(cfb: &mut Cfb<'_>, prefix: &str, codepage: u32) -> Option<String> {
+/// `Err` means a body stream is present and unreadable — distinct from a
+/// message that legitimately has no body (contacts, sticky notes), which stays
+/// `Ok(None)`.
+fn read_body(
+    cfb: &mut Cfb<'_>,
+    prefix: &str,
+    codepage: u32,
+) -> std::result::Result<Option<String>, String> {
     // 1) Plain body — cleanest for chunking, present in almost all messages.
     if let Some(b) = read_string(cfb, prefix, PID_BODY, codepage) {
         if !b.trim().is_empty() {
-            return Some(b);
+            return Ok(Some(b));
         }
     }
     // 2) HTML body → text.
     if let Some(bytes) = read_binary(cfb, prefix, PID_HTML) {
         let (html, _, _) = encoding_for_codepage(codepage).decode(&bytes);
-        let text = html_to_text(&html);
+        let text = html_to_markdown_str(&html);
         if !text.trim().is_empty() {
-            return Some(text);
+            return Ok(Some(text));
         }
     }
     if let Some(html) = read_string(cfb, prefix, PID_HTML, codepage) {
-        let text = html_to_text(&html);
+        let text = html_to_markdown_str(&html);
         if !text.trim().is_empty() {
-            return Some(text);
+            return Ok(Some(text));
         }
     }
     // 3) Compressed RTF → text (LZFu, then the engine's own RTF reader).
     if let Some(bytes) = read_binary(cfb, prefix, PID_RTF_COMPRESSED) {
-        if let Some(text) = compressed_rtf_to_text(&bytes) {
-            return Some(text);
+        if let Some(text) = compressed_rtf_to_text(&bytes)? {
+            return Ok(Some(text));
         }
     }
-    None
+    Ok(None)
 }
 
 fn importance_label(v: u32) -> &'static str {
@@ -508,7 +575,12 @@ fn task_status_label(v: u32) -> &'static str {
 
 /// Item-type-specific fields, resolved via the named-property map for
 /// appointments/tasks and standard `0x3A**` properties for contacts.
-fn read_item_fields(cfb: &mut Cfb<'_>, nameid: &super::nameid::NameIdMap, codepage: u32, doc: &mut MsgDocument) {
+fn read_item_fields(
+    cfb: &mut Cfb<'_>,
+    nameid: &super::nameid::NameIdMap,
+    codepage: u32,
+    doc: &mut MsgDocument,
+) {
     use super::nameid::{PSETID_APPOINTMENT, PSETID_TASK};
     let class = doc.message_class.to_ascii_lowercase();
 
@@ -547,8 +619,10 @@ fn read_item_fields(cfb: &mut Cfb<'_>, nameid: &super::nameid::NameIdMap, codepa
         }
         if let Some(pid) = nameid.lid(&PSETID_TASK, 0x8102) {
             if let Some(p) = read_double(cfb, pid) {
-                doc.item_fields
-                    .push(("% Complete".to_string(), format!("{}", (p * 100.0).round() as i64)));
+                doc.item_fields.push((
+                    "% Complete".to_string(),
+                    format!("{}", (p * 100.0).round() as i64),
+                ));
             }
         }
     } else if class.starts_with("ipm.contact") {
@@ -599,7 +673,7 @@ pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
         received_date: read_date(&mut cfb, PID_MESSAGE_DELIVERY_TIME),
         importance: read_u32_prop(&mut cfb, "", PID_IMPORTANCE, 32)
             .map(|v| importance_label(v).to_string()),
-        body: read_body(&mut cfb, "", codepage),
+        body: read_body(&mut cfb, "", codepage)?,
         ..Default::default()
     };
 
@@ -644,7 +718,7 @@ pub fn extract_document_bytes(bytes: &[u8]) -> Result<MsgDocument, String> {
     let nameid = super::nameid::parse(&mut cfb);
     read_item_fields(&mut cfb, &nameid, codepage, &mut doc);
 
-    read_attachments(&mut cfb, codepage, 0, &mut doc);
+    read_attachments(&mut cfb, codepage, 0, &mut doc)?;
 
     Ok(doc)
 }
@@ -691,7 +765,10 @@ pub fn document_to_markdown(doc: &MsgDocument) -> String {
     if !named.is_empty() {
         out.push_str("## Attachments\n\n");
         for att in named {
-            let name = att.filename.clone().unwrap_or_else(|| "(unnamed)".to_string());
+            let name = att
+                .filename
+                .clone()
+                .unwrap_or_else(|| "(unnamed)".to_string());
             let mime = att
                 .mime
                 .as_ref()

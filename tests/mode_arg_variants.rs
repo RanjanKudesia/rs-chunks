@@ -35,7 +35,14 @@ fn markdown_pipeline_formats_reject_bad_window_args_as_invalid_arg() {
             "md",
             MD,
             chunks_rs::formats::md::chunk_from_bytes
-                as fn(&[u8], &str, usize, usize, usize, usize) -> chunks_rs::Result<Vec<chunks_rs::Chunk>>,
+                as fn(
+                    &[u8],
+                    &str,
+                    usize,
+                    usize,
+                    usize,
+                    usize,
+                ) -> chunks_rs::Result<Vec<chunks_rs::Chunk>>,
         ),
         ("txt", TXT, chunks_rs::formats::txt::chunk_from_bytes),
         ("html", HTML, chunks_rs::formats::html::chunk_from_bytes),
@@ -126,9 +133,30 @@ fn epub_validates_its_mode_arguments() {
             15usize,
             "overlap must be less than window_size",
         ),
-        ("sliding_window", 0, 0, 3, 15, "window_size must be greater than 0"),
-        ("sentence", 3, 1, 0, 15, "sentences_per_chunk must be greater than 0"),
-        ("page_aware", 3, 1, 3, 0, "paragraphs_per_page must be greater than 0"),
+        (
+            "sliding_window",
+            0,
+            0,
+            3,
+            15,
+            "window_size must be greater than 0",
+        ),
+        (
+            "sentence",
+            3,
+            1,
+            0,
+            15,
+            "sentences_per_chunk must be greater than 0",
+        ),
+        (
+            "page_aware",
+            3,
+            1,
+            3,
+            0,
+            "paragraphs_per_page must be greater than 0",
+        ),
     ] {
         assert_invalid_arg(
             chunks_rs::formats::epub::chunk_from_bytes(junk, mode, ws, ov, spc, ppp),
@@ -168,10 +196,18 @@ fn epub_path_route_rejects_bad_args_on_a_real_book() {
     // indistinguishable from "this book has no content".
     let valid = chunks_rs::formats::epub::chunk(path, "sliding_window", 100, 20, 3, 15)
         .expect("a valid sliding_window call must chunk the book");
-    assert!(valid.len() > 10, "sanity: expected a real book, got {} chunks", valid.len());
+    assert!(
+        valid.len() > 10,
+        "sanity: expected a real book, got {} chunks",
+        valid.len()
+    );
     let default_mode = chunks_rs::formats::epub::chunk(path, "default", 3, 1, 3, 15)
         .expect("default mode must chunk the book");
-    assert!(default_mode.len() > 1000, "sanity: got {} chunks", default_mode.len());
+    assert!(
+        default_mode.len() > 1000,
+        "sanity: got {} chunks",
+        default_mode.len()
+    );
 
     assert_invalid_arg(
         chunks_rs::formats::epub::chunk(path, "sliding_window", 100, 100, 3, 15),
@@ -230,11 +266,10 @@ fn spreadsheets_reject_paragraphs_per_page_zero() {
 #[test]
 fn spreadsheet_page_arg_check_is_mode_scoped() {
     let junk = b"not a spreadsheet";
-    match chunks_rs::get_chunks_from_bytes(junk, "x.xlsx", "row", 3, 1, 3, 0) {
-        Err(ChunkError::InvalidArg(m)) => {
-            panic!("row mode must not reject paragraphs_per_page=0, got InvalidArg({m:?})")
-        }
-        _ => {}
+    if let Err(ChunkError::InvalidArg(m)) =
+        chunks_rs::get_chunks_from_bytes(junk, "x.xlsx", "row", 3, 1, 3, 0)
+    {
+        panic!("row mode must not reject paragraphs_per_page=0, got InvalidArg({m:?})")
     }
 }
 
@@ -248,10 +283,10 @@ fn spreadsheet_window_size_message_is_canonical() {
             junk,
             "xlsx",
             "sliding_window",
-            1,     // rows_per_chunk
-            0,     // window_size
-            0,     // overlap
-            true,  // include_headers
+            1,    // rows_per_chunk
+            0,    // window_size
+            0,    // overlap
+            true, // include_headers
             Vec::new(),
             true, // skip_empty_rows
             2000, // max_chunk_chars

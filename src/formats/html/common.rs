@@ -226,6 +226,38 @@ fn is_void_tag(tag: &str) -> bool {
     )
 }
 
+/// Elements whose content is raw text, not markup.
+///
+/// A browser never parses tags inside these — it scans for the literal closing
+/// tag. That distinction is load-bearing: `<script>if (a<b) {}</script>` has a
+/// `<b` in it that *parses* as a tag whose `>` scan runs into `</script>`,
+/// eating the real close. Tag-based matching then fails and the script body is
+/// read as prose.
+fn is_rawtext_element(tag: &str) -> bool {
+    matches!(tag, "script" | "style" | "textarea" | "title" | "xmp")
+}
+
+/// Find the end of a raw-text element by literal, case-insensitive search for
+/// its closing tag — the way a browser tokenises these.
+fn find_rawtext_end(s: &str, from: usize, tag: &str) -> Option<usize> {
+    let hay = s.get(from..)?.as_bytes();
+    let needle = format!("</{tag}");
+    let n = needle.as_bytes();
+    let mut i = 0usize;
+    while i + n.len() <= hay.len() {
+        if hay[i..i + n.len()].eq_ignore_ascii_case(n) {
+            // Consume through the '>' that closes it.
+            let mut j = from + i + n.len();
+            while j < s.len() && s.as_bytes()[j] != b'>' {
+                j += 1;
+            }
+            return Some((j + 1).min(s.len()));
+        }
+        i += 1;
+    }
+    None
+}
+
 pub fn find_matching_tag_end(s: &str, from: usize, tag: &str) -> Option<usize> {
     let mut depth = 1usize;
     let mut i = from;
@@ -235,7 +267,24 @@ pub fn find_matching_tag_end(s: &str, from: usize, tag: &str) -> Option<usize> {
             i += 1;
             continue;
         }
-        let parsed = parse_tag_at(s, i)?;
+        // Comments and declarations can contain anything, including a `</div>`
+        // that is not a real close. Step over them whole.
+        if let Some(after) = skip_non_element_markup(s, i) {
+            i = after;
+            continue;
+        }
+        // A `<` that starts no tag is ordinary text — CSS `a < b`, JS `i<n`, or
+        // the `/*<![CDATA[*/` guard real stylesheets use. This used to be
+        // `parse_tag_at(s, i)?`, so ONE such character abandoned the whole
+        // search and the caller fell back to `tag.end` — skipping only the
+        // opening tag and leaving the element's body to be read as prose.
+        // `tika_testEPUB.epub` has exactly that: a `<Style>` whose CDATA guard
+        // leaked its CSS, plus the words "nothing to see here" placed there by
+        // Tika to catch this.
+        let Some(parsed) = parse_tag_at(s, i) else {
+            i += 1;
+            continue;
+        };
         if parsed.name == tag {
             if parsed.is_closing {
                 depth = depth.saturating_sub(1);
@@ -258,8 +307,20 @@ pub fn find_matching_tag_end(s: &str, from: usize, tag: &str) -> Option<usize> {
 fn is_void_element(tag: &str) -> bool {
     matches!(
         tag,
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input"
-            | "link" | "meta" | "param" | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 
@@ -272,10 +333,36 @@ fn implicitly_closed_by(open: &str, next: &str) -> bool {
     match open {
         "p" => matches!(
             next,
-            "address" | "article" | "aside" | "blockquote" | "details" | "div" | "dl"
-                | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
-                | "h3" | "h4" | "h5" | "h6" | "header" | "hgroup" | "hr" | "main"
-                | "menu" | "nav" | "ol" | "p" | "pre" | "section" | "table" | "ul"
+            "address"
+                | "article"
+                | "aside"
+                | "blockquote"
+                | "details"
+                | "div"
+                | "dl"
+                | "fieldset"
+                | "figcaption"
+                | "figure"
+                | "footer"
+                | "form"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "header"
+                | "hgroup"
+                | "hr"
+                | "main"
+                | "menu"
+                | "nav"
+                | "ol"
+                | "p"
+                | "pre"
+                | "section"
+                | "table"
+                | "ul"
         ),
         "li" => next == "li",
         "dt" | "dd" => matches!(next, "dt" | "dd"),
@@ -338,6 +425,81 @@ pub fn is_ignored_container(tag: &str) -> bool {
     )
 }
 
+/// Tags that imply a line break when text around them is gathered loose.
+///
+/// Only used for separating loose text (see `parse_html_blocks`). Without it,
+/// `<div>A</div><div>B</div>` gathers as `AB` — two words welded together.
+/// Inline tags are deliberately absent so `<b>bold</b>face` stays one word, as
+/// a browser renders it.
+fn breaks_line_when_loose(tag: &str) -> bool {
+    matches!(
+        tag,
+        "div"
+            | "section"
+            | "article"
+            | "main"
+            | "header"
+            | "footer"
+            | "form"
+            | "fieldset"
+            | "figure"
+            | "details"
+            | "dialog"
+            | "dl"
+            | "li"
+            | "tr"
+            | "td"
+            | "th"
+            | "caption"
+            | "br"
+            | "hr"
+            | "center"
+            | "body"
+    )
+}
+
+/// Skip markup that is not an element, returning the offset just past it.
+///
+/// Handles `<!-- comments -->`, `<![CDATA[ ... ]]>`, `<!DOCTYPE ...>` and
+/// processing instructions / XML declarations `<? ... ?>`. Returns `None` when
+/// `at` is not one of these, so the caller can try to parse an element.
+///
+/// An unterminated construct consumes the rest of the input, which is what a
+/// browser does and is what keeps a truncated document from emitting its own
+/// markup as text.
+fn skip_non_element_markup(html: &str, at: usize) -> Option<usize> {
+    let rest = html.get(at..)?;
+    if let Some(body) = rest.strip_prefix("<!--") {
+        return Some(match body.find("-->") {
+            Some(k) => at + 4 + k + 3,
+            None => html.len(),
+        });
+    }
+    if let Some(body) = rest.strip_prefix("<![CDATA[") {
+        return Some(match body.find("]]>") {
+            Some(k) => at + 9 + k + 3,
+            None => html.len(),
+        });
+    }
+    if let Some(body) = rest.strip_prefix("<?") {
+        // `?>` is the proper terminator; fall back to `>` for sloppy authors.
+        return Some(match body.find("?>") {
+            Some(k) => at + 2 + k + 2,
+            None => match body.find('>') {
+                Some(k) => at + 2 + k + 1,
+                None => html.len(),
+            },
+        });
+    }
+    if rest.starts_with("<!") {
+        return Some(match rest.find('>') {
+            Some(k) => at + k + 1,
+            None => html.len(),
+        });
+    }
+    None
+}
+
 fn tag_to_block_type(tag: &str) -> Option<HtmlBlockType> {
     match tag {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => Some(HtmlBlockType::Heading),
@@ -358,32 +520,99 @@ pub fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
     let mut blocks = Vec::new();
     let mut i = 0usize;
     let bytes = html.as_bytes();
+    // Text that belongs to no recognised block tag. `tag_to_block_type` is a
+    // whitelist, and everything outside it used to be dropped on the floor:
+    // `<div>Hello</div>` produced ZERO chunks, and `<div>a</div><p>b</p>`
+    // produced one chunk containing only "b" — a silent partial extraction that
+    // still reported success. Modern pages are mostly div/section/span, so this
+    // was a large class of documents returning nothing or a fragment.
+    //
+    // Unrecognised tags are already descended into rather than skipped, so the
+    // only thing missing was gathering the text between them. Recognised blocks
+    // still win: this flushes before one starts and resumes after it ends, so
+    // nesting and document order are unchanged.
+    let mut loose = String::new();
+
+    macro_rules! flush_loose {
+        () => {
+            if !loose.trim().is_empty() {
+                let text = normalize_inline_text(&strip_tags(&loose, true));
+                if !text.is_empty() && !is_noise_text(&text) {
+                    blocks.push(HtmlBlock {
+                        block_type: HtmlBlockType::Paragraph,
+                        content: text,
+                        heading_level: 0,
+                        is_ordered: false,
+                    });
+                }
+            }
+            loose.clear();
+        };
+    }
 
     while i < bytes.len() {
         if bytes[i] != b'<' {
-            i += 1;
+            // Take the whole run to the next '<' at once. '<' is ASCII, so every
+            // such position is a char boundary and multi-byte text is preserved.
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'<' {
+                i += 1;
+            }
+            loose.push_str(&html[start..i]);
+            continue;
+        }
+        // Markup that is not an element: `<?xml ... ?>`, `<!DOCTYPE ...>`,
+        // `<!-- ... -->`, `<![CDATA[ ... ]]>`. `parse_tag_at` cannot read these,
+        // and until loose text was gathered it did not matter — the fallthrough
+        // dropped them. Now it would swallow the declaration body as prose, so
+        // each is skipped whole. (`?xml version="1.0" ...` really did show up as
+        // a chunk of `tika_testEPUB.epub`.)
+        if let Some(after) = skip_non_element_markup(html, i) {
+            i = after;
             continue;
         }
         let Some(tag) = parse_tag_at(html, i) else {
+            // A stray '<' that begins nothing: keep it as text, as before.
+            loose.push('<');
             i += 1;
             continue;
         };
         if tag.is_closing {
+            if breaks_line_when_loose(&tag.name) && !loose.ends_with('\n') {
+                loose.push('\n');
+            }
             i = tag.end;
             continue;
         }
         if is_ignored_container(&tag.name) {
-            i = find_matching_tag_end(html, tag.end, &tag.name).unwrap_or(tag.end);
+            // Flush first: a <script> body must not be swept into the text
+            // gathered around it.
+            flush_loose!();
+            i = if is_rawtext_element(&tag.name) {
+                find_rawtext_end(html, tag.end, &tag.name)
+            } else {
+                find_matching_tag_end(html, tag.end, &tag.name)
+            }
+            .unwrap_or(html.len());
             continue;
         }
         if tag.name == "hr" {
+            if !loose.ends_with('\n') {
+                loose.push('\n');
+            }
             i = tag.end;
             continue;
         }
         let Some(block_type) = tag_to_block_type(&tag.name) else {
+            if breaks_line_when_loose(&tag.name) && !loose.ends_with('\n') {
+                loose.push('\n');
+            }
             i = tag.end;
             continue;
         };
+        // A recognised block starts here, so any loose text before it is its own
+        // paragraph and must be emitted first to keep document order.
+        flush_loose!();
         // An omitted end tag used to discard the whole block: w3c_html40_cover.htm
         // yielded 611 characters out of 53 KB. Infer the implicit close instead.
         let (end, _explicit) = find_block_end(html, tag.end, &tag.name);
@@ -400,6 +629,7 @@ pub fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
         }
         i = end;
     }
+    flush_loose!();
     bound_block_size(blocks)
 }
 
@@ -474,7 +704,6 @@ pub fn extract_block_content(raw: &str, tag: &str, block_type: HtmlBlockType) ->
     }
 }
 
-
 /// Blocks of `tag` that are *direct* content of `html` — occurrences inside a
 /// nested `container` are skipped, along with the container itself.
 ///
@@ -522,11 +751,7 @@ fn find_block_end_skipping(html: &str, from: usize, tag: &str, container: &str) 
     html.len()
 }
 
-fn extract_blocks_skipping_nested<'a>(
-    html: &'a str,
-    tag: &str,
-    container: &str,
-) -> Vec<&'a str> {
+fn extract_blocks_skipping_nested<'a>(html: &'a str, tag: &str, container: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let bytes = html.as_bytes();
     let mut i = 0usize;

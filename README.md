@@ -99,12 +99,19 @@ there is no residual nondeterminism. The same harness family also checks image
 extraction (`images_dump.rs`) and markdown conversion (`md_images_dump.rs`)
 byte-for-byte.
 
-Streaming (`stream`) yields the same chunks as `chunk`. Adversarial inputs fail
-with a clean `ChunkError` and never panic: every dispatch entry point
-(`get_chunks`, `get_markdown`, and the `_from_bytes` / `_with_images` variants)
-runs the parse behind a `catch_unwind` boundary, so even a panic in a
-third-party parser surfaces as `ChunkError::Parse` instead of unwinding into
-the caller.
+Streaming (`stream`) yields the same chunks as `chunk`. Every dispatch entry
+point (`get_chunks`, `get_markdown`, and the `_from_bytes` / `_with_images`
+variants) runs the parse behind a `catch_unwind` boundary, so on a native
+target a panic in a third-party parser surfaces as `ChunkError::Parse` rather
+than unwinding into the caller.
+
+Two limits on that, stated because the guarantee was previously written without
+them. `wasm32-unknown-unknown` builds with `panic-strategy: abort`, so on the
+WASM target `catch_unwind` cannot intercept anything and a panic aborts. And a
+stack overflow or an allocation failure is not a panic on any target — those
+abort the process, which is why the recursive walkers carry explicit depth
+caps and the allocating paths carry explicit size caps rather than relying on
+the boundary.
 
 ## Develop
 

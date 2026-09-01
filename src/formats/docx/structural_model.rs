@@ -6,12 +6,13 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use zip::ZipArchive;
 
-use super::common::{docx_heading_level, image_placeholder, parse_docx_blocks, DocxBlock, DocxBlockKind};
+use super::common::{
+    docx_heading_level, image_placeholder, parse_docx_blocks, DocxBlock, DocxBlockKind,
+};
 use super::docx_aux::{
     count_prefixed_entries, extract_notes_map, extract_text_from_xml, read_first_prefixed_entry,
     read_zip_entry,
 };
-
 
 pub(super) const MAX_DOCX_AUX_XML_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -43,8 +44,26 @@ pub(super) const SHORT_PARAGRAPH_THRESHOLD: usize = 80;
 /// together, and they need not.
 pub(super) const MAX_SECTION_CHARS: usize = 1200;
 
+/// Pathological-only bound on a single rendered Table element.
+///
+/// A blast-radius limiter, not a prose cap — deliberately 5x
+/// `MAX_SECTION_CHARS`. The largest table in an ordinary corpus document is
+/// 1,737 chars (`poi_drawing.docx`); the only fixtures above this line are
+/// `poi_bug65649.docx` (522,261), `poi_bug59058.docx` (93,066) and
+/// `_stress_big_table.docx` (39,673). The measurement gap between 3,552 and
+/// 39,673 is empty, so nothing ordinary is near it.
+pub(super) const MAX_TABLE_CHARS: usize = MAX_SECTION_CHARS * 5;
+
+/// The markdown header block a split table repeats onto every part: the header
+/// row PLUS its `| --- |` separator, hence 2 and not 1. With 1 the
+/// continuation parts get a header and no separator, which is not a valid
+/// markdown table. Matches `md/common.rs`'s Table handling.
+pub(super) const TABLE_HEADER_LINES: usize = 2;
+
 fn is_complete_sentence(text: &str) -> bool {
-    const SENTENCE_END: [char; 8] = ['.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}'];
+    const SENTENCE_END: [char; 8] = [
+        '.', '!', '?', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{61f}', '\u{5c3}',
+    ];
     let t = text.trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}', ' ']);
     t.chars().count() >= 12 && t.ends_with(SENTENCE_END)
 }
@@ -284,9 +303,7 @@ fn lower_blocks_to_elements(raw: Vec<DocxBlock>) -> Vec<DocumentElement> {
                     for (rid, alt) in block.images.iter().skip(1) {
                         out.push(DocumentElement {
                             content_type: ContentType::Image,
-                            text: image_placeholder(
-                                alt.as_deref().or(block.image_alt.as_deref()),
-                            ),
+                            text: image_placeholder(alt.as_deref().or(block.image_alt.as_deref())),
                             page_number: Some(block_page),
                             heading_level: None,
                             footnote_refs: Vec::new(),

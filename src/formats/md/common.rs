@@ -1,11 +1,45 @@
 /// Shared types, constants, block parser, and helper functions used by every
 /// MD chunking strategy.
 // Re-export shared utilities so strategy files can keep importing from super::common.
-pub use crate::shared::{
-    has_keyword_overlap, split_at_sentences, tokenize_keywords,
-};
+pub use crate::shared::{has_keyword_overlap, split_at_sentences, tokenize_keywords};
 
 /// Classify prose length into a ContentType variant.
+/// Decode a `.md` document and strip its YAML front matter.
+///
+/// Front matter is metadata for a site generator, not body text, and leaving it
+/// in did two things. It became chunk 1 verbatim — every Fumadocs/Hugo page
+/// opened with `title: …\ndraft: false` — and, worse, the closing `---` read as
+/// a **setext underline**, promoting the last front-matter line to a heading.
+/// Measured: `tags: [a, b]` was classified `heading`, so a page's section
+/// structure began with a YAML key.
+///
+/// Only a fence at the very start counts, and only `---`; a `---` later in the
+/// document is a horizontal rule or a setext underline and must stay one. An
+/// unterminated fence is left alone rather than swallowing the whole document.
+pub(super) fn decode_body(bytes: &[u8]) -> String {
+    let text = crate::text_encoding::decode_text(bytes).0;
+    strip_front_matter(&text).to_string()
+}
+
+/// The body with any leading YAML front-matter block removed.
+pub(super) fn strip_front_matter(text: &str) -> &str {
+    let rest = match text.strip_prefix("---\n") {
+        Some(r) => r,
+        None => return text,
+    };
+    // The close is a line that is exactly `---`.
+    let mut offset = 0usize;
+    for line in rest.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        offset += line.len();
+        if trimmed == "---" {
+            return rest[offset..].trim_start_matches(['\r', '\n']);
+        }
+    }
+    // No closing fence: this is not front matter.
+    text
+}
+
 pub fn classify_prose(text: &str) -> ContentType {
     if text.len() > 900 {
         ContentType::LongSingleParagraph
@@ -60,7 +94,11 @@ pub fn split_at_paragraph_boundary_spanned(
     parts: &[(String, usize)],
     max_chars: usize,
 ) -> Vec<(String, Option<BlockSpan>)> {
-    let joined = parts.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join("\n\n");
+    let joined = parts
+        .iter()
+        .map(|(c, _)| c.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
 
     // Where each source part sits in the joined text, so an offset can name it.
     let mut sources: Vec<(std::ops::Range<usize>, usize)> = Vec::with_capacity(parts.len());
@@ -213,7 +251,10 @@ pub struct SpannedRecord {
 impl SpannedRecord {
     /// A chunk whose origin is a single block.
     pub fn at(record: ChunkRecordInput, index: usize) -> SpannedRecord {
-        SpannedRecord { record, blocks: Some((index, index)) }
+        SpannedRecord {
+            record,
+            blocks: Some((index, index)),
+        }
     }
 
     /// A chunk built from a span the caller accumulated.
@@ -325,7 +366,11 @@ fn bound_block_size(blocks: Vec<MdBlock>) -> Vec<MdBlock> {
         let parts = if divisible {
             crate::shared::split_block_on_lines_and_sentences(&block.content, MAX_CHUNK_CHARS)
         } else {
-            let repeat_prefix = if block.block_type == MdBlockType::Table { 2 } else { 0 };
+            let repeat_prefix = if block.block_type == MdBlockType::Table {
+                2
+            } else {
+                0
+            };
             crate::shared::split_block_on_lines(&block.content, MAX_CHUNK_CHARS, repeat_prefix)
         };
         for part in parts {
@@ -385,7 +430,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
                 blocks.push(MdBlock {
                     block_type: MdBlockType::Code,
                     content: code.join("\n").trim().to_string(),
-                index: 0,
+                    index: 0,
                 });
                 code.clear();
                 in_code_fence = false;
@@ -481,7 +526,7 @@ fn parse_markdown_blocks_unbounded(text: &str) -> Vec<MdBlock> {
         blocks.push(MdBlock {
             block_type: MdBlockType::Code,
             content: code.join("\n").trim().to_string(),
-                index: 0,
+            index: 0,
         });
     }
 
@@ -512,7 +557,7 @@ pub fn flush_paragraph(blocks: &mut Vec<MdBlock>, paragraph: &mut Vec<String>) {
         blocks.push(MdBlock {
             block_type: MdBlockType::Paragraph,
             content,
-                index: 0,
+            index: 0,
         });
     }
 }
@@ -524,7 +569,7 @@ pub fn flush_list(blocks: &mut Vec<MdBlock>, list: &mut Vec<String>) {
         blocks.push(MdBlock {
             block_type: MdBlockType::List,
             content,
-                index: 0,
+            index: 0,
         });
     }
 }
@@ -540,11 +585,9 @@ fn is_table_delimiter_row(line: &str) -> bool {
         .map(str::trim)
         .collect();
     !cells.is_empty()
-        && cells.iter().all(|c| {
-            !c.is_empty()
-                && c.chars().all(|ch| ch == '-' || ch == ':')
-                && c.contains('-')
-        })
+        && cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':') && c.contains('-'))
 }
 
 /// True when the collected rows really are a table.
@@ -752,6 +795,41 @@ fn html_img_alt(tag: &str) -> Option<String> {
     Some(String::new())
 }
 
+/// If `chars[start]` opens a CommonMark autolink, return the index of its `>`.
+///
+/// Autolinks are `<scheme:rest>` (URI) or `<local@domain>` (email). Neither may
+/// contain whitespace or a `<`, which is what separates them from raw HTML — a
+/// real tag like `<span class="x">` contains a space, and `<b>` has neither a
+/// scheme colon nor an `@`.
+fn autolink_end(chars: &[char], start: usize) -> Option<usize> {
+    let n = chars.len();
+    let mut i = start + 1;
+    let mut has_at = false;
+    let mut has_colon = false;
+    while i < n {
+        match chars[i] {
+            '>' => {
+                // Must have content, and look like an email or a URI.
+                if i == start + 1 || !(has_at || has_colon) {
+                    return None;
+                }
+                return Some(i);
+            }
+            c if c.is_whitespace() || c == '<' => return None,
+            '@' => {
+                has_at = true;
+                i += 1;
+            }
+            ':' => {
+                has_colon = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 pub fn strip_inline(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
@@ -760,18 +838,41 @@ pub fn strip_inline(s: &str) -> String {
 
     while i < n {
         match chars[i] {
-            '\\' if i + 1 < n => {
+            // CommonMark 6.1: only ASCII PUNCTUATION may be backslash-escaped.
+            // "Backslashes before other characters are treated as literal
+            // backslashes." This dropped the backslash before *any* character,
+            // so a Windows path `C:\new\dir` came out `C:newdir` — the escape
+            // rule silently rewriting ordinary prose.
+            '\\' if i + 1 < n && chars[i + 1].is_ascii_punctuation() => {
                 out.push(chars[i + 1]);
                 i += 2;
             }
+            // CommonMark AUTOLINKS are not raw HTML and must not be discarded:
+            // `<user@host>` is an email autolink and `<scheme:...>` a URI
+            // autolink — both render as their own text. Treating them as tags
+            // deleted every email address from chunk content for the formats
+            // that render *to* markdown: 34 addresses across `.eml`, 210 across
+            // `.mbox`, 10 across `.msg` (TECH_DEBT L4). `.md` is unaffected,
+            // because CommonMark says the same thing about real markdown.
+            '<' if i + 1 < n && autolink_end(&chars, i).is_some() => {
+                let end = autolink_end(&chars, i).unwrap();
+                let inner: String = chars[i + 1..end].iter().collect();
+                out.push_str(&inner);
+                i = end + 1;
+            }
             '<' if i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '/') => {
+                // An unterminated `<` is not a tag. CommonMark treats it as
+                // literal text; this scanned to end-of-string and deleted
+                // everything after it, so one stray `<a href=` in a document
+                // removed the entire remainder. Measured: "An unterminated
+                // <a href= tag should not eat the rest." -> "An unterminated".
+                let Some(close) = chars[i..].iter().position(|c| *c == '>') else {
+                    out.push('<');
+                    i += 1;
+                    continue;
+                };
                 let tag_start = i;
-                while i < n && chars[i] != '>' {
-                    i += 1;
-                }
-                if i < n {
-                    i += 1;
-                }
+                i += close + 1;
                 // Raw <img> is as much an image reference as ![](…) is, and
                 // Markdown allows it — Jupyter notebooks use it constantly. It
                 // was being swallowed with the rest of the inline HTML. (#41/#42)

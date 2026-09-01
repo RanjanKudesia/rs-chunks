@@ -41,6 +41,11 @@ fn doc_metadata(pkg: &EpubPackage) -> serde_json::Value {
         "identifier": pkg.identifier,
         "epub_version": pkg.version,
         "spine_count": pkg.spine.len(),
+        // `spine_count` keeps its meaning — items actually read — and this
+        // says what is missing, so `spine_count + skipped_spine_items.len()`
+        // is the declared length. Deliberately not a second count field:
+        // two different counts under one name is the trap.
+        "skipped_spine_items": pkg.skipped_spine_items,
         // Plural forms carry EVERY value. The singular fields above keep the
         // first, so existing consumers are unaffected. (#38)
         "creators": pkg.creators,
@@ -77,16 +82,18 @@ pub fn chunk_package(
             sentences_per_chunk,
             paragraphs_per_page,
         )
-        // An individual empty/nav-only XHTML shouldn't abort the whole book:
-        // `structural.rs` returns Err for "HTML file is empty after decoding" /
-        // "No chunks generated", which a legitimate image-only cover page hits.
+        // Genuine parse failures now propagate (TECH_DEBT L14). This used to be
+        // `.unwrap_or_default()`, which turned ANY chapter error into "this
+        // chapter produced no chunks" and so hid real breakage — it is also why
+        // bad *arguments* once yielded an empty book instead of an error.
         //
-        // It also hides genuine parse failures, and it is why bad *arguments*
-        // used to yield an empty book instead of an error. That part is fixed at
-        // the facade (`mod.rs::validate_args`, which runs before any builder);
-        // separating "empty document" from "parse failed" here is tracked as
-        // TECH_DEBT L14.
-        .unwrap_or_default();
+        // The swallow existed because an image-only cover page legitimately has
+        // no text, and the HTML builder signalled that with an `Err`. T6 removed
+        // that conflation: "parsed fine, nothing to chunk" is now `Ok(vec![])`
+        // everywhere, so an `Err` here means the chapter genuinely failed to
+        // parse and the caller should hear about it rather than silently getting
+        // a shorter book.
+        .map_err(|e| format!("spine item {spine_index} ({}): {e}", doc.href))?;
 
         for rec in &mut records {
             if let serde_json::Value::Object(map) = &mut rec.metadata {

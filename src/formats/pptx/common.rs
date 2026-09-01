@@ -81,7 +81,7 @@ mod tests {
             .compression_method(zip::CompressionMethod::Stored);
         for (i, (title, body)) in slides.iter().enumerate() {
             let path = format!("ppt/slides/slide{}.xml", i + 1);
-            zip.start_file(path, opts.clone()).unwrap();
+            zip.start_file(path, opts).unwrap();
             zip.write_all(slide_xml(title, body).as_bytes()).unwrap();
         }
         zip.finish().unwrap().into_inner()
@@ -209,8 +209,7 @@ mod tests {
         let mut zip = zip::ZipWriter::new(cursor);
         let opts = zip::write::FileOptions::<()>::default()
             .compression_method(zip::CompressionMethod::Stored);
-        zip.start_file("ppt/slides/slideLayout1.xml", opts.clone())
-            .unwrap();
+        zip.start_file("ppt/slides/slideLayout1.xml", opts).unwrap();
         zip.write_all(b"<layout/>").unwrap();
         zip.start_file("ppt/slides/slide1.xml", opts).unwrap();
         zip.write_all(slide_xml("Title", "Body").as_bytes())

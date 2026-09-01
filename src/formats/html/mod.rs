@@ -1,14 +1,15 @@
 //! HTML / HTM chunking with its own block parser + Markdown conversion.
 
 pub mod common;
+pub(crate) mod encoding;
 pub mod images;
-pub mod to_markdown;
 pub(crate) mod page_aware;
 pub(crate) mod section;
 pub(crate) mod semantic;
 pub(crate) mod sentence;
 pub(crate) mod sliding_window;
 pub(crate) mod structural;
+pub mod to_markdown;
 
 use std::fs;
 
@@ -16,6 +17,7 @@ use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 use crate::options::{ChunkMode, ChunkOptions};
 use common::ChunkRecordInput;
+use encoding::decode_html;
 use images::collect_html_images;
 use to_markdown::html_to_markdown_str;
 
@@ -45,7 +47,11 @@ fn build_records(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<ChunkRecordInput>> {
-    let normalized = if mode == "default" { "structural" } else { mode };
+    let normalized = if mode == "default" {
+        "structural"
+    } else {
+        mode
+    };
     crate::options::validate_mode_args(
         normalized,
         window_size,
@@ -59,8 +65,14 @@ fn build_records(
         "semantic" => semantic::build_semantic_chunks(bytes),
         "sentence" => sentence::build_sentence_chunks(bytes, sentences_per_chunk),
         "page_aware" => page_aware::build_page_aware_chunks(bytes, paragraphs_per_page),
-        "sliding_window" => sliding_window::build_sliding_window_chunks(bytes, window_size, overlap),
-        other => return Err(ChunkError::InvalidArg(format!("Unknown HTML mode: {other}"))),
+        "sliding_window" => {
+            sliding_window::build_sliding_window_chunks(bytes, window_size, overlap)
+        }
+        other => {
+            return Err(ChunkError::InvalidArg(format!(
+                "Unknown HTML mode: {other}"
+            )))
+        }
     };
     res.map_err(ChunkError::Parse)
 }
@@ -75,11 +87,25 @@ pub fn chunk(
 ) -> Result<Vec<Chunk>> {
     ensure_html(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
+pub fn chunk_from_bytes(
+    bytes: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
     Ok(records_to_chunks(build_records(
         bytes,
         mode,
@@ -92,7 +118,7 @@ pub fn chunk_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: u
 
 /// No-filesystem Markdown (wasm/browser).
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    Ok(html_to_markdown_str(&String::from_utf8_lossy(bytes)))
+    Ok(html_to_markdown_str(&decode_html(bytes)))
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -128,10 +154,10 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     ensure_html(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    let html = String::from_utf8_lossy(&bytes).to_string();
+    let html = decode_html(&bytes);
     let text_records = build_records(
         &bytes,
         mode,
@@ -141,7 +167,7 @@ pub fn chunk_with_images(
         paragraphs_per_page,
     )?;
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let image_infos = collect_html_images(&html, file_path, &mut image_out);
 
     let mut chunks: Vec<Chunk> = image_infos
@@ -164,15 +190,18 @@ pub fn chunk_with_images(
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
     ensure_html(file_path)?;
-    let html = fs::read_to_string(file_path).map_err(ChunkError::Io)?;
-    Ok(html_to_markdown_str(&html))
+    // Read bytes, not a String: `read_to_string` rejects any document that is
+    // not UTF-8, which is how a windows-1251 page became an `io::Error` (C7).
+    let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
+    Ok(html_to_markdown_str(&decode_html(&bytes)))
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     ensure_html(file_path)?;
-    let html = fs::read_to_string(file_path).map_err(ChunkError::Io)?;
+    let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
+    let html = decode_html(&bytes);
     let mut markdown = html_to_markdown_str(&html);
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let image_infos = collect_html_images(&html, file_path, &mut image_out);
     for info in &image_infos {
         markdown.push_str(&format!("\n\n![]({})", info.hash_name));
@@ -180,25 +209,42 @@ pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, 
     Ok((markdown.trim_start().to_string(), image_out))
 }
 
-
 /// No-filesystem `chunk_with_images` (wasm/browser). Relative-path `<img src>`
 /// cannot be resolved without a filesystem; embedded data-URI images still work.
-pub fn chunk_with_images_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    let html = String::from_utf8_lossy(bytes).to_string();
-    let text_records = build_records(bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?;
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+pub fn chunk_with_images_from_bytes(
+    bytes: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
+    let html = decode_html(bytes);
+    let text_records = build_records(
+        bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?;
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let image_infos = collect_html_images(&html, "", &mut image_out);
     let mut chunks: Vec<Chunk> = image_infos.into_iter().map(|info| Chunk::new(info.hash_name.clone(), "image", serde_json::json!({"image_name": info.hash_name, "alt_text": info.alt_text, "document_metadata": {"source_type": "html"}}))).collect();
     chunks.extend(records_to_chunks(text_records));
     Ok((chunks, image_out))
 }
 
-pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
-    let html = String::from_utf8_lossy(bytes).to_string();
+pub fn to_markdown_with_images_from_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages> {
+    let html = decode_html(bytes);
     let mut markdown = html_to_markdown_str(&html);
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     let image_infos = collect_html_images(&html, "", &mut image_out);
-    for info in &image_infos { markdown.push_str(&format!("\n\n![]({})", info.hash_name)); }
+    for info in &image_infos {
+        markdown.push_str(&format!("\n\n![]({})", info.hash_name));
+    }
     Ok((markdown.trim_start().to_string(), image_out))
 }
 
@@ -210,7 +256,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

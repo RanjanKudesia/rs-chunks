@@ -1,7 +1,9 @@
 //! Codepage/charset resolution for RTF, plus symbol-font recognition.
 
-use encoding_rs::{Encoding, BIG5, EUC_KR, GBK, SHIFT_JIS, WINDOWS_1250, WINDOWS_1251,
-                  WINDOWS_1252, WINDOWS_1253, WINDOWS_1254, WINDOWS_1255, WINDOWS_1256};
+use encoding_rs::{
+    Encoding, BIG5, EUC_KR, GBK, SHIFT_JIS, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253,
+    WINDOWS_1254, WINDOWS_1255, WINDOWS_1256,
+};
 
 /// `\fcharset2` — SYMBOL_CHARSET. Bytes in such a font are glyph indices into a
 /// pictorial font, not characters, so they must never reach a text decoder.

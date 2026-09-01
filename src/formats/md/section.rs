@@ -12,13 +12,12 @@
 ///   paragraph_count  — number of body blocks accumulated
 ///   block_types      — unique block types present ["paragraph", "list", ...]
 ///   char_count       — total content characters
-
 use serde_json::json;
 
 use super::common::{
     current_section_level, extract_heading_text, heading_level, heading_path_strings,
-    parse_markdown_blocks, split_at_paragraph_boundary_spanned, strip_block_content, update_heading_stack,
-    ChunkRecordInput, ContentType, MdBlockType, SpannedRecord,
+    parse_markdown_blocks, split_at_paragraph_boundary_spanned, strip_block_content,
+    update_heading_stack, ChunkRecordInput, ContentType, MdBlockType, SpannedRecord,
 };
 
 const MAX_SECTION_CHARS: usize = 2000;
@@ -121,9 +120,13 @@ fn flush_section(
 // ── Core algorithm ────────────────────────────────────────────────────────────
 
 pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = super::common::decode_body(bytes);
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("Markdown file is empty".to_string());
+        return Ok(Vec::new());
     }
 
     let blocks = parse_markdown_blocks(&text);
@@ -146,23 +149,26 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> 
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
                 // Emit the heading itself.
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::HeadingSection,
-                    content: text.clone(),
-                    metadata: json!({
-                        "section_heading":    text,
-                        "section_level":      level,
-                        "heading_path":       heading_path_strings(&heading_stack),
-                        "paragraph_count":    0,
-                        "block_types":        ["heading"],
-                        "char_count":         text.len(),
-                        "chunk_index":        chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::HeadingSection,
+                        content: text.clone(),
+                        metadata: json!({
+                            "section_heading":    text,
+                            "section_level":      level,
+                            "heading_path":       heading_path_strings(&heading_stack),
+                            "paragraph_count":    0,
+                            "block_types":        ["heading"],
+                            "char_count":         text.len(),
+                            "chunk_index":        chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
 
                 // Open a fresh body for content that follows.
@@ -171,7 +177,7 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> 
                     section_heading: Some(text),
                     section_level: level,
                     heading_path: heading_path_strings(&heading_stack),
-                        part_blocks: Vec::new(),
+                    part_blocks: Vec::new(),
                 });
             }
 
@@ -271,11 +277,14 @@ pub fn build_section_chunks(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> 
         flush_section(&mut result, body, &mut chunk_index, total_input_blocks);
     }
 
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No section chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

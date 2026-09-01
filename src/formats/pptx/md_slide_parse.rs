@@ -13,6 +13,40 @@ use super::md_blocks::{
 use std::collections::HashMap;
 use std::io::Cursor;
 
+/// Record a `<c:chart r:id>` or `<dgm:relIds r:dm>` pointer.
+///
+/// Called from BOTH the `Start` and `Empty` branches. These elements are almost
+/// always self-closing, but a producer may write them in start/end form — and
+/// the arms lived only under `Empty`, so such a slide lost its chart and
+/// SmartArt text through `get_markdown` while `get_chunks`, which handles both
+/// forms, kept them.
+fn record_graphic_pointer(
+    local: &[u8],
+    e: &quick_xml::events::BytesStart,
+    slide: &mut SlideMarkdownContent,
+) {
+    let want: &[u8] = match local {
+        b"chart" => b"id",
+        b"relIds" => b"dm",
+        _ => return,
+    };
+    for attr in e.attributes().flatten() {
+        if attr_local_name(attr.key.as_ref()) == want {
+            let v = String::from_utf8_lossy(attr.value.as_ref())
+                .trim()
+                .to_string();
+            if !v.is_empty() {
+                if local == b"chart" {
+                    slide.chart_rids.push(v);
+                } else {
+                    slide.diagram_rids.push(v);
+                }
+            }
+            break;
+        }
+    }
+}
+
 pub(super) fn parse_slide_for_markdown(
     xml_bytes: &[u8],
     rels: &HashMap<String, String>,
@@ -53,6 +87,16 @@ pub(super) fn parse_slide_for_markdown(
 
     // <a:t> tracking
     let mut in_t = false;
+    // Inside an <a:fld> carrying slide chrome (slide number, date/time,
+    // footer): the cached value is stale by definition and is not content.
+    let mut in_chrome_fld = false;
+    // Whole `<a:t>` text, accumulated verbatim and trimmed ONCE at `</a:t>`.
+    let mut t_buf = String::new();
+    // True until the first text event of the current <a:t> has been appended.
+    // Text inside ONE element must concatenate verbatim — an entity reference
+    // splits it into several events, and space-joining them produced `AT & T`
+    // from `AT&amp;T` (TECH_DEBT L6). Spacing belongs between elements, not
+    // inside one.
 
     // Table tracking
     let mut in_tbl = false;
@@ -66,6 +110,7 @@ pub(super) fn parse_slide_for_markdown(
     let mut in_tc_para = false;
     let mut tc_para_text = String::new();
     let mut in_tc_t = false;
+    let mut tc_t_buf = String::new();
 
     // Shape paragraphs accumulation
     let mut shape_paragraphs: Vec<SlideBlock> = Vec::new();
@@ -83,6 +128,12 @@ pub(super) fn parse_slide_for_markdown(
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
 
                 match local {
+                    // Charts and SmartArt are usually self-closing, but a
+                    // producer may write them in start/end form — and these
+                    // arms existed only under `Empty`, so such a slide silently
+                    // lost its chart and SmartArt text here while `get_chunks`
+                    // kept them.
+                    b"chart" | b"relIds" => record_graphic_pointer(local, e, &mut slide),
                     // Group shapes are traversed transparently; the tag itself
                     // needs no state — shapes inside are handled as normal.
                     b"grpSp" => {}
@@ -187,8 +238,20 @@ pub(super) fn parse_slide_for_markdown(
                             }
                         }
                     }
-                    b"t" if in_para && !in_tc_para => {
+                    b"fld" => {
+                        for a in e.attributes().flatten() {
+                            if a.key.as_ref().ends_with(b"type") {
+                                let v = String::from_utf8_lossy(a.value.as_ref())
+                                    .to_ascii_lowercase();
+                                if v == "slidenum" || v == "ftr" || v.starts_with("datetime") {
+                                    in_chrome_fld = true;
+                                }
+                            }
+                        }
+                    }
+                    b"t" if in_para && !in_tc_para && !in_chrome_fld => {
                         in_t = true;
+                        t_buf.clear();
                     }
                     b"pic" => {
                         in_pic = true;
@@ -285,8 +348,9 @@ pub(super) fn parse_slide_for_markdown(
                         in_tc_para = true;
                         tc_para_text.clear();
                     }
-                    b"t" if in_tc_para => {
+                    b"t" if in_tc_para && !in_chrome_fld => {
                         in_tc_t = true;
+                        tc_t_buf.clear();
                     }
                     _ => {}
                 }
@@ -297,34 +361,10 @@ pub(super) fn parse_slide_for_markdown(
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
 
                 match local {
-                    // SmartArt: the slide only points at the part holding the text.
-                    // `<c:chart r:id=…/>` — the pointer to the chart part.
-                    b"chart" => {
-                        for attr in e.attributes().flatten() {
-                            if attr_local_name(attr.key.as_ref()) == b"id" {
-                                let v = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !v.is_empty() {
-                                    slide.chart_rids.push(v);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    b"relIds" => {
-                        for attr in e.attributes().flatten() {
-                            if attr_local_name(attr.key.as_ref()) == b"dm" {
-                                let v = String::from_utf8_lossy(attr.value.as_ref())
-                                    .trim()
-                                    .to_string();
-                                if !v.is_empty() {
-                                    slide.diagram_rids.push(v);
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    // SmartArt and charts: the slide only points at the part
+                    // holding the text. Handled from BOTH branches — see
+                    // `record_graphic_pointer`.
+                    b"chart" | b"relIds" => record_graphic_pointer(local, e, &mut slide),
                     b"pPr" if in_para => {
                         for attr in e.attributes().flatten() {
                             if attr_local_name(attr.key.as_ref()) == b"lvl" {
@@ -472,37 +512,38 @@ pub(super) fn parse_slide_for_markdown(
                 }
             }
             Ok(XmlEvent::Text(ref e)) => {
+                // `is_entity` is set by read_event_folding_entities! when this
+                // event came from a reference. A reference splits one element's
+                // text into several events, so space-joining them turns
+                // `AT&amp;T` into `AT & T` — append verbatim instead (L6).
+                // Accumulate the whole `<a:t>` and trim once at `</a:t>`, the
+                // way `slide_xml` already does. Trimming the FIRST segment and
+                // appending the rest verbatim ate the space before an entity:
+                // `O'Reilly &amp; Associates` came out `O'Reilly& Associates`
+                // in markdown while `get_chunks` had it right. One deck, two
+                // readings.
                 if in_t && in_para && !in_tc_para {
-                    let txt = e.decode().unwrap_or_default().to_string();
-                    if in_run {
-                        push_text(&mut cur_run_text, &txt);
-                    } else {
-                        push_text(&mut para_text, &txt);
-                    }
+                    t_buf.push_str(e.decode().unwrap_or_default().as_ref());
                 }
                 if in_tc_t {
-                    let txt = e.decode().unwrap_or_default().to_string();
-                    push_text(&mut tc_para_text, &txt);
+                    tc_t_buf.push_str(e.decode().unwrap_or_default().as_ref());
                 }
             }
             Ok(XmlEvent::CData(ref e)) => {
                 if in_t && in_para && !in_tc_para {
-                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
-                    if in_run {
-                        push_text(&mut cur_run_text, &txt);
-                    } else {
-                        push_text(&mut para_text, &txt);
-                    }
+                    t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
                 }
                 if in_tc_t {
-                    let txt = String::from_utf8_lossy(e.as_ref()).to_string();
-                    push_text(&mut tc_para_text, &txt);
+                    tc_t_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
                 let ename = e.name();
                 let ebytes = ename.as_ref();
                 let local: &[u8] = ebytes.rsplit(|b| *b == b':').next().unwrap_or(ebytes);
+                if local == b"fld" {
+                    in_chrome_fld = false;
+                }
 
                 match local {
                     b"grpSp" => {}
@@ -533,9 +574,18 @@ pub(super) fn parse_slide_for_markdown(
                     }
                     b"t" if in_t => {
                         in_t = false;
+                        let txt = std::mem::take(&mut t_buf);
+                        let dst = if in_run {
+                            &mut cur_run_text
+                        } else {
+                            &mut para_text
+                        };
+                        push_text(dst, txt.trim());
                     }
                     b"t" if in_tc_t => {
                         in_tc_t = false;
+                        let txt = std::mem::take(&mut tc_t_buf);
+                        push_text(&mut tc_para_text, txt.trim());
                     }
                     b"pPr" if para_in_ppr => {
                         para_in_ppr = false;
@@ -581,7 +631,7 @@ pub(super) fn parse_slide_for_markdown(
                                     slide.title = Some(title_parts.join(" "));
                                 }
                             } else {
-                                slide.blocks.extend(shape_paragraphs.drain(..));
+                                slide.blocks.append(&mut shape_paragraphs);
                             }
                             shape_paragraphs.clear();
                             sp_is_title = false;
@@ -619,10 +669,8 @@ pub(super) fn parse_slide_for_markdown(
                         tbl_current_row.push(tc_text.trim().to_string());
                         tc_text.clear();
                     }
-                    b"tr" if in_tbl => {
-                        if !tbl_current_row.is_empty() {
-                            tbl_rows.push(std::mem::take(&mut tbl_current_row));
-                        }
+                    b"tr" if in_tbl && !tbl_current_row.is_empty() => {
+                        tbl_rows.push(std::mem::take(&mut tbl_current_row));
                     }
                     b"tbl" if in_tbl => {
                         in_tbl = false;
@@ -647,4 +695,52 @@ pub(super) fn parse_slide_for_markdown(
     }
 
     Ok(slide)
+}
+
+#[cfg(test)]
+mod graphic_pointer_tests {
+    /// `<c:chart>` and `<dgm:relIds>` are almost always self-closing, but a
+    /// producer may write them in start/end form — and the arms existed only
+    /// under `Empty`, so such a slide lost its chart and SmartArt text through
+    /// `get_markdown` while `get_chunks` kept them. No fixture uses the
+    /// start/end form, so this needs a synthetic input.
+    #[test]
+    fn a_start_form_chart_pointer_is_recorded() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a" xmlns:c="c" xmlns:dgm="dgm" xmlns:r="r">
+ <p:cSld><p:spTree>
+  <p:graphicFrame><a:graphic><a:graphicData>
+    <c:chart r:id="rId9"></c:chart>
+  </a:graphicData></a:graphic></p:graphicFrame>
+  <p:graphicFrame><a:graphic><a:graphicData>
+    <dgm:relIds r:dm="rId12"></dgm:relIds>
+  </a:graphicData></a:graphic></p:graphicFrame>
+ </p:spTree></p:cSld></p:sld>"#;
+
+        let slide =
+            super::parse_slide_for_markdown(xml, &Default::default()).expect("slide must parse");
+        assert_eq!(
+            slide.chart_rids,
+            vec!["rId9".to_string()],
+            "a start/end-form <c:chart> pointer was missed"
+        );
+        assert_eq!(
+            slide.diagram_rids,
+            vec!["rId12".to_string()],
+            "a start/end-form <dgm:relIds> pointer was missed"
+        );
+    }
+
+    /// The self-closing form, which is what real decks use, must be unchanged.
+    #[test]
+    fn the_self_closing_form_still_works() {
+        let xml = br#"<?xml version="1.0"?>
+<p:sld xmlns:p="p" xmlns:a="a" xmlns:c="c" xmlns:r="r">
+ <p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData>
+   <c:chart r:id="rId3"/>
+ </a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"#;
+        let slide =
+            super::parse_slide_for_markdown(xml, &Default::default()).expect("slide must parse");
+        assert_eq!(slide.chart_rids, vec!["rId3".to_string()]);
+    }
 }

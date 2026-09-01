@@ -13,7 +13,9 @@ use super::md_blocks::BlockKind;
 use super::md_slide_parse::parse_slide_for_markdown;
 
 /// Extract the presentation title from docProps/core.xml (Dublin Core metadata).
-pub(super) fn extract_presentation_title(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Option<String> {
+pub(super) fn extract_presentation_title(
+    archive: &mut ZipArchive<Cursor<Vec<u8>>>,
+) -> Option<String> {
     use std::io::Read;
 
     let mut entry = archive.by_name("docProps/core.xml").ok()?;
@@ -185,7 +187,7 @@ pub(super) fn extract_notes_text(
             let start = chunk.find("Target=\"")? + 8;
             let rest = &chunk[start..];
             let end = rest.find('"')?;
-            let target = crate::entities::decode_attr_value(rest[..end].as_bytes());
+            let target = crate::entities::decode_attr_value(&rest.as_bytes()[..end]);
             Some(resolve_relative_path(dir, &target))
         })?;
 

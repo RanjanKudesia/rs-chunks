@@ -12,9 +12,10 @@
 /// The chunking strategies across formats. Not every mode applies to every
 /// format; each format validates and maps `mode` onto the strategies it
 /// supports (e.g. spreadsheets use `Row`/`Table`/`Sheet`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChunkMode {
     /// Format's natural default strategy.
+    #[default]
     Default,
     Section,
     Semantic,
@@ -77,12 +78,6 @@ impl std::str::FromStr for ChunkMode {
     }
 }
 
-impl Default for ChunkMode {
-    fn default() -> Self {
-        ChunkMode::Default
-    }
-}
-
 /// Unified options. Field defaults match the Python API defaults so ported
 /// tests observe identical behaviour.
 #[derive(Debug, Clone)]
@@ -111,7 +106,7 @@ impl Default for ChunkOptions {
             rows_per_chunk: 10,
             include_headers: true,
             delimiter: None,
-            encoding: "utf-8".to_string(),
+            encoding: "auto".to_string(),
             skip_empty_rows: true,
         }
     }
@@ -167,15 +162,11 @@ pub(crate) fn validate_mode_args(
                 return bad("overlap must be less than window_size");
             }
         }
-        "sentence" => {
-            if sentences_per_chunk == 0 {
-                return bad("sentences_per_chunk must be greater than 0");
-            }
+        "sentence" if sentences_per_chunk == 0 => {
+            return bad("sentences_per_chunk must be greater than 0");
         }
-        "page_aware" => {
-            if paragraphs_per_page == 0 {
-                return bad("paragraphs_per_page must be greater than 0");
-            }
+        "page_aware" if paragraphs_per_page == 0 => {
+            return bad("paragraphs_per_page must be greater than 0");
         }
         _ => {}
     }

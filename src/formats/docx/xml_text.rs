@@ -13,11 +13,21 @@ pub(super) fn qname_eq(name: QName<'_>, expected: &[u8]) -> bool {
 /// space separator when both sides are non-empty. Used to stitch the run
 /// fragments inside a paragraph back into a single string.
 pub(super) fn push_text(target: &mut String, piece: &str) {
-    let trimmed = piece.trim();
+    // Spaces and line ends trim; TABS DO NOT. A run-content `<w:tab/>` reaches
+    // this function as a piece containing '\t' (often the whole piece, because
+    // producers put the tab in its own run), and `str::trim` was deleting it —
+    // 283 tabs in one fixture became zero output characters, fusing
+    // `column1<tab>Mid` into one word. Paragraph and sub-segment flushes trim
+    // full whitespace at the EDGES, so a kept tab can never start an output
+    // line (the GFM indented-code hazard).
+    let trimmed = piece.trim_matches([' ', '\n', '\r'].as_slice());
     if trimmed.is_empty() {
         return;
     }
-    if !target.is_empty() {
+    // The joining space exists to separate whole-element pieces; a tab at the
+    // boundary IS the separator, so adding a space beside it would inject
+    // phantom whitespace into tab-delimited content.
+    if !target.is_empty() && !target.ends_with('\t') && !trimmed.starts_with('\t') {
         target.push(' ');
     }
     target.push_str(trimmed);

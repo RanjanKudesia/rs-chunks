@@ -1,14 +1,14 @@
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-use crate::shared::{
-    ci_starts_with, CAUSE_EFFECT_STARTS, CONTRAST_CONTINUATION, ELABORATION_STARTS, EXAMPLE_STARTS,
-    REFERENCE_STARTS, SHORT_PARA_CHARS, TRANSITION_BREAKS,
-};
 use super::common::{
     current_section_heading, current_section_level, has_keyword_overlap, heading_path_strings,
     html_metadata_with_path, parse_html_blocks, remove_comments, tokenize_keywords,
     update_heading_stack, ChunkRecordInput, ContentType, HtmlBlockType,
+};
+use crate::shared::{
+    ci_starts_with, CAUSE_EFFECT_STARTS, CONTRAST_CONTINUATION, ELABORATION_STARTS, EXAMPLE_STARTS,
+    REFERENCE_STARTS, SHORT_PARA_CHARS, TRANSITION_BREAKS,
 };
 
 const MAX_SEMANTIC_CHARS: usize = 1500;
@@ -109,8 +109,11 @@ impl SemAccum {
         } else {
             // Sort by (count desc, key asc) for determinism when counts are tied.
             let mut reason_vec: Vec<(&'static str, usize)> = counts.into_iter().collect();
-            reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            reason_vec.first().map(|(k, _)| *k).unwrap_or("keyword_overlap")
+            reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            reason_vec
+                .first()
+                .map(|(k, _)| *k)
+                .unwrap_or("keyword_overlap")
         };
         let tw = content.split_whitespace().count().max(1);
         let kd = (self.keywords.len() as f64 / tw as f64 * 1000.0).round() / 1000.0;
@@ -195,11 +198,13 @@ fn emit_chunk(chunk: ChunkRecordInput, result: &mut Vec<ChunkRecordInput>, ci: &
 }
 
 pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, String> {
-    let text = std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
+    let text = super::encoding::decode_html(bytes);
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("HTML file is empty".to_string());
+        return Ok(Vec::new());
     }
     let blocks = parse_html_blocks(&remove_comments(&text));
     let total = blocks.len();
@@ -292,9 +297,12 @@ pub fn build_semantic_chunks(bytes: &[u8]) -> Result<Vec<ChunkRecordInput>, Stri
         }
     }
     flush(&mut accum, &mut result, &mut chunk_index, total);
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No semantic chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
-

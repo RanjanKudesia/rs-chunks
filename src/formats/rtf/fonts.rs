@@ -36,7 +36,11 @@ pub fn parse(bytes: &[u8], default_enc: &'static Encoding) -> Fonts {
 /// `\fN` opens a font definition and must be its first control word.
 fn font_number(def: &[u8]) -> Option<i32> {
     let rest = def.strip_prefix(b"{\\f")?;
-    let digits: Vec<u8> = rest.iter().copied().take_while(u8::is_ascii_digit).collect();
+    let digits: Vec<u8> = rest
+        .iter()
+        .copied()
+        .take_while(u8::is_ascii_digit)
+        .collect();
     if digits.is_empty() {
         return None;
     }

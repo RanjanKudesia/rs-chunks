@@ -24,12 +24,12 @@ use chunks_rs::formats::msg::rtf::{compressed_rtf_to_text, decompress_rtf};
 /// the smallest of each RTF flavour, a non-Latin codepage, and the largest —
 /// which cycles the 4,096-byte dictionary many times over.
 const CASES: &[(&str, usize)] = &[
-    ("tika_testMSG.msg", 910),                 // smallest \fromtext
-    ("tika_testMSG_StickyNote.msg", 247),      // smallest native RTF
-    ("tika_testMSG_chinese.msg", 8_711),       // \ansicpg950
+    ("tika_testMSG.msg", 910),            // smallest \fromtext
+    ("tika_testMSG_StickyNote.msg", 247), // smallest native RTF
+    ("tika_testMSG_chinese.msg", 8_711),  // \ansicpg950
     ("poi_51873.msg", 377),
     ("tika_testMSG_Contact.msg", 9_785),
-    ("tika_test-outlook.msg", 26_028),         // largest — dictionary wraparound
+    ("tika_test-outlook.msg", 26_028), // largest — dictionary wraparound
 ];
 
 fn compressed_stream(name: &str) -> Vec<u8> {
@@ -55,10 +55,7 @@ fn compressed_stream(name: &str) -> Vec<u8> {
 fn decompresses_every_fixture_to_its_declared_size() {
     for (name, expected) in CASES {
         let compressed = compressed_stream(name);
-        assert!(
-            compressed.len() > 16,
-            "{name}: stream too short to be LZFu"
-        );
+        assert!(compressed.len() > 16, "{name}: stream too short to be LZFu");
         assert_eq!(
             &compressed[8..12],
             b"LZFu",
@@ -105,7 +102,9 @@ fn the_largest_fixture_cycles_the_dictionary() {
 #[test]
 fn compressed_rtf_becomes_readable_text() {
     let compressed = compressed_stream("tika_testMSG.msg");
-    let text = compressed_rtf_to_text(&compressed).expect("no text recovered");
+    let text = compressed_rtf_to_text(&compressed)
+        .expect("decode failed")
+        .expect("no text recovered");
     assert!(!text.trim().is_empty(), "recovered no text at all");
     assert!(
         !text.contains("\\rtf") && !text.contains("\\par"),
@@ -119,7 +118,9 @@ fn compressed_rtf_becomes_readable_text() {
 #[test]
 fn a_non_latin_codepage_survives() {
     let compressed = compressed_stream("tika_testMSG_chinese.msg");
-    let text = compressed_rtf_to_text(&compressed).expect("no text recovered");
+    let text = compressed_rtf_to_text(&compressed)
+        .expect("decode failed")
+        .expect("no text recovered");
     assert!(
         !text.contains('\u{FFFD}'),
         "replacement characters in the decoded body"
@@ -161,10 +162,15 @@ fn malformed_streams_fail_cleanly() {
 /// non-blank plain body.
 #[test]
 fn a_message_whose_only_body_is_compressed_rtf_still_reads() {
-    let path: std::path::PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "msg", "derived_rtf_only.msg"]
-            .iter()
-            .collect();
+    let path: std::path::PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "test_files",
+        "msg",
+        "derived_rtf_only.msg",
+    ]
+    .iter()
+    .collect();
     if !path.exists() {
         return;
     }
@@ -183,16 +189,28 @@ fn a_message_whose_only_body_is_compressed_rtf_still_reads() {
     // its plain body, the word sequence is identical. Only the sender's hard
     // line wrapping differs, because RTF encodes paragraphs rather than lines —
     // so comparing characters would report a difference that is not one.
-    let base: std::path::PathBuf =
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "msg", "tika_testMSG.msg"]
-            .iter()
-            .collect();
+    let base: std::path::PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "test_files",
+        "msg",
+        "tika_testMSG.msg",
+    ]
+    .iter()
+    .collect();
     let plain = chunks_rs::formats::msg::to_markdown(&base.to_string_lossy()).expect("markdown");
     let words = |s: &str| {
         s.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                    .to_string()
+            })
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
     };
-    assert_eq!(words(&plain), words(&text), "the two body sources disagree about the text");
+    assert_eq!(
+        words(&plain),
+        words(&text),
+        "the two body sources disagree about the text"
+    );
 }

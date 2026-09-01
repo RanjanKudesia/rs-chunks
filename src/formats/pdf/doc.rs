@@ -38,18 +38,47 @@ pub(crate) fn read_page(extractor: &mut Extractor, doc: &Document, page_id: Obje
     let media_box = inherited(doc, page_id, b"MediaBox")
         .and_then(|o| rect(doc, &o))
         .unwrap_or(DEFAULT_MEDIA_BOX);
+    // /CropBox is the region a conforming reader DISPLAYS (ISO 32000-1
+    // Table 30); it defaults to /MediaBox and is intersected with it. It was
+    // never read, so content outside the visible page was extracted as body
+    // text — every page of irs_i1040nr.pdf keeps a 216pt pre-press band above
+    // its crop (`Userid:`, `Draft`, `Ok to Print`, plus an internal Windows
+    // path), and because that band tops the MediaBox the XY-cut sorted it
+    // FIRST: the document's markdown opened with printer control marks.
+    let crop_box = inherited(doc, page_id, b"CropBox")
+        .and_then(|o| rect(doc, &o))
+        .map(|c| geom::intersect_boxes(c, media_box))
+        .unwrap_or(media_box);
     let rotate = inherited(doc, page_id, b"Rotate")
         .and_then(|o| o.as_i64().ok())
         .unwrap_or(0);
-    let (base, width, height) = geom::page_transform(media_box, rotate);
+    let (base, width, height) = geom::page_transform(crop_box, rotate);
 
     let mut content = PageContent::default();
     if let Ok(data) = doc.get_page_content(page_id) {
         let resources = resources_for(doc, page_id);
         extractor.run(doc, &data, &resources, base, &mut content);
     }
+    // Clip text outside the visible page — but ONLY when the author declared
+    // a CropBox smaller than the MediaBox. A bare MediaBox never asserted
+    // clipping, and real documents paint slightly outside it: the arXiv margin
+    // stamp (`arXiv:1706.03762…`) sits a few points past the left edge of a
+    // crop-less page, and clipping it against the MediaBox deleted text a
+    // conforming reader shows (caught by `sideways_text_is_never_a_heading`).
+    // Images are deliberately NOT clipped even under a crop — one partially
+    // inside is still shown, and image loss is worse than image slack.
+    if crop_box != media_box {
+        let (eps, w, h) = (2.0_f32, width, height);
+        content
+            .glyphs
+            .retain(|g| g.x >= -eps && g.x <= w + eps && g.y >= -eps && g.y <= h + eps);
+    }
     apply_links(&mut content.glyphs, &links(doc, page_id, base));
-    Page { content, width, height }
+    Page {
+        content,
+        width,
+        height,
+    }
 }
 
 /// A page's effective resource dictionary: its own entries, then any category
@@ -135,9 +164,18 @@ fn links(doc: &Document, page_id: ObjectId, transform: Matrix) -> Vec<Link> {
     };
     let mut out = Vec::new();
     for entry in annots {
-        let Ok((_, object)) = doc.dereference(entry) else { continue };
-        let Ok(annot) = object.as_dict() else { continue };
-        if annot.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"") != b"Link" {
+        let Ok((_, object)) = doc.dereference(entry) else {
+            continue;
+        };
+        let Ok(annot) = object.as_dict() else {
+            continue;
+        };
+        if annot
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .unwrap_or(b"")
+            != b"Link"
+        {
             continue;
         }
         let uri = annot
@@ -147,8 +185,13 @@ fn links(doc: &Document, page_id: ObjectId, transform: Matrix) -> Vec<Link> {
             .and_then(Object::as_str)
             .map(|b| String::from_utf8_lossy(b).to_string())
             .ok();
-        let area = annot.get_deref(b"Rect", doc).ok().and_then(|o| rect(doc, o));
-        let (Some(uri), Some(area)) = (uri, area) else { continue };
+        let area = annot
+            .get_deref(b"Rect", doc)
+            .ok()
+            .and_then(|o| rect(doc, o));
+        let (Some(uri), Some(area)) = (uri, area) else {
+            continue;
+        };
         let rect = area;
         if uri.trim().is_empty() {
             continue;

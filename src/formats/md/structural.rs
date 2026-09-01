@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
 use super::common::{
-    classify_prose, extract_heading_text, heading_level, parse_markdown_blocks, split_at_sentences,
-    extend_span, strip_block_content, union_span, BlockSpan, ChunkRecordInput, ContentType, MdBlock,
-    MdBlockType, SpannedRecord, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS,
+    classify_prose, extend_span, extract_heading_text, heading_level, parse_markdown_blocks,
+    split_at_sentences, strip_block_content, union_span, BlockSpan, ChunkRecordInput, ContentType,
+    MdBlock, MdBlockType, SpannedRecord, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS,
 };
 
 // ── Prose helpers ─────────────────────────────────────────────────────────────
@@ -37,14 +37,18 @@ impl ProseMerger {
     /// Offer a chunk; returns the one before it, if that can no longer grow.
     pub fn push(&mut self, next: SpannedRecord, min_chars: usize) -> Option<SpannedRecord> {
         let soft_max = MAX_CHUNK_CHARS + min_chars;
-        let SpannedRecord { record: next, blocks } = next;
+        let SpannedRecord {
+            record: next,
+            blocks,
+        } = next;
         if is_prose(next.content_type) && next.content.len() < min_chars {
             if let Some(previous) = self.held.as_mut() {
                 let prev = &mut previous.record;
-                if is_prose(prev.content_type)
-                    && prev.content.len() + next.content.len() + 1 <= soft_max
+                if is_prose(prev.content_type) && prev.content.len() + next.content.len() < soft_max
                 {
-                    prev.content = format!("{}\n{}", prev.content, next.content).trim().to_string();
+                    prev.content = format!("{}\n{}", prev.content, next.content)
+                        .trim()
+                        .to_string();
                     prev.content_type = classify_prose(&prev.content);
                     // The merged chunk now covers both sources' blocks.
                     previous.blocks = union_span(previous.blocks, blocks);
@@ -62,8 +66,10 @@ impl ProseMerger {
 
 fn merge_short_prose(chunks: Vec<SpannedRecord>, min_chars: usize) -> Vec<SpannedRecord> {
     let mut merger = ProseMerger::new();
-    let mut result: Vec<SpannedRecord> =
-        chunks.into_iter().filter_map(|chunk| merger.push(chunk, min_chars)).collect();
+    let mut result: Vec<SpannedRecord> = chunks
+        .into_iter()
+        .filter_map(|chunk| merger.push(chunk, min_chars))
+        .collect();
     result.extend(merger.finish());
     result
 }
@@ -142,8 +148,14 @@ impl StructuralBuilder {
 
     fn push_at(&mut self, content_type: ContentType, content: String, index: usize) {
         let metadata = md_metadata(self.heading.clone(), self.section_level);
-        self.ready
-            .push(SpannedRecord::at(ChunkRecordInput { content_type, content, metadata }, index));
+        self.ready.push(SpannedRecord::at(
+            ChunkRecordInput {
+                content_type,
+                content,
+                metadata,
+            },
+            index,
+        ));
     }
 
     /// Feed one block.
@@ -213,10 +225,14 @@ impl StructuralBuilder {
 // ── Core build function ───────────────────────────────────────────────────────
 
 pub fn build_chunks_from_md_bytes(bytes: &[u8]) -> Result<Vec<SpannedRecord>, String> {
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = super::common::decode_body(bytes);
 
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("Markdown file is empty after decoding".to_string());
+        return Ok(Vec::new());
     }
 
     let mut builder = StructuralBuilder::new();
@@ -225,9 +241,13 @@ pub fn build_chunks_from_md_bytes(bytes: &[u8]) -> Result<Vec<SpannedRecord>, St
     }
     let chunks = merge_short_prose(builder.finish(), MIN_CHUNK_CHARS);
 
-    if chunks.is_empty() {
-        return Err("No chunks generated from Markdown document".to_string());
-    }
+    // A document that parsed cleanly but holds no extractable text is EMPTY,
+    // not broken: return an empty list rather than an error. Raising here
+    // conflated "nothing to chunk" with "could not read this file", and it was
+    // inconsistent — docx/ppt/xlsx already returned `[]` for the same condition
+    // while txt/html/md raised (TECH_DEBT T6). Structural invalidity still
+    // errors: a PPTX with no slides, or a PDF with no text layer, both raise a
+    // typed error carrying a remedy.
     Ok(chunks)
 }
 

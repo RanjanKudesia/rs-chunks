@@ -54,18 +54,29 @@ impl Font {
     pub fn from_dict(doc: &Document, dict: &Dictionary) -> Font {
         let subtype = name_of(dict.get(b"Subtype").ok()).unwrap_or_default();
         let composite = subtype == "Type0";
-        let descendant = if composite { descendant_font(doc, dict) } else { None };
+        let descendant = if composite {
+            descendant_font(doc, dict)
+        } else {
+            None
+        };
         // A Type0 font's descriptor and widths live on the descendant; a simple
         // font's live on the font dictionary itself.
         let metrics_dict = descendant.unwrap_or(dict);
 
         let base_font = name_of(dict.get(b"BaseFont").ok()).unwrap_or_default();
-        let descriptor = metrics_dict.get_deref(b"FontDescriptor", doc).and_then(Object::as_dict).ok();
+        let descriptor = metrics_dict
+            .get_deref(b"FontDescriptor", doc)
+            .and_then(Object::as_dict)
+            .ok();
 
         // The declared widths are read before the encoding because the encoding
         // may need them: a subset that names its glyphs by index is decodable
         // only if its own widths vouch for the reference table (`cambria`).
-        let declared = if composite { HashMap::new() } else { simple_widths(doc, dict) };
+        let declared = if composite {
+            HashMap::new()
+        } else {
+            simple_widths(doc, dict)
+        };
         let simple = if composite {
             [None; 256]
         } else {
@@ -135,7 +146,11 @@ impl Font {
         };
         Decoded {
             text: expand_ligatures(text),
-            width: self.widths.get(&code).copied().unwrap_or(self.default_width),
+            width: self
+                .widths
+                .get(&code)
+                .copied()
+                .unwrap_or(self.default_width),
             is_space_code,
         }
     }
@@ -168,9 +183,14 @@ fn expand_ligatures(text: String) -> String {
 }
 
 fn descendant_font<'a>(doc: &'a Document, dict: &'a Dictionary) -> Option<&'a Dictionary> {
-    let array = dict.get_deref(b"DescendantFonts", doc).and_then(Object::as_array).ok()?;
+    let array = dict
+        .get_deref(b"DescendantFonts", doc)
+        .and_then(Object::as_array)
+        .ok()?;
     let first = array.first()?;
-    doc.dereference(first).ok().and_then(|(_, o)| o.as_dict().ok())
+    doc.dereference(first)
+        .ok()
+        .and_then(|(_, o)| o.as_dict().ok())
 }
 
 /// Build a simple font's 256-entry code → character table: base encoding first,
@@ -201,7 +221,10 @@ fn simple_encoding(
         // The font dictionary names no encoding, so the font program's own is
         // the authority. TeX's maths fonts are the case that matters: symbolic,
         // encoding-less, and placing `/alpha` at code 11.
-        None => match builtin_program(doc, descriptor).as_deref().and_then(type1::builtin_encoding) {
+        None => match builtin_program(doc, descriptor)
+            .as_deref()
+            .and_then(type1::builtin_encoding)
+        {
             Some(builtin) => table = builtin,
             None => {
                 let symbolic = descriptor
@@ -241,7 +264,10 @@ fn copy(source: &CodeToUnicode, table: &mut CodeToChar) {
 /// (TrueType) and `/FontFile3` (CFF) keep their encodings in binary tables and
 /// are not read here.
 fn builtin_program(doc: &Document, descriptor: Option<&Dictionary>) -> Option<Vec<u8>> {
-    let stream = descriptor?.get_deref(b"FontFile", doc).and_then(Object::as_stream).ok()?;
+    let stream = descriptor?
+        .get_deref(b"FontFile", doc)
+        .and_then(Object::as_stream)
+        .ok()?;
     stream.decompressed_content().ok()
 }
 
@@ -256,7 +282,10 @@ fn apply_differences(
     table: &mut CodeToChar,
 ) -> Vec<(usize, u16)> {
     let mut bare = Vec::new();
-    let Ok(items) = encoding.get_deref(b"Differences", doc).and_then(Object::as_array) else {
+    let Ok(items) = encoding
+        .get_deref(b"Differences", doc)
+        .and_then(Object::as_array)
+    else {
         return bare;
     };
     let mut code = 0usize;
@@ -325,7 +354,10 @@ pub(crate) fn glyph_to_char(name: &str) -> Option<char> {
             return char::from_u32(v);
         }
     }
-    if let Some(hex) = name.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())) {
+    if let Some(hex) = name
+        .strip_prefix('u')
+        .filter(|h| (4..=6).contains(&h.len()))
+    {
         if let Ok(v) = u32::from_str_radix(hex, 16) {
             return char::from_u32(v);
         }
@@ -365,7 +397,10 @@ fn base14_widths(base_font: &str, encoding: &[Option<char>; 256]) -> HashMap<u32
 
 fn simple_widths(doc: &Document, dict: &Dictionary) -> HashMap<u32, f32> {
     let mut out = HashMap::new();
-    let first = dict.get_deref(b"FirstChar", doc).and_then(Object::as_i64).unwrap_or(0);
+    let first = dict
+        .get_deref(b"FirstChar", doc)
+        .and_then(Object::as_i64)
+        .unwrap_or(0);
     let Ok(widths) = dict.get_deref(b"Widths", doc).and_then(Object::as_array) else {
         return out;
     };
@@ -388,7 +423,9 @@ fn cid_widths(doc: &Document, descendant: &Dictionary) -> HashMap<u32, f32> {
     };
     let mut i = 0;
     while i < items.len() {
-        let Ok(first) = number(doc, &items[i]) else { break };
+        let Ok(first) = number(doc, &items[i]) else {
+            break;
+        };
         let Some(next) = items.get(i + 1) else { break };
         match doc.dereference(next).map(|(_, o)| o) {
             Ok(Object::Array(list)) => {
@@ -400,7 +437,9 @@ fn cid_widths(doc: &Document, descendant: &Dictionary) -> HashMap<u32, f32> {
                 i += 2;
             }
             _ => {
-                let (Ok(last), Some(w)) = (number(doc, next), items.get(i + 2)) else { break };
+                let (Ok(last), Some(w)) = (number(doc, next), items.get(i + 2)) else {
+                    break;
+                };
                 let Ok(w) = number(doc, w) else { break };
                 // Guard the range: a malformed /W must not allocate unboundedly.
                 let last = (last as u32).min(first as u32 + 65_535);
@@ -440,7 +479,10 @@ fn is_bold(base_font: &str, descriptor: Option<&Dictionary>) -> bool {
     if base_font.to_ascii_lowercase().contains("bold") {
         return true;
     }
-    match descriptor.and_then(|d| d.get(b"StemV").ok()).and_then(|o| o.as_float().ok()) {
+    match descriptor
+        .and_then(|d| d.get(b"StemV").ok())
+        .and_then(|o| o.as_float().ok())
+    {
         // 120 is comfortably above a regular weight's stem and below a black's.
         Some(stem) => stem >= 120.0,
         None => descriptor
@@ -467,7 +509,11 @@ fn is_italic(base_font: &str, descriptor: Option<&Dictionary>) -> bool {
 }
 
 fn number(doc: &Document, object: &Object) -> Result<f32, ()> {
-    doc.dereference(object).map(|(_, o)| o).map_err(|_| ())?.as_float().map_err(|_| ())
+    doc.dereference(object)
+        .map(|(_, o)| o)
+        .map_err(|_| ())?
+        .as_float()
+        .map_err(|_| ())
 }
 
 fn name_of(object: Option<&Object>) -> Option<String> {
@@ -483,7 +529,10 @@ mod tests {
 
     #[test]
     fn ligatures_are_spelled_out_so_the_word_stays_searchable() {
-        assert_eq!(expand_ligatures("classi\u{FB01}cation".into()), "classification");
+        assert_eq!(
+            expand_ligatures("classi\u{FB01}cation".into()),
+            "classification"
+        );
         assert_eq!(expand_ligatures("su\u{FB03}x".into()), "suffix");
         assert_eq!(expand_ligatures("plain".into()), "plain");
     }

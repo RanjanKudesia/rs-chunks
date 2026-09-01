@@ -15,7 +15,7 @@ use liteparse::parser::LiteParse;
 use liteparse::types::PdfInput;
 
 /// Render every page of a PDF to PNG, keyed `page_{n}.png`.
-pub fn render_pages(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+pub fn render_pages(bytes: &[u8]) -> Result<crate::chunk::ExtractedImages, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -23,11 +23,18 @@ pub fn render_pages(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
 
     let input = PdfInput::Bytes(bytes.to_vec());
     runtime.block_on(async move {
-        let config = LiteParseConfig { ocr_enabled: false, quiet: true, ..Default::default() };
+        let config = LiteParseConfig {
+            ocr_enabled: false,
+            quiet: true,
+            ..Default::default()
+        };
         let shots = LiteParse::new(config)
             .screenshot_input(input, None)
             .await
             .map_err(|e| format!("Failed to render PDF pages: {e}"))?;
-        Ok(shots.into_iter().map(|s| (format!("page_{}.png", s.page_num), s.image_bytes)).collect())
+        Ok(shots
+            .into_iter()
+            .map(|s| (format!("page_{}.png", s.page_num), s.image_bytes))
+            .collect())
     })
 }

@@ -1,15 +1,21 @@
 use serde_json::json;
 
 use super::common::{
-    collect_slide_names, open_pptx, read_all_slides, split_sentences,
-    ChunkRecordInput, ContentType,
+    collect_slide_names, open_pptx, read_all_slides, split_sentences, ChunkRecordInput, ContentType,
 };
 
-pub fn build_sentence_chunks(bytes: &[u8], sentences_per_chunk: usize) -> Result<Vec<ChunkRecordInput>, String> {
-    if sentences_per_chunk == 0 { return Err("sentences_per_chunk must be > 0".to_string()); }
+pub fn build_sentence_chunks(
+    bytes: &[u8],
+    sentences_per_chunk: usize,
+) -> Result<Vec<ChunkRecordInput>, String> {
+    if sentences_per_chunk == 0 {
+        return Err("sentences_per_chunk must be > 0".to_string());
+    }
     let mut archive = open_pptx(bytes)?;
     let slide_names = collect_slide_names(&archive);
-    if slide_names.is_empty() { return Err("No slides found".to_string()); }
+    if slide_names.is_empty() {
+        return Err("No slides found".to_string());
+    }
     let total_slides = slide_names.len();
 
     // Collect all sentences with their source slide number.
@@ -37,7 +43,9 @@ pub fn build_sentence_chunks(bytes: &[u8], sentences_per_chunk: usize) -> Result
         }
     }
 
-    if all_sentences.is_empty() { return Ok(Vec::new()); }
+    if all_sentences.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let mut result: Vec<ChunkRecordInput> = Vec::new();
     let mut chunk_index = 0usize;
@@ -45,7 +53,11 @@ pub fn build_sentence_chunks(bytes: &[u8], sentences_per_chunk: usize) -> Result
     while i < all_sentences.len() {
         let end = (i + sentences_per_chunk).min(all_sentences.len());
         let window = &all_sentences[i..end];
-        let content = window.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
+        let content = window
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         if !content.is_empty() {
             result.push(ChunkRecordInput {
                 content_type: ContentType::Sentence,
@@ -64,7 +76,12 @@ pub fn build_sentence_chunks(bytes: &[u8], sentences_per_chunk: usize) -> Result
         i = end;
     }
 
-    if result.is_empty() { return Err("No sentence chunks generated".to_string()); }
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
+    if result.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(result)
 }
-

@@ -44,7 +44,9 @@ fn inject_message_metadata(chunks: &mut [Chunk], infos: &[MboxMessageInfo]) {
             current = Some(n);
         }
         let Some(n) = current else { continue };
-        let Some(info) = by_index.get(&n) else { continue };
+        let Some(info) = by_index.get(&n) else {
+            continue;
+        };
         if let Some(map) = chunk.metadata.as_object_mut() {
             map.insert("message_index".into(), serde_json::json!(n));
             map.insert("message_subject".into(), serde_json::json!(info.subject));
@@ -94,8 +96,23 @@ fn load(file_path: &str) -> Result<(Loaded, Vec<MboxMessageInfo>)> {
 }
 
 /// No-filesystem entry (wasm/browser). `filename` routes `.eml` vs `.mbox`.
-pub fn chunk_from_bytes(data: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    chunk_mbox(&load_bytes(data, filename)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_from_bytes(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    chunk_mbox(
+        &load_bytes(data, filename)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
@@ -104,11 +121,28 @@ pub fn to_markdown_from_bytes(data: &[u8], filename: &str) -> Result<String> {
 
 fn load_bytes(raw: &[u8], file_path: &str) -> Result<(Loaded, Vec<MboxMessageInfo>)> {
     if file_path.to_ascii_lowercase().ends_with(".mbox") {
-        let (markdown, images, count, infos) = mbox_to_markdown(raw);
-        let metadata = serde_json::json!({ "source_type": "mbox", "message_count": count });
-        Ok((Loaded { markdown, images, metadata, records: None }, infos))
+        let load = mbox_to_markdown(raw);
+        // `message_count` keeps its meaning — messages the splitter found — and
+        // `skipped_messages` explains any gap in the `## Message N` numbering.
+        let metadata = serde_json::json!({
+            "source_type": "mbox",
+            "message_count": load.count,
+            "skipped_messages": load.skipped,
+        });
+        Ok((
+            Loaded {
+                markdown: load.markdown,
+                images: load.images,
+                metadata,
+                records: None,
+            },
+            load.infos,
+        ))
     } else {
-        let doc = parse_message_bytes(raw);
+        // A single `.eml` has no unit to isolate: if the message did not parse,
+        // there is no document. Propagate, per T6's rule that structurally
+        // invalid raises while nothing-to-chunk returns `[]`.
+        let doc = parse_message_bytes(raw).map_err(ChunkError::Parse)?;
         let markdown = document_to_markdown(&doc, 1);
         let metadata = serde_json::json!({
             "source_type": "eml",
@@ -124,7 +158,15 @@ fn load_bytes(raw: &[u8], file_path: &str) -> Result<(Loaded, Vec<MboxMessageInf
             "has_attachments": !doc.attachments.is_empty(),
             "attachment_count": doc.attachments.len(),
         });
-        Ok((Loaded { markdown, images: doc.images, metadata, records: None }, Vec::new()))
+        Ok((
+            Loaded {
+                markdown,
+                images: doc.images,
+                metadata,
+                records: None,
+            },
+            Vec::new(),
+        ))
     }
 }
 
@@ -136,7 +178,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    chunk_mbox(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_mbox(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -150,29 +199,53 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load(file_path)?.0, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load(file_path)?.0,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown(file_path: &str) -> Result<String> {
     Ok(load(file_path)?.0.markdown)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load(file_path)?.0;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(data: &[u8], filename: &str, mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
-    pipeline::chunk_with_images(&load_bytes(data, filename)?.0, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_with_images_from_bytes(
+    data: &[u8],
+    filename: &str,
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
+    pipeline::chunk_with_images(
+        &load_bytes(data, filename)?.0,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8], filename: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    data: &[u8],
+    filename: &str,
+) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load_bytes(data, filename)?.0;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
-
 
 pub fn stream(
     file_path: &str,
@@ -182,7 +255,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

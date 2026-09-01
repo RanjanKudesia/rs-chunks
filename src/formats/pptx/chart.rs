@@ -18,6 +18,7 @@
 //!   corresponding cells are genuinely empty. Recursing into a nested zip would
 //!   cost a lot for nothing.
 
+use crate::entities::read_event_folding_entities;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::io::BufReader;
@@ -58,7 +59,9 @@ pub fn resolve_chart_parts(
     let mut parts = Vec::new();
     for rid in rids {
         for rel in content.split("<Relationship ") {
-            let Some(ty) = attr(rel, "Type") else { continue };
+            let Some(ty) = attr(rel, "Type") else {
+                continue;
+            };
             if !ty.ends_with(CHART_REL_SUFFIX) {
                 continue;
             }
@@ -83,7 +86,7 @@ fn attr(fragment: &str, name: &str) -> Option<String> {
     let rest = &fragment[start..];
     // Attribute values are escaped in the file; decode before use.
     Some(crate::entities::decode_attr_value(
-        rest[..rest.find('"')?].as_bytes(),
+        &rest.as_bytes()[..rest.find('"')?],
     ))
 }
 
@@ -122,7 +125,12 @@ pub fn parse_chart_xml(xml_bytes: &[u8]) -> Vec<Vec<String>> {
     let mut text = String::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        // Entity references arrive as their own event; fold them back into text.
+        // This walker was the one XML reader in pptx that never got the L6 fix,
+        // so `Event::GeneralRef` fell through the catch-all and was *deleted*:
+        // a series named `R&amp;D` extracted as "RD" (measured).
+        let mut spill = String::new();
+        match read_event_folding_entities!(reader, &mut buf, &mut spill) {
             Ok(Event::Eof) | Err(_) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match local_name(e.name()).as_slice() {
@@ -145,10 +153,8 @@ pub fn parse_chart_xml(xml_bytes: &[u8]) -> Vec<Vec<String>> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_v {
-                    text.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_v => {
+                text.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
                 b"v" if in_v => {
@@ -213,7 +219,13 @@ fn build_rows(mut categories: Vec<(usize, String)>, series: Vec<Series>) -> Vec<
             // Duplicate series names are real — sample.pptx has two both called
             // "Graph information" — so disambiguate rather than emit two
             // identical headers.
-            Some(name) if series.iter().filter(|o| o.name.as_ref() == Some(name)).count() > 1 => {
+            Some(name)
+                if series
+                    .iter()
+                    .filter(|o| o.name.as_ref() == Some(name))
+                    .count()
+                    > 1 =>
+            {
                 format!("{name} ({})", n + 1)
             }
             Some(name) => name.clone(),
@@ -338,5 +350,57 @@ mod tests {
     #[test]
     fn malformed_xml_yields_nothing_rather_than_panicking() {
         assert!(parse_chart_xml(b"<c:ser><c:val><c:numCache><c:pt idx=\"0\"><c:v>1").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod entity_tests {
+    /// L6: `Event::GeneralRef` must be folded back into text, not dropped.
+    ///
+    /// `chart.rs` was the one XML walker in pptx that never got this fix — the
+    /// entity fell through a `_ => {}` catch-all and was deleted outright, so a
+    /// series named `R&amp;D` extracted as "RD". Silent corruption: the chart
+    /// still parses, the label is just wrong.
+    #[test]
+    fn an_entity_in_a_series_name_survives() {
+        let xml = br#"<c:chartSpace xmlns:c="x"><c:ser><c:tx><c:strRef><c:strCache>
+            <c:pt idx="0"><c:v>R&amp;D</c:v></c:pt></c:strCache></c:strRef></c:tx>
+            <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Alpha &amp; Beta</c:v></c:pt>
+            </c:strCache></c:strRef></c:cat>
+            <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt>
+            </c:numCache></c:numRef></c:val></c:ser></c:chartSpace>"#;
+        let rows = super::parse_chart_xml(xml);
+        let flat = rows
+            .iter()
+            .map(|r| r.join("|"))
+            .collect::<Vec<_>>()
+            .join(" // ");
+        assert!(
+            flat.contains("R&D"),
+            "series name lost its ampersand: {flat}"
+        );
+        assert!(
+            flat.contains("Alpha & Beta"),
+            "category lost its ampersand: {flat}"
+        );
+        assert!(
+            !flat.contains("RD"),
+            "the deleted-entity shape is back: {flat}"
+        );
+    }
+
+    /// The other named references must decode too, not just `&amp;`.
+    #[test]
+    fn numeric_and_named_references_decode() {
+        let xml = br#"<c:chartSpace xmlns:c="x"><c:ser><c:tx><c:strRef><c:strCache>
+            <c:pt idx="0"><c:v>caf&#233; &lt;beta&gt;</c:v></c:pt></c:strCache></c:strRef></c:tx>
+            <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>x</c:v></c:pt>
+            </c:strCache></c:strRef></c:cat>
+            <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt>
+            </c:numCache></c:numRef></c:val></c:ser></c:chartSpace>"#;
+        let rows = super::parse_chart_xml(xml);
+        let flat = rows.concat().join("|");
+        assert!(flat.contains("café"), "numeric reference lost: {flat}");
+        assert!(flat.contains("<beta>"), "named references lost: {flat}");
     }
 }

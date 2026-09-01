@@ -1,4 +1,3 @@
-
 use calamine::{Data, Reader};
 use serde_json::json;
 
@@ -46,8 +45,7 @@ pub fn build_sheet_chunks(
         return Err("max_chunk_chars must be > 0".to_string());
     }
 
-    let mut workbook =
-        super::common::open_spreadsheet_from_bytes(data, ext)?;
+    let mut workbook = super::common::open_spreadsheet_from_bytes(data, ext)?;
 
     let workbook_sheet_names = workbook.sheet_names().to_vec();
     let selected_sheets = if sheet_names.is_empty() {
@@ -129,8 +127,7 @@ pub fn build_sheet_chunks(
             }
         }
 
-        let table_names =
-            get_named_table_names_for_sheet(data, ext, sheet_index + 1, &sheet_name)?;
+        let table_names = get_named_table_names_for_sheet(data, ext, sheet_index + 1, &sheet_name)?;
         let split_parts = split_content_lines(data_lines, max_chunk_chars);
         let is_split = split_parts.len() > 1;
 
@@ -172,4 +169,3 @@ pub fn build_sheet_chunks(
     super::common::stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
-

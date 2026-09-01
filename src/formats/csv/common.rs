@@ -26,6 +26,23 @@ fn encoding_for_label(label: &str) -> Result<&'static Encoding, String> {
 
 fn decode_bytes(bytes: &[u8], encoding: &str) -> Result<String, String> {
     match encoding.to_ascii_lowercase().as_str() {
+        // Detect like the `.txt` path does. The same latin-1 bytes decoded fine
+        // as `.txt` and raised `Failed to decode CSV bytes as utf-8` as `.csv` —
+        // a CLAUDE.md §5 consistency violation (TECH_DEBT C4).
+        //
+        // UTF-8 is attempted **strictly first**, so every file that already
+        // decoded keeps byte-identical output; detection only runs where the old
+        // code would have returned an error. That makes this strictly more
+        // permissive: no previously-succeeding call changes.
+        "auto" => {
+            let utf8 = encoding_for_label("utf-8")?;
+            let (decoded, _, had_errors) = utf8.decode(strip_bom(bytes));
+            if !had_errors {
+                return Ok(decoded.into_owned());
+            }
+            let (text, _detected) = crate::text_encoding::decode_text(bytes);
+            Ok(text)
+        }
         "utf-8" => {
             let encoding = encoding_for_label("utf-8")?;
             let (decoded, _, had_errors) = encoding.decode(bytes);
@@ -38,7 +55,9 @@ fn decode_bytes(bytes: &[u8], encoding: &str) -> Result<String, String> {
             let encoding = encoding_for_label("utf-8")?;
             let (decoded, _, had_errors) = encoding.decode(strip_bom(bytes));
             if had_errors {
-                return Err("Failed to decode CSV bytes as utf-8-bom without replacement".to_string());
+                return Err(
+                    "Failed to decode CSV bytes as utf-8-bom without replacement".to_string(),
+                );
             }
             Ok(decoded.into_owned())
         }
@@ -54,7 +73,9 @@ fn decode_bytes(bytes: &[u8], encoding: &str) -> Result<String, String> {
             let encoding = encoding_for_label("windows-1252")?;
             let (decoded, _, had_errors) = encoding.decode(bytes);
             if had_errors {
-                return Err("Failed to decode CSV bytes as windows-1252 without replacement".to_string());
+                return Err(
+                    "Failed to decode CSV bytes as windows-1252 without replacement".to_string(),
+                );
             }
             Ok(decoded.into_owned())
         }
@@ -141,7 +162,13 @@ fn row_label(headers: &[String], idx: usize) -> String {
 pub fn serialize_row_kv(headers: &[String], row: &[String]) -> String {
     let width = headers.len().max(row.len());
     (0..width)
-        .map(|idx| format!("{}: {}", row_label(headers, idx), row.get(idx).cloned().unwrap_or_default()))
+        .map(|idx| {
+            format!(
+                "{}: {}",
+                row_label(headers, idx),
+                row.get(idx).cloned().unwrap_or_default()
+            )
+        })
         .collect::<Vec<_>>()
         .join(" | ")
 }

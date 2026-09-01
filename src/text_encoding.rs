@@ -25,7 +25,7 @@
 //! Latin-1 everywhere except 0x80–0x9F — where Latin-1 has unused control codes
 //! and cp1252 has the punctuation people actually type.
 
-use encoding_rs::{UTF_16BE, UTF_16LE, WINDOWS_1252};
+use encoding_rs::{UTF_16BE, UTF_16LE};
 
 /// How many leading bytes the UTF-16 sniff looks at.
 const SNIFF_BYTES: usize = 4096;
@@ -39,7 +39,10 @@ pub enum DetectedEncoding {
     Utf8Bom,
     Utf16Le,
     Utf16Be,
-    Windows1252,
+    /// What the statistical detector concluded for an 8-bit document. This
+    /// replaced a fixed `Windows1252` variant: the fallback is no longer a
+    /// single hardcoded encoding, so naming one in the type would be a lie.
+    Detected(&'static encoding_rs::Encoding),
 }
 
 impl DetectedEncoding {
@@ -52,7 +55,7 @@ impl DetectedEncoding {
             DetectedEncoding::Utf8Bom => "utf-8-bom",
             DetectedEncoding::Utf16Le => "utf-16le",
             DetectedEncoding::Utf16Be => "utf-16be",
-            DetectedEncoding::Windows1252 => "windows-1252",
+            DetectedEncoding::Detected(enc) => enc.name(),
         }
     }
 }
@@ -95,34 +98,22 @@ pub fn normalize_newlines(text: String) -> String {
     out
 }
 
-/// Decode a UTF-8 document, falling back to lossy, with line endings
-/// normalised.
-///
-/// Markdown files are UTF-8 by contract, so this does not sniff encodings the
-/// way [`decode_text`] does — but it must normalise newlines for the same
-/// reason (TECH_DEBT #89): a CRLF `.md` file has no `"\n\n"` in it, so the
-/// block parser saw one block and returned the whole document as one chunk.
-///
-/// Six copies of the decode expression were spread across `md/`'s strategy
-/// files, which is why fixing this in one of them would have fixed one mode.
-pub fn decode_utf8_document(bytes: &[u8]) -> String {
-    let text = match std::str::from_utf8(bytes) {
-        Ok(v) => v.to_string(),
-        Err(_) => String::from_utf8_lossy(bytes).to_string(),
-    };
-    normalize_newlines(text)
-}
-
 /// Decode plain-text bytes without touching line endings.
 fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return (lossy_utf8(rest), DetectedEncoding::Utf8Bom);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return (UTF_16LE.decode(rest).0.into_owned(), DetectedEncoding::Utf16Le);
+        return (
+            UTF_16LE.decode(rest).0.into_owned(),
+            DetectedEncoding::Utf16Le,
+        );
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return (UTF_16BE.decode(rest).0.into_owned(), DetectedEncoding::Utf16Be);
+        return (
+            UTF_16BE.decode(rest).0.into_owned(),
+            DetectedEncoding::Utf16Be,
+        );
     }
     // The UTF-16 sniff has to come BEFORE the UTF-8 check, not after: ASCII
     // encoded as UTF-16LE is "T\0h\0e\0", and NUL is a perfectly valid UTF-8
@@ -138,13 +129,36 @@ fn decode_raw(bytes: &[u8]) -> (String, DetectedEncoding) {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_string(), DetectedEncoding::Utf8);
     }
-    // Not UTF-8 and not UTF-16: an 8-bit encoding. cp1252 maps every byte to
-    // something, so this never produces U+FFFD — it may be the wrong character
-    // for a cp1251 or Big5 file, but it is never a destroyed one.
-    (
-        WINDOWS_1252.decode(bytes).0.into_owned(),
-        DetectedEncoding::Windows1252,
-    )
+    // Not UTF-8 and not UTF-16: an 8-bit encoding, and which one has to be
+    // guessed from the byte statistics.
+    //
+    // This used to be a blanket cp1252 decode, justified as "it may be the wrong
+    // character for a cp1251 or Big5 file, but it is never a destroyed one".
+    // That reasoning is what made the defect invisible: cp1252 maps 251 of 256
+    // bytes to *some* character, so a mis-decode produces mojibake rather than
+    // U+FFFD — and `tests/html_encoding.rs` asserted the absence of U+FFFD,
+    // which a cp1252 fallback can essentially never produce. The test passed
+    // while `tika_big-preamble.html` came back with 0 Cyrillic characters and
+    // 927 mojibake runs, and `tika_noisy-meta-encoding-arabic.html` with 0
+    // Arabic.
+    //
+    // `allow_utf8` is false because the UTF-8 branch above already returned for
+    // anything that decodes as UTF-8; telling the detector otherwise would let
+    // it re-propose an encoding we have ruled out.
+    // `Iso2022JpDetection::Allow`: chardetng's docs tell *browsers* to deny this,
+    // because a page that can run scripts plus a stateful escape-based encoding
+    // is an XSS surface. Nothing here executes anything — this is a document
+    // extractor, and `.eml`/`.mbox` carry genuine ISO-2022-JP Japanese mail — so
+    // the email-client guidance applies, not the browser guidance.
+    //
+    // `Utf8Detection::Deny`: the UTF-8 branch above already returned for anything
+    // that decodes as UTF-8, so allowing it here would let the detector
+    // re-propose an encoding this function has ruled out.
+    let mut detector =
+        chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+    detector.feed(bytes, true);
+    let enc = detector.guess(None, chardetng::Utf8Detection::Deny);
+    (enc.decode(bytes).0.into_owned(), DetectedEncoding::Detected(enc))
 }
 
 fn lossy_utf8(bytes: &[u8]) -> String {
@@ -160,6 +174,36 @@ fn lossy_utf8(bytes: &[u8]) -> String {
 /// NULs cluster in one parity class: odd offsets for little-endian, even for
 /// big-endian. Requiring the *other* class to be nearly NUL-free is what keeps
 /// a binary blob from being mistaken for UTF-16.
+/// Whether BOM-less bytes look like UTF-16. Exposed so `html::decode_html` can
+/// apply the same ordering rule `decode_raw` documents above.
+/// Normalise document bytes to UTF-8 bytes, stripping any BOM.
+///
+/// For formats parsed straight from bytes — `serde_json` consumes bytes, and
+/// RFC 8259 §8.1 makes UTF-8 the JSON encoding — where decoding to a `String`
+/// and normalising newlines would corrupt the very thing being parsed: a `\r\n`
+/// inside a JSON string literal is data, not a line ending.
+///
+/// A BOM is not part of the JSON text, but `serde_json` sees it as a stray
+/// codepoint and rejects the file as *"expected value at line 1 column 1"* —
+/// so a Windows-exported `.json` failed with an error naming neither the cause
+/// nor the remedy.
+///
+/// Borrows when the input is already BOM-less valid UTF-8, so the overwhelmingly
+/// common path allocates nothing.
+pub(crate) fn to_utf8_bytes(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF]);
+    if !bom && !sniffs_utf16(bytes) && std::str::from_utf8(bytes).is_ok() {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    std::borrow::Cow::Owned(decode_raw(bytes).0.into_bytes())
+}
+
+pub(crate) fn sniffs_utf16(bytes: &[u8]) -> bool {
+    sniff_utf16(bytes).is_some()
+}
+
 fn sniff_utf16(bytes: &[u8]) -> Option<DetectedEncoding> {
     let window = &bytes[..bytes.len().min(SNIFF_BYTES)];
     if window.len() < 4 {
@@ -248,18 +292,21 @@ mod tests {
     fn cp1252_punctuation_survives_instead_of_becoming_replacement_chars() {
         // 0x93/0x94 smart quotes, 0x97 em dash, 0xE9 e-acute, 0xA3 pound.
         let bytes = [
-            b'S', b'a', b'y', b' ', 0x93, b'h', b'i', 0x94, b' ', 0x97, b' ', 0xE9, b' ', 0xA3, b'5',
+            b'S', b'a', b'y', b' ', 0x93, b'h', b'i', 0x94, b' ', 0x97, b' ', 0xE9, b' ', 0xA3,
+            b'5',
         ];
         let (text, enc) = decode_text(&bytes);
         assert_eq!(text, "Say “hi” — é £5");
         assert!(!text.contains('\u{fffd}'));
-        assert_eq!(enc, DetectedEncoding::Windows1252);
+        assert_eq!(enc.as_str(), "windows-1252", "detector chose {:?}", enc);
     }
 
     #[test]
     fn a_nul_heavy_binary_blob_is_not_mistaken_for_utf16() {
         // NULs in both parity classes — the sniff must decline.
-        let bytes: Vec<u8> = (0..512u16).map(|i| if i % 3 == 0 { 0 } else { 0xC3 }).collect();
+        let bytes: Vec<u8> = (0..512u16)
+            .map(|i| if i % 3 == 0 { 0 } else { 0xC3 })
+            .collect();
         assert!(sniff_utf16(&bytes).is_none());
     }
 

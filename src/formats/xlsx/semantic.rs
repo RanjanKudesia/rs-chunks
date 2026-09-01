@@ -7,6 +7,7 @@ use super::common::{
     cell_to_string, detect_header_row, row_is_empty_public, serialize_row_kv,
     serialize_row_values_public, XlsxChunkRecord, CT_SEMANTIC,
 };
+use crate::shared::MAX_SEMANTIC_CHARS;
 
 fn row_slice_with_fill(row: &[Data], col_count: usize) -> Vec<Data> {
     (0..col_count)
@@ -70,21 +71,68 @@ fn detect_category_column(data_rows: &[(usize, Vec<Data>)]) -> Option<usize> {
     best_col
 }
 
-fn serialize_group(
+/// Serialize each row once, keeping its absolute row index alongside it.
+///
+/// Rows are serialized up front rather than inside the split loop so that
+/// measuring a group against `MAX_SEMANTIC_CHARS` costs no extra serialization.
+fn serialize_rows(
     group: &[(usize, Vec<Data>)],
     headers: &[String],
     include_headers: bool,
     col_count: usize,
-) -> String {
+) -> Vec<(usize, String)> {
     group
         .iter()
-        .map(|(_, row_cells)| {
-            if include_headers {
+        .map(|(abs_row, row_cells)| {
+            let text = if include_headers {
                 serialize_row_kv(headers, row_cells)
             } else {
                 serialize_row_values_public(row_cells, col_count)
-            }
+            };
+            (*abs_row, text)
         })
+        .collect()
+}
+
+/// Split serialized rows into runs whose joined length stays within
+/// `MAX_SEMANTIC_CHARS`, returning `(start, end)` index ranges.
+///
+/// Rows are never split internally: a single row longer than the cap becomes a
+/// run of its own and exceeds it, exactly as an indivisible unit does in every
+/// other semantic chunker. Without this, one category group serialized into a
+/// single chunk with no upper bound at all (224,718 chars observed on
+/// `xlsm/mv-calculator-final-2-20-2013.xlsm`), which no embedding model can
+/// accept.
+fn split_runs(rows: &[(usize, String)]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut start = 0usize;
+    let mut accum = 0usize;
+
+    for (idx, (_, text)) in rows.iter().enumerate() {
+        let len = text.chars().count();
+        if idx > start {
+            // +1 for the "\n" join separator.
+            if accum + 1 + len > MAX_SEMANTIC_CHARS {
+                runs.push((start, idx));
+                start = idx;
+                accum = len;
+                continue;
+            }
+            accum += 1 + len;
+        } else {
+            accum = len;
+        }
+    }
+
+    if start < rows.len() {
+        runs.push((start, rows.len()));
+    }
+    runs
+}
+
+fn join_run(rows: &[(usize, String)]) -> String {
+    rows.iter()
+        .map(|(_, text)| text.as_str())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -101,8 +149,7 @@ pub fn build_semantic_chunks(
         return Err("rows_per_chunk must be > 0".to_string());
     }
 
-    let mut workbook =
-        super::common::open_spreadsheet_from_bytes(data, ext)?;
+    let mut workbook = super::common::open_spreadsheet_from_bytes(data, ext)?;
 
     let workbook_sheet_names = workbook.sheet_names().to_vec();
     let selected_sheets = if sheet_names.is_empty() {
@@ -183,18 +230,19 @@ pub fn build_semantic_chunks(
                     .cmp(&cell_to_string(b.get(cat_col).unwrap_or(&Data::Empty)))
             });
 
-            // First pass: collect (content, category, start_row, end_row, row_count).
-            let mut raw_groups: Vec<(String, String, usize, usize, usize)> = Vec::new();
+            // First pass: collect (serialized rows, category) per category group.
+            // Rows are kept separate rather than pre-joined so an oversized
+            // group can be split at a row boundary below.
+            let mut raw_groups: Vec<(Vec<(usize, String)>, String)> = Vec::new();
             let mut current_group: Vec<(usize, Vec<Data>)> = Vec::new();
             let mut current_category = String::new();
 
             for (abs_row, cells) in data_rows {
                 let category = cell_to_string(cells.get(cat_col).unwrap_or(&Data::Empty));
                 if !current_group.is_empty() && category != current_category {
-                    let start_row = current_group.first().map(|(i, _)| *i).unwrap_or(0);
-                    let end_row = current_group.last().map(|(i, _)| *i).unwrap_or(start_row);
-                    let content = serialize_group(&current_group, &headers, include_headers, col_count);
-                    raw_groups.push((content, current_category.clone(), start_row, end_row, current_group.len()));
+                    let rows_out =
+                        serialize_rows(&current_group, &headers, include_headers, col_count);
+                    raw_groups.push((rows_out, current_category.clone()));
                     current_group.clear();
                 }
                 if current_group.is_empty() {
@@ -204,14 +252,13 @@ pub fn build_semantic_chunks(
             }
 
             if !current_group.is_empty() {
-                let start_row = current_group.first().map(|(i, _)| *i).unwrap_or(0);
-                let end_row = current_group.last().map(|(i, _)| *i).unwrap_or(start_row);
-                let content = serialize_group(&current_group, &headers, include_headers, col_count);
-                raw_groups.push((content, current_category, start_row, end_row, current_group.len()));
+                let rows_out = serialize_rows(&current_group, &headers, include_headers, col_count);
+                raw_groups.push((rows_out, current_category));
             }
 
-            // Compute grouping quality before emitting chunks.
-            let total_rows: usize = raw_groups.iter().map(|(_, _, _, _, n)| *n).sum();
+            // Grouping quality describes the *categories*, so it is computed
+            // from the groups before any size-driven split.
+            let total_rows: usize = raw_groups.iter().map(|(rows, _)| rows.len()).sum();
             let n_groups = raw_groups.len();
             let avg_group_size = if n_groups == 0 {
                 0.0f64
@@ -221,64 +268,79 @@ pub fn build_semantic_chunks(
             let low_grouping_quality = avg_group_size < 2.0;
             let avg_rounded = (avg_group_size * 100.0).round() / 100.0;
 
-            for (grp_idx, (content, category, start_row, end_row, row_count)) in
-                raw_groups.into_iter().enumerate()
-            {
-                chunks.push(XlsxChunkRecord {
-                    content,
-                    content_type: CT_SEMANTIC.to_string(),
-                    metadata: json!({
-                        "sheet_name": sheet_name,
-                        "sheet_index": sheet_index,
-                        "category_column": cat_col,
-                        "category_value": category,
-                        "used_fallback": false,
-                        "low_grouping_quality": low_grouping_quality,
-                        "avg_group_size": avg_rounded,
-                        "start_row": start_row,
-                        "end_row": end_row,
-                        "actual_row_count": row_count,
-                        "header_row": &headers,
-                        "col_count": col_count,
-                        "group_index": grp_idx,
-                        "chunk_index": chunk_index,
-                    }),
-                });
-                chunk_index += 1;
+            for (grp_idx, (rows_out, category)) in raw_groups.into_iter().enumerate() {
+                // A group larger than MAX_SEMANTIC_CHARS becomes several chunks
+                // that all keep the same `group_index` — they are still one
+                // semantic group, split only for size. Splitting never crosses a
+                // category boundary.
+                for (run_start, run_end) in split_runs(&rows_out) {
+                    let run = &rows_out[run_start..run_end];
+                    let start_row = run.first().map(|(i, _)| *i).unwrap_or(0);
+                    let end_row = run.last().map(|(i, _)| *i).unwrap_or(start_row);
+
+                    chunks.push(XlsxChunkRecord {
+                        content: join_run(run),
+                        content_type: CT_SEMANTIC.to_string(),
+                        metadata: json!({
+                            "sheet_name": sheet_name,
+                            "sheet_index": sheet_index,
+                            "category_column": cat_col,
+                            "category_value": category,
+                            "used_fallback": false,
+                            "low_grouping_quality": low_grouping_quality,
+                            "avg_group_size": avg_rounded,
+                            "start_row": start_row,
+                            "end_row": end_row,
+                            "actual_row_count": run.len(),
+                            "header_row": &headers,
+                            "col_count": col_count,
+                            "group_index": grp_idx,
+                            "chunk_index": chunk_index,
+                        }),
+                    });
+                    chunk_index += 1;
+                }
             }
         } else {
             let mut idx = 0usize;
             let mut group_index = 0usize;
             while idx < data_rows.len() {
                 let end = (idx + rows_per_chunk).min(data_rows.len());
-                let group = &data_rows[idx..end];
+                let rows_out =
+                    serialize_rows(&data_rows[idx..end], &headers, include_headers, col_count);
 
-                let start_row = group.first().map(|(row, _)| *row).unwrap_or(0);
-                let end_row = group.last().map(|(row, _)| *row).unwrap_or(start_row);
-                let content = serialize_group(group, &headers, include_headers, col_count);
+                // The same bound applies here: `rows_per_chunk` caps the row
+                // count, not the character count, so a wide sheet could still
+                // produce an unbounded chunk without this split.
+                for (run_start, run_end) in split_runs(&rows_out) {
+                    let run = &rows_out[run_start..run_end];
+                    let start_row = run.first().map(|(row, _)| *row).unwrap_or(0);
+                    let end_row = run.last().map(|(row, _)| *row).unwrap_or(start_row);
 
-                chunks.push(XlsxChunkRecord {
-                    content,
-                    content_type: CT_SEMANTIC.to_string(),
-                    metadata: json!({
-                        "sheet_name": sheet_name,
-                        "sheet_index": sheet_index,
-                        "category_column": Option::<usize>::None,
-                        "category_value": Option::<String>::None,
-                        "used_fallback": true,
-                        "low_grouping_quality": false,
-                        "avg_group_size": 0.0f64,
-                        "start_row": start_row,
-                        "end_row": end_row,
-                        "actual_row_count": group.len(),
-                        "header_row": &headers,
-                        "col_count": col_count,
-                        "group_index": group_index,
-                        "chunk_index": chunk_index,
-                    }),
-                });
+                    chunks.push(XlsxChunkRecord {
+                        content: join_run(run),
+                        content_type: CT_SEMANTIC.to_string(),
+                        metadata: json!({
+                            "sheet_name": sheet_name,
+                            "sheet_index": sheet_index,
+                            "category_column": Option::<usize>::None,
+                            "category_value": Option::<String>::None,
+                            "used_fallback": true,
+                            "low_grouping_quality": false,
+                            "avg_group_size": 0.0f64,
+                            "start_row": start_row,
+                            "end_row": end_row,
+                            "actual_row_count": run.len(),
+                            "header_row": &headers,
+                            "col_count": col_count,
+                            "group_index": group_index,
+                            "chunk_index": chunk_index,
+                        }),
+                    });
 
-                chunk_index += 1;
+                    chunk_index += 1;
+                }
+
                 group_index += 1;
                 idx = end;
             }
@@ -296,4 +358,3 @@ pub fn build_semantic_chunks(
     super::common::stamp_skipped_sheets(&mut chunks, &skipped_sheets);
     Ok(chunks)
 }
-

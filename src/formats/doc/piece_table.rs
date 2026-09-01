@@ -35,6 +35,28 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
         .ok_or_else(|| format!("Piece table truncated at offset {offset}"))
 }
 
+/// One byte of a compressed (`fCompressed = 1`) piece → its character.
+///
+/// **This is not a code page, and no code page selects it.** [MS-DOC] §2.4.1
+/// step 6 and §2.9.73 define compressed pieces as 8-bit *Unicode* with a fixed
+/// 24-value exception table; anything outside Latin-1 must be stored in a
+/// 16-bit piece instead. Encoding is per PIECE, and `.doc` carries no
+/// file-level text-encoding declaration at all.
+///
+/// Do NOT wire this to `FibBase.lid` (offset 6). [MS-DOC] §2.5.2 makes it the
+/// producing application's *install* language and REQUIRES it to be falsified
+/// to 0x0409 for East Asian, Spanish, German and French installs — it is a
+/// deliberately lossy field. And, measured, all three Cyrillic-locale fixtures
+/// (`poi_o_kurs`, `poi_ob_is`, `poi_rasp`, lid 0x0419) store 100% UTF-16
+/// pieces and decode correctly today, so switching on lid would introduce
+/// corruption where there is none. The SummaryInformation code page governs
+/// property-set strings only.
+///
+/// One deliberate deviation: the spec table omits 0x80, 0x8E and 0x9E, which
+/// map literally to C1 controls. Those bytes are illegal in a compressed piece
+/// and occur zero times across the 27-fixture corpus; when a non-conformant
+/// producer emits them, cp1252's EUR/Zcaron/zcaron is a better guess than an
+/// invisible control character.
 fn cp1252_to_char(byte: u8) -> char {
     match byte {
         0x00..=0x7F => byte as char,
@@ -258,8 +280,7 @@ pub fn reconstruct_story(
     if cp_to <= cp_from {
         return None;
     }
-    let pieces =
-        parse_pieces_range(table_stream, fc_clx, lcb_clx, cp_from, cp_to as i32).ok()?;
+    let pieces = parse_pieces_range(table_stream, fc_clx, lcb_clx, cp_from, cp_to as i32).ok()?;
     let text = reconstruct_from_pieces(word_doc, &pieces).text;
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -276,6 +297,13 @@ pub fn parse_piece_table(
     Ok(reconstruct_from_pieces(word_doc, &pieces))
 }
 
+/// Document-wide ceiling on one reconstructed story.
+///
+/// A .doc story is prose; 64 MB of it is far beyond anything worth chunking and
+/// well past the largest real fixture. The bound exists so a crafted piece table
+/// cannot multiply a small file into an unbounded allocation.
+const MAX_STORY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Decode a piece list into text plus the CP→byte map.
 pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> ReconstructedText {
     let mut text = String::new();
@@ -284,7 +312,8 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
     // cell mark `\x07` ends a Word paragraph, so the next CP starts one — CPs
     // are counted over *source* characters, including the ones
     // `normalize_doc_char` drops, because that is the space the PAPX FKPs index.
-    let mut paragraph_start_cps: Vec<u32> = pieces.first().map(|p| vec![p.cp_start]).unwrap_or_default();
+    let mut paragraph_start_cps: Vec<u32> =
+        pieces.first().map(|p| vec![p.cp_start]).unwrap_or_default();
     let mut push_char = |ch: char, cp: u32, text: &mut String, cp_to_byte: &mut Vec<usize>| {
         if let Some(ch) = normalize_doc_char(ch) {
             cp_to_byte.push(text.len());
@@ -296,6 +325,15 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
     };
 
     for piece in pieces {
+        // Each piece is clamped to the WordDocument stream, but nothing bounded
+        // the SUM: the piece count is `(plcpcd.len() - 4) / 12`, and every piece
+        // may legally re-map the whole stream. ~87k pieces over a 1 MB stream is
+        // tens of GB of `String` — an OOM abort, which `catch_unwind` cannot
+        // intercept. Keep the readable prefix, which is what the per-piece
+        // clamps below already do on their own scale.
+        if text.len() >= MAX_STORY_BYTES {
+            break;
+        }
         let char_count = (piece.cp_end - piece.cp_start) as usize;
         let real_offset = piece.fc;
 
@@ -341,14 +379,9 @@ pub fn reconstruct_from_pieces(word_doc: &[u8], pieces: &[Piece]) -> Reconstruct
                 k += 2;
             }
 
-            for (i, decoded) in char::decode_utf16(units.into_iter()).enumerate() {
+            for (i, decoded) in char::decode_utf16(units).enumerate() {
                 let ch = decoded.unwrap_or('\u{FFFD}');
-                push_char(
-                    ch,
-                    piece.cp_start + i as u32,
-                    &mut text,
-                    &mut cp_to_byte,
-                );
+                push_char(ch, piece.cp_start + i as u32, &mut text, &mut cp_to_byte);
             }
         }
     }

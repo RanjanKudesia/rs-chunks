@@ -25,8 +25,22 @@ fn load(file_path: &str) -> Result<Loaded> {
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    swallow_empty(pipeline::chunk(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page))
+pub fn chunk_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    swallow_empty(pipeline::chunk(
+        &load_bytes(data)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    ))
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
@@ -45,7 +59,12 @@ fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
         "code_cell_count": doc.code_cell_count,
         "markdown_cell_count": doc.markdown_cell_count,
     });
-    Ok(Loaded { markdown, images: doc.images, metadata, records: None })
+    Ok(Loaded {
+        markdown,
+        images: doc.images,
+        metadata,
+        records: None,
+    })
 }
 
 pub fn chunk(
@@ -56,7 +75,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    swallow_empty(pipeline::chunk(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page))
+    swallow_empty(pipeline::chunk(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    ))
 }
 
 /// A notebook whose only content is images (or is otherwise text-empty) yields
@@ -64,7 +90,9 @@ pub fn chunk(
 /// than surfacing the "empty"/"No chunks" parse error.
 fn swallow_empty(res: Result<Vec<Chunk>>) -> Result<Vec<Chunk>> {
     match res {
-        Err(ChunkError::Parse(e)) if e.contains("empty") || e.contains("No chunks") => Ok(Vec::new()),
+        Err(ChunkError::Parse(e)) if e.contains("empty") || e.contains("No chunks") => {
+            Ok(Vec::new())
+        }
         other => other,
     }
 }
@@ -80,15 +108,26 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     let loaded = load(file_path)?;
     let mut chunks: Vec<Chunk> = loaded
         .images
         .iter()
-        .map(|(name, _)| Chunk::new(name.clone(), "image", serde_json::json!({ "image_name": name })))
+        .map(|(name, _)| {
+            Chunk::new(
+                name.clone(),
+                "image",
+                serde_json::json!({ "image_name": name }),
+            )
+        })
         .collect();
     let text = swallow_empty(pipeline::chunk(
-        &loaded, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page,
+        &loaded,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
     ))?;
     chunks.extend(text);
     Ok((chunks, loaded.images.clone()))
@@ -98,25 +137,48 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
     Ok(load(file_path)?.markdown)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load(file_path)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+pub fn chunk_with_images_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
     let loaded = load_bytes(data)?;
-    let mut chunks: Vec<Chunk> = loaded.images.iter().map(|(name, _)| Chunk::new(name.clone(), "image", serde_json::json!({ "image_name": name }))).collect();
-    let text = swallow_empty(pipeline::chunk(&loaded, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page))?;
+    let mut chunks: Vec<Chunk> = loaded
+        .images
+        .iter()
+        .map(|(name, _)| {
+            Chunk::new(
+                name.clone(),
+                "image",
+                serde_json::json!({ "image_name": name }),
+            )
+        })
+        .collect();
+    let text = swallow_empty(pipeline::chunk(
+        &loaded,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    ))?;
     chunks.extend(text);
     Ok((chunks, loaded.images.clone()))
 }
 
-pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(data: &[u8]) -> Result<crate::chunk::MarkdownWithImages> {
     let l = load_bytes(data)?;
     Ok((l.markdown, crate::formats::pipeline::dedup_images(l.images)))
 }
-
 
 pub fn stream(
     file_path: &str,
@@ -126,7 +188,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

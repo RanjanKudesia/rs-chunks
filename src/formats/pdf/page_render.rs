@@ -13,11 +13,11 @@
 use crate::error::Result;
 
 #[cfg(feature = "pdf-native")]
-pub(crate) fn render_pages(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+pub(crate) fn render_pages(bytes: &[u8]) -> Result<crate::chunk::ExtractedImages> {
     super::pdfium_render::render_pages(bytes).map_err(crate::error::ChunkError::Parse)
 }
 
 #[cfg(not(feature = "pdf-native"))]
-pub(crate) fn render_pages(_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+pub(crate) fn render_pages(_bytes: &[u8]) -> Result<crate::chunk::ExtractedImages> {
     Ok(Vec::new())
 }

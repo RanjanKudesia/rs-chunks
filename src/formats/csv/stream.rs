@@ -13,7 +13,9 @@ use std::thread;
 use csv::ReaderBuilder;
 use serde_json::json;
 
-use super::common::{detect_delimiter, serialize_row_kv, serialize_row_values, CT_ROW_GROUP, CT_ROW_WINDOW};
+use super::common::{
+    detect_delimiter, serialize_row_kv, serialize_row_values, CT_ROW_GROUP, CT_ROW_WINDOW,
+};
 use crate::chunk::Chunk;
 use crate::error::{ChunkError, Result};
 
@@ -258,7 +260,10 @@ fn detect_delimiter_from_file(file_path: &str, encoding: &str) -> std::result::R
             .read_until(b'\n', &mut buf)
             .map_err(|e| format!("Failed to read CSV line: {e}"))?;
         if read == 0 {
-            return Err("CSV file is empty".to_string());
+            // Nothing to sniff. Mirrors the batch path: a delimiter-detection
+            // failure is not an emptiness error, and the empty row set below
+            // produces `[]` (TECH_DEBT T6).
+            return Ok(b',');
         }
         let line = decode_line_bytes(&buf, encoding)?;
         if !line.trim().is_empty() && !line.trim_start().starts_with('#') {
@@ -283,11 +288,21 @@ fn open_csv_reader(
         .delimiter(delimiter)
         .flexible(true)
         .has_headers(false)
-        .comment(Some(b'#'))
+        // No `.comment(...)`: RFC 4180 defines no comment convention, and neither
+        // does the `text/tab-separated-values` registration. `#` is ordinary
+        // TEXTDATA. Treating a leading `#` as a comment silently DELETED whole
+        // records — measured, a row `#4,legacy sku,archived` vanished with no
+        // error and no metadata trace, while the same character mid-field
+        // survived. Any file whose first column holds issue numbers, SKUs, hex
+        // colours or hashtags lost exactly those rows. A `#` preamble now
+        // arrives as data, which is the honest reading: it IS in the file.
         .from_reader(boxed);
     Ok((reader, delimiter))
 }
 
+// Eight independent values with no natural grouping; bundling them into a
+// struct would add a type whose only purpose is to satisfy the lint.
+#[allow(clippy::too_many_arguments)]
 fn build_row_group_chunk(
     headers: &[String],
     has_header: bool,
@@ -346,7 +361,11 @@ fn build_row_streaming(
     let Some((mut headers, has_header, prelude)) =
         read_header_with_lookahead(&mut records, skip_empty_rows)?
     else {
-        return Err("CSV file is empty".to_string());
+        // Empty input is not a failure (TECH_DEBT T6). Send nothing and return
+        // cleanly, so streaming stays byte-identical to batch — the guarantee
+        // `streaming_matches_batch_row_mode` pins, which no fixture exercised
+        // for the empty case.
+        return Ok(());
     };
     let mut buffer: Vec<Vec<String>> = Vec::new();
     let mut row_start = 1usize;
@@ -369,7 +388,14 @@ fn build_row_streaming(
         buffer.push(row);
         if buffer.len() == rows_per_chunk {
             let chunk = build_row_group_chunk(
-                &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+                &headers,
+                has_header,
+                &buffer,
+                include_headers,
+                used_delimiter,
+                encoding,
+                chunk_index,
+                row_start,
             );
             sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
             row_start += buffer.len();
@@ -380,7 +406,14 @@ fn build_row_streaming(
 
     if !buffer.is_empty() {
         let chunk = build_row_group_chunk(
-            &headers, has_header, &buffer, include_headers, used_delimiter, encoding, chunk_index, row_start,
+            &headers,
+            has_header,
+            &buffer,
+            include_headers,
+            used_delimiter,
+            encoding,
+            chunk_index,
+            row_start,
         );
         sender.send(Ok(chunk)).map_err(|err| err.to_string())?;
     }
@@ -388,6 +421,9 @@ fn build_row_streaming(
     Ok(())
 }
 
+// Mirrors the public `csv::chunk` parameter list one-for-one; regrouping here
+// would only move the argument count to the call site.
+#[allow(clippy::too_many_arguments)]
 fn build_sliding_window_streaming(
     file_path: &str,
     window_size: usize,
@@ -410,7 +446,11 @@ fn build_sliding_window_streaming(
     let Some((mut headers, has_header, prelude)) =
         read_header_with_lookahead(&mut records, skip_empty_rows)?
     else {
-        return Err("CSV file is empty".to_string());
+        // Empty input is not a failure (TECH_DEBT T6). Send nothing and return
+        // cleanly, so streaming stays byte-identical to batch — the guarantee
+        // `streaming_matches_batch_row_mode` pins, which no fixture exercised
+        // for the empty case.
+        return Ok(());
     };
     let mut buffer: VecDeque<Vec<String>> = VecDeque::new();
     let mut row_start = 1usize;
@@ -453,19 +493,19 @@ fn build_sliding_window_streaming(
                     content,
                     content_type: CT_ROW_WINDOW,
                     metadata: json!({
-                        "window_index": window_index,
-                        "window_size": window_size,
-                        "overlap": overlap,
-                        "row_start": row_start,
-                        "row_end": row_end,
-                        "actual_row_count": rows.len(),
-                        "header_row": headers,
-            "has_header": has_header,
-                        "col_count": headers.len(),
-                        "delimiter_detected": char::from(used_delimiter).to_string(),
-                        "encoding": encoding.to_ascii_lowercase(),
-                        "chunk_index": chunk_index,
-                    }),
+                                "window_index": window_index,
+                                "window_size": window_size,
+                                "overlap": overlap,
+                                "row_start": row_start,
+                                "row_end": row_end,
+                                "actual_row_count": rows.len(),
+                                "header_row": headers,
+                    "has_header": has_header,
+                                "col_count": headers.len(),
+                                "delimiter_detected": char::from(used_delimiter).to_string(),
+                                "encoding": encoding.to_ascii_lowercase(),
+                                "chunk_index": chunk_index,
+                            }),
                 }))
                 .map_err(|err| err.to_string())?;
 
@@ -498,19 +538,19 @@ fn build_sliding_window_streaming(
                 content,
                 content_type: CT_ROW_WINDOW,
                 metadata: json!({
-                    "window_index": window_index,
-                    "window_size": window_size,
-                    "overlap": overlap,
-                    "row_start": row_start,
-                    "row_end": row_end,
-                    "actual_row_count": rows.len(),
-                    "header_row": headers,
-            "has_header": has_header,
-                    "col_count": headers.len(),
-                    "delimiter_detected": char::from(used_delimiter).to_string(),
-                    "encoding": encoding.to_ascii_lowercase(),
-                    "chunk_index": chunk_index,
-                }),
+                        "window_index": window_index,
+                        "window_size": window_size,
+                        "overlap": overlap,
+                        "row_start": row_start,
+                        "row_end": row_end,
+                        "actual_row_count": rows.len(),
+                        "header_row": headers,
+                "has_header": has_header,
+                        "col_count": headers.len(),
+                        "delimiter_detected": char::from(used_delimiter).to_string(),
+                        "encoding": encoding.to_ascii_lowercase(),
+                        "chunk_index": chunk_index,
+                    }),
             }))
             .map_err(|err| err.to_string())?;
     }
@@ -518,6 +558,8 @@ fn build_sliding_window_streaming(
     Ok(())
 }
 
+// Owns one thread's copy of the public parameter list — see the note above.
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     file_path: String,
     mode: String,
@@ -532,10 +574,22 @@ fn run_worker(
 ) -> std::result::Result<(), String> {
     match mode.as_str() {
         "row" | "default" | "page_aware" => build_row_streaming(
-            &file_path, rows_per_chunk, include_headers, delimiter, &encoding, skip_empty_rows, sender,
+            &file_path,
+            rows_per_chunk,
+            include_headers,
+            delimiter,
+            &encoding,
+            skip_empty_rows,
+            sender,
         ),
         "sliding_window" => build_sliding_window_streaming(
-            &file_path, window_size, overlap, include_headers, delimiter, &encoding, skip_empty_rows,
+            &file_path,
+            window_size,
+            overlap,
+            include_headers,
+            delimiter,
+            &encoding,
+            skip_empty_rows,
             sender,
         ),
         _ => Err(
@@ -568,18 +622,25 @@ pub fn stream(
         "row" | "default" | "sliding_window" | "page_aware" => {}
         _ => {
             return Err(ChunkError::InvalidArg(
-                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV".to_string(),
+                "mode must be 'row', 'default', 'sliding_window', or 'page_aware' for CSV"
+                    .to_string(),
             ))
         }
     }
     if rows_per_chunk == 0 {
-        return Err(ChunkError::InvalidArg("rows_per_chunk must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "rows_per_chunk must be greater than 0".to_string(),
+        ));
     }
     if window_size == 0 {
-        return Err(ChunkError::InvalidArg("window_size must be greater than 0".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "window_size must be greater than 0".to_string(),
+        ));
     }
     if overlap >= window_size {
-        return Err(ChunkError::InvalidArg("overlap must be less than window_size".to_string()));
+        return Err(ChunkError::InvalidArg(
+            "overlap must be less than window_size".to_string(),
+        ));
     }
 
     let (sender, receiver) = mpsc::channel();
@@ -589,8 +650,16 @@ pub fn stream(
     let encoding = encoding.to_string();
     let thread = thread::spawn(move || {
         let result = run_worker(
-            file_path, mode, rows_per_chunk, window_size, overlap, include_headers, delimiter,
-            encoding, skip_empty_rows, worker_sender,
+            file_path,
+            mode,
+            rows_per_chunk,
+            window_size,
+            overlap,
+            include_headers,
+            delimiter,
+            encoding,
+            skip_empty_rows,
+            worker_sender,
         );
         if let Err(err) = result {
             let _ = sender.send(Err(err));

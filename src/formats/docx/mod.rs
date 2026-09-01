@@ -9,19 +9,20 @@ mod docx_aux;
 mod harvest;
 mod images_rels;
 mod page_aware;
+mod section;
+mod semantic;
+mod sentence;
+mod sliding_window;
 mod stream_walker;
+mod sym_table;
+mod structural;
 mod structural_build;
 mod structural_build_images;
 mod structural_model;
 mod structural_text;
 mod table_render;
-mod xml_text;
-mod section;
-mod semantic;
-mod sentence;
-mod sliding_window;
-mod structural;
 mod to_markdown;
+mod xml_text;
 
 use std::fs;
 
@@ -50,7 +51,14 @@ pub fn chunk(
 ) -> Result<Vec<Chunk>> {
     ensure_docx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry (wasm/browser + bytes callers).
@@ -68,26 +76,38 @@ pub fn chunk_from_bytes(
         "semantic" => semantic::chunk(bytes),
         "sentence" => {
             if sentences_per_chunk == 0 {
-                return Err(ChunkError::InvalidArg("sentences_per_chunk must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "sentences_per_chunk must be greater than 0".into(),
+                ));
             }
             sentence::chunk(bytes, sentences_per_chunk)
         }
         "page_aware" => {
             if paragraphs_per_page == 0 {
-                return Err(ChunkError::InvalidArg("paragraphs_per_page must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "paragraphs_per_page must be greater than 0".into(),
+                ));
             }
             page_aware::chunk(bytes, paragraphs_per_page)
         }
         "sliding_window" => {
             if window_size == 0 {
-                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "window_size must be greater than 0".into(),
+                ));
             }
             if overlap >= window_size {
-                return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
+                return Err(ChunkError::InvalidArg(
+                    "overlap must be less than window_size".into(),
+                ));
             }
             sliding_window::chunk(bytes, window_size, overlap)
         }
-        other => return Err(ChunkError::InvalidArg(format!("Unknown DOCX mode: {other}"))),
+        other => {
+            return Err(ChunkError::InvalidArg(format!(
+                "Unknown DOCX mode: {other}"
+            )))
+        }
     };
     res.map_err(ChunkError::Parse)
 }
@@ -132,40 +152,66 @@ pub fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     ensure_docx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_with_images_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_with_images_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem `chunk_with_images` (wasm/browser).
-pub fn chunk_with_images_from_bytes(bytes: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+pub fn chunk_with_images_from_bytes(
+    bytes: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<crate::chunk::ChunksWithImages> {
     let res = match mode {
         "default" | "structural" => structural::chunk_with_images(bytes),
         "section" => section::chunk_with_images(bytes),
         "semantic" => semantic::chunk_with_images(bytes),
         "sentence" => {
             if sentences_per_chunk == 0 {
-                return Err(ChunkError::InvalidArg("sentences_per_chunk must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "sentences_per_chunk must be greater than 0".into(),
+                ));
             }
             sentence::chunk_with_images(bytes, sentences_per_chunk)
         }
         "page_aware" => {
             if paragraphs_per_page == 0 {
-                return Err(ChunkError::InvalidArg("paragraphs_per_page must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "paragraphs_per_page must be greater than 0".into(),
+                ));
             }
             page_aware::chunk_with_images(bytes, paragraphs_per_page)
         }
         "sliding_window" => {
             if window_size == 0 {
-                return Err(ChunkError::InvalidArg("window_size must be greater than 0".into()));
+                return Err(ChunkError::InvalidArg(
+                    "window_size must be greater than 0".into(),
+                ));
             }
             if overlap >= window_size {
-                return Err(ChunkError::InvalidArg("overlap must be less than window_size".into()));
+                return Err(ChunkError::InvalidArg(
+                    "overlap must be less than window_size".into(),
+                ));
             }
             sliding_window::chunk_with_images(bytes, window_size, overlap)
         }
-        other => return Err(ChunkError::InvalidArg(format!("Unknown DOCX mode: {other}"))),
+        other => {
+            return Err(ChunkError::InvalidArg(format!(
+                "Unknown DOCX mode: {other}"
+            )))
+        }
     };
     res.map_err(ChunkError::Parse)
 }
@@ -176,13 +222,15 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
     to_markdown::to_markdown(&bytes).map_err(ChunkError::Parse)
 }
 
-pub fn to_markdown_with_images(file_path: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images(file_path: &str) -> Result<crate::chunk::MarkdownWithImages> {
     ensure_docx(file_path)?;
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
     to_markdown_with_images_from_bytes(&bytes)
 }
 
-pub fn to_markdown_with_images_from_bytes(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+pub fn to_markdown_with_images_from_bytes(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages> {
     to_markdown::to_markdown_with_images(bytes).map_err(ChunkError::Parse)
 }
 
@@ -194,7 +242,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

@@ -18,7 +18,6 @@
 ///   source_paragraph_index — block index of the first sentence's source
 ///   section_heading        — heading context at emission time
 ///   heading_path           — full breadcrumb
-
 use serde_json::json;
 
 use super::common::{
@@ -31,9 +30,11 @@ use super::common::{
 
 fn ends_with_title_abbreviation(prefix: &str) -> bool {
     let lower = prefix.trim_end().to_ascii_lowercase();
-    ["mr.", "mrs.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.", "approx.", "est."]
-        .iter()
-        .any(|abbr| lower.ends_with(abbr))
+    [
+        "mr.", "mrs.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.", "approx.", "est.",
+    ]
+    .iter()
+    .any(|abbr| lower.ends_with(abbr))
 }
 
 fn ends_with_numeric_marker(prefix: &str) -> bool {
@@ -150,9 +151,13 @@ pub fn build_sentence_chunks(
         return Err("sentences_per_chunk must be greater than 0".to_string());
     }
 
-    let text = crate::text_encoding::decode_utf8_document(bytes);
+    let text = super::common::decode_body(bytes);
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
     if text.trim().is_empty() {
-        return Err("Markdown file is empty".to_string());
+        return Ok(Vec::new());
     }
 
     let blocks = parse_markdown_blocks(&text);
@@ -164,20 +169,24 @@ pub fn build_sentence_chunks(
     let mut chunk_index = 0usize;
 
     // Helper: flush accumulated sentence buffer as grouped sentence chunks.
-    let flush_sentences =
-        |sentences: &mut Vec<IndexedSentence>,
-         result: &mut Vec<SpannedRecord>,
-         chunk_index: &mut usize,
-         spc: usize,
-         total: usize| {
-            let mut i = 0usize;
-            while i < sentences.len() {
-                let end = (i + spc).min(sentences.len());
-                let window = &sentences[i..end];
-                let content = window.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-                if !content.is_empty() {
-                    let span = Some((window[0].block, window[window.len() - 1].block));
-                    result.push(SpannedRecord::spanning(ChunkRecordInput {
+    let flush_sentences = |sentences: &mut Vec<IndexedSentence>,
+                           result: &mut Vec<SpannedRecord>,
+                           chunk_index: &mut usize,
+                           spc: usize,
+                           total: usize| {
+        let mut i = 0usize;
+        while i < sentences.len() {
+            let end = (i + spc).min(sentences.len());
+            let window = &sentences[i..end];
+            let content = window
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !content.is_empty() {
+                let span = Some((window[0].block, window[window.len() - 1].block));
+                result.push(SpannedRecord::spanning(
+                    ChunkRecordInput {
                         content_type: ContentType::Sentence,
                         content,
                         metadata: json!({
@@ -193,13 +202,15 @@ pub fn build_sentence_chunks(
                                 "total_input_blocks": total,
                             }
                         }),
-                    }, span));
-                    *chunk_index += 1;
-                }
-                i = end;
+                    },
+                    span,
+                ));
+                *chunk_index += 1;
             }
-            sentences.clear();
-        };
+            i = end;
+        }
+        sentences.clear();
+    };
 
     for block in blocks {
         match block.block_type {
@@ -217,20 +228,23 @@ pub fn build_sentence_chunks(
                 let text = extract_heading_text(&block.content);
                 update_heading_stack(&mut heading_stack, level, text.clone());
 
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::HeadingSection,
-                    content: text.clone(),
-                    metadata: json!({
-                        "section_heading":    text,
-                        "section_level":      level,
-                        "heading_path":       heading_path_strings(&heading_stack),
-                        "chunk_index":        chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::HeadingSection,
+                        content: text.clone(),
+                        metadata: json!({
+                            "section_heading":    text,
+                            "section_level":      level,
+                            "heading_path":       heading_path_strings(&heading_stack),
+                            "chunk_index":        chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
             }
 
@@ -243,20 +257,23 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::CodeBlock,
-                    content: block.content.clone(),
-                    metadata: json!({
-                        "section_heading":    current_section_heading(&heading_stack),
-                        "heading_path":       heading_path_strings(&heading_stack),
-                        "section_level":      current_section_level(&heading_stack),
-                        "chunk_index":        chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::CodeBlock,
+                        content: block.content.clone(),
+                        metadata: json!({
+                            "section_heading":    current_section_heading(&heading_stack),
+                            "heading_path":       heading_path_strings(&heading_stack),
+                            "section_level":      current_section_level(&heading_stack),
+                            "chunk_index":        chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
                 para_index += 1;
             }
@@ -269,20 +286,23 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::Table,
-                    content: block.content.clone(),
-                    metadata: json!({
-                        "section_heading":    current_section_heading(&heading_stack),
-                        "heading_path":       heading_path_strings(&heading_stack),
-                        "section_level":      current_section_level(&heading_stack),
-                        "chunk_index":        chunk_index,
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::Table,
+                        content: block.content.clone(),
+                        metadata: json!({
+                            "section_heading":    current_section_heading(&heading_stack),
+                            "heading_path":       heading_path_strings(&heading_stack),
+                            "section_level":      current_section_level(&heading_stack),
+                            "chunk_index":        chunk_index,
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
                 para_index += 1;
             }
@@ -324,23 +344,26 @@ pub fn build_sentence_chunks(
                     sentences_per_chunk,
                     total_input_blocks,
                 );
-                result.push(SpannedRecord::at(ChunkRecordInput {
-                    content_type: ContentType::BulletNumberedList,
-                    content: clean,
-                    metadata: json!({
-                        "sentences_per_chunk":    sentences_per_chunk,
-                        "actual_sentence_count":  0,
-                        "chunk_index":            chunk_index,
-                        "source_paragraph_index": para_index,
-                        "section_heading":        current_section_heading(&heading_stack),
-                        "heading_path":           heading_path_strings(&heading_stack),
-                        "section_level":          current_section_level(&heading_stack),
-                        "document_metadata": {
-                            "source_type":        "md",
-                            "total_input_blocks": total_input_blocks,
-                        }
-                    }),
-                }, block.index));
+                result.push(SpannedRecord::at(
+                    ChunkRecordInput {
+                        content_type: ContentType::BulletNumberedList,
+                        content: clean,
+                        metadata: json!({
+                            "sentences_per_chunk":    sentences_per_chunk,
+                            "actual_sentence_count":  0,
+                            "chunk_index":            chunk_index,
+                            "source_paragraph_index": para_index,
+                            "section_heading":        current_section_heading(&heading_stack),
+                            "heading_path":           heading_path_strings(&heading_stack),
+                            "section_level":          current_section_level(&heading_stack),
+                            "document_metadata": {
+                                "source_type":        "md",
+                                "total_input_blocks": total_input_blocks,
+                            }
+                        }),
+                    },
+                    block.index,
+                ));
                 chunk_index += 1;
                 para_index += 1;
             }
@@ -356,11 +379,14 @@ pub fn build_sentence_chunks(
         total_input_blocks,
     );
 
+    // Empty is not a failure (TECH_DEBT T6): the document parsed, this mode
+    // simply produced nothing. Returning `[]` keeps every mode consistent with
+    // docx/ppt/xlsx and lets epub distinguish an empty chapter from a broken
+    // one without swallowing errors (L14).
     if result.is_empty() {
-        return Err("No sentence chunks generated".to_string());
+        return Ok(Vec::new());
     }
     Ok(result)
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

@@ -24,9 +24,9 @@
 use crate::formats::doc::text_extractor::{DocParagraph, ParagraphType};
 
 use super::records::{
-    parse_header, read_txtype, RT_MAIN_MASTER, RT_NOTES_CONTAINER, RT_SLIDE_CONTAINER,
-    RT_SLIDE_LIST_WITH_TEXT, RT_SLIDE_PERSIST_ATOM, RT_TEXT_BYTES_ATOM, RT_TEXT_CHARS_ATOM,
-    RT_TEXT_HEADER_ATOM, REC_VER_CONTAINER, SLWT_INSTANCE_SLIDES, TX_TYPE_CENTER_TITLE,
+    parse_header, read_txtype, REC_VER_CONTAINER, RT_MAIN_MASTER, RT_NOTES_CONTAINER,
+    RT_SLIDE_CONTAINER, RT_SLIDE_LIST_WITH_TEXT, RT_SLIDE_PERSIST_ATOM, RT_TEXT_BYTES_ATOM,
+    RT_TEXT_CHARS_ATOM, RT_TEXT_HEADER_ATOM, SLWT_INSTANCE_SLIDES, TX_TYPE_CENTER_TITLE,
     TX_TYPE_TITLE,
 };
 
@@ -38,8 +38,32 @@ fn decode_utf16le(body: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-fn decode_latin1(body: &[u8]) -> String {
-    body.iter().map(|&b| b as char).collect()
+/// Decode a `TextBytesAtom` body.
+///
+/// [MS-PPT] defines each byte as the LOW BYTE of a `U+00xx` character — the
+/// atom is Latin-1 **by construction**, not the system ANSI code page. So
+/// cp1252 here is a deliberate LENIENCE over the specification, not conformance
+/// to it. It differs from Latin-1 only on 0x80-0x9F, which cannot legally
+/// appear, and on exactly those bytes `split_runs`'s `!c.is_control()` filter
+/// would otherwise DELETE the character mid-word rather than merely mangle it —
+/// so the lenience is strictly better than the alternative. Measured: 2,394
+/// TextBytesAtoms across 28 fixtures carry 1,335 high bytes and **none** is in
+/// 0x80-0x9F; every one is >= 0xA0, where Latin-1 and cp1252 agree.
+///
+/// Two corrections to the commit that introduced this (`e2dcaaf`), whose
+/// stated reasoning was wrong in both halves:
+///
+/// 1. It is NOT "the same assumption `.doc` makes". `.doc` implements
+///    [MS-DOC] §2.9.73's fixed 24-value table for compressed pieces, which
+///    differs from cp1252 at 0x80, 0x8E and 0x9E.
+/// 2. A Cyrillic or Greek deck does NOT mojibake. Non-Latin-1 text is stored
+///    in a `TextCharsAtom` (UTF-16) and has always decoded correctly.
+///
+/// Do not "fix" this with a code-page switch. There is no code page to switch
+/// on, and doing so would corrupt the Portuguese decks (`poi_br_*`) that decode
+/// correctly today.
+fn decode_ansi(body: &[u8]) -> String {
+    encoding_rs::WINDOWS_1252.decode(body).0.into_owned()
 }
 
 /// Split a raw PowerPoint text run into clean paragraphs. `\r` (0x0D) ends a
@@ -112,24 +136,69 @@ struct Run {
 /// pre-flattening view used by the image extractor to attribute images to
 /// slides; `extract_paragraphs` flattens it.
 pub fn extract_slides(stream: &[u8]) -> Vec<Vec<DocParagraph>> {
-    // Per-slide paragraph lists from the slides SlideListWithText.
-    let mut slides: Vec<Vec<DocParagraph>> = Vec::new();
-    collect_slwt_slides(stream, 0, stream.len(), &mut slides);
+    extract_slides_live(stream, &super::persist::LiveModel::Fallback)
+}
 
-    if slides.is_empty() {
-        // No central slide list: fall back to walking slide drawings directly.
-        let mut escher: Vec<Vec<String>> = Vec::new();
-        collect_escher_slides(stream, 0, stream.len(), &mut escher);
-        for raw in escher {
-            slides.push(build_slide_paragraphs(&raw));
+/// As [`extract_slides`], constrained by the [MS-PPT] §2.1.2 liveness model.
+///
+/// Without the model this walker was a whole-stream linear scan, which has two
+/// wrong assumptions baked in: that every record in the stream is current (a
+/// multi-save deck keeps one superseded `SlideListWithText` PER SAVE — 22 of
+/// them summed to the infamous `total_slides` 305 on a 14-slide deck, and
+/// deleted slide text was emitted as live), and that stream order is
+/// presentation order (false in 3 of 28 corpus fixtures). Bounding the SLWT
+/// scan to the live `DocumentContainer` and taking slides from the live,
+/// ordered offset list fixes both — and also stops title masters (live
+/// `0x03EE`-shaped records reachable only via the master list) from being
+/// emitted as slides, a defect no record-type filter could cure.
+///
+/// `Fallback` reproduces the old behaviour byte-for-byte, on purpose: a
+/// readable-but-odd `.ppt` must not become an unreadable one.
+pub(super) fn extract_slides_live(
+    stream: &[u8],
+    live: &super::persist::LiveModel,
+) -> Vec<Vec<DocParagraph>> {
+    let mut slides: Vec<Vec<DocParagraph>> = Vec::new();
+    match live {
+        super::persist::LiveModel::Persist {
+            document_body,
+            slide_offsets,
+        } => {
+            collect_slwt_slides(stream, document_body.0, document_body.1, &mut slides);
+            let mut escher: Vec<Vec<String>> = Vec::with_capacity(slide_offsets.len());
+            for &off in slide_offsets {
+                let mut raw = Vec::new();
+                if let Some((h, _)) = parse_header(stream, off, stream.len()) {
+                    collect_text_strings(stream, h.body_start, h.body_end, &mut raw);
+                }
+                escher.push(raw);
+            }
+            if slides.is_empty() {
+                for raw in escher {
+                    slides.push(build_slide_paragraphs(&raw));
+                }
+            } else if escher.len() == slides.len() {
+                for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
+                    merge_freeform(slide, raw);
+                }
+            }
         }
-    } else {
-        // Merge in freeform text boxes (Escher) not already in the SLWT text.
-        let mut escher: Vec<Vec<String>> = Vec::new();
-        collect_escher_slides(stream, 0, stream.len(), &mut escher);
-        if escher.len() == slides.len() {
-            for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
-                merge_freeform(slide, raw);
+        super::persist::LiveModel::Fallback => {
+            collect_slwt_slides(stream, 0, stream.len(), &mut slides);
+            if slides.is_empty() {
+                let mut escher: Vec<Vec<String>> = Vec::new();
+                collect_escher_slides(stream, 0, stream.len(), &mut escher);
+                for raw in escher {
+                    slides.push(build_slide_paragraphs(&raw));
+                }
+            } else {
+                let mut escher: Vec<Vec<String>> = Vec::new();
+                collect_escher_slides(stream, 0, stream.len(), &mut escher);
+                if escher.len() == slides.len() {
+                    for (slide, raw) in slides.iter_mut().zip(escher.iter()) {
+                        merge_freeform(slide, raw);
+                    }
+                }
             }
         }
     }
@@ -137,7 +206,15 @@ pub fn extract_slides(stream: &[u8]) -> Vec<Vec<DocParagraph>> {
 }
 
 pub fn extract_paragraphs(stream: &[u8]) -> Vec<DocParagraph> {
-    let slides = extract_slides(stream);
+    extract_paragraphs_live(stream, &super::persist::LiveModel::Fallback)
+}
+
+/// As [`extract_paragraphs`], constrained by the liveness model.
+pub(super) fn extract_paragraphs_live(
+    stream: &[u8],
+    live: &super::persist::LiveModel,
+) -> Vec<DocParagraph> {
+    let slides = extract_slides_live(stream, live);
 
     // Flatten with PageBreak separators between non-empty slides.
     //
@@ -236,11 +313,19 @@ fn merge_freeform(slide: &mut Vec<DocParagraph>, escher_raw: &[String]) {
 }
 
 /// Find the slides SlideListWithText (recInstance 0) and collect its slides.
-fn collect_slwt_slides(
+fn collect_slwt_slides(data: &[u8], start: usize, end: usize, slides: &mut Vec<Vec<DocParagraph>>) {
+    collect_slwt_slides_at(data, start, end, slides, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_slwt_slides_at(
     data: &[u8],
     start: usize,
     end: usize,
     slides: &mut Vec<Vec<DocParagraph>>,
+    depth: usize,
 ) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
@@ -251,8 +336,10 @@ fn collect_slwt_slides(
             if hdr.rec_instance == SLWT_INSTANCE_SLIDES {
                 parse_slwt_children(data, hdr.body_start, hdr.body_end, slides);
             }
-        } else if hdr.rec_ver == REC_VER_CONTAINER {
-            collect_slwt_slides(data, hdr.body_start, hdr.body_end, slides);
+        } else if hdr.rec_ver == REC_VER_CONTAINER
+            && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+        {
+            collect_slwt_slides_at(data, hdr.body_start, hdr.body_end, slides, depth + 1);
         }
         pos = next;
     }
@@ -293,7 +380,7 @@ fn parse_slwt_children(data: &[u8], start: usize, end: usize, slides: &mut Vec<V
                 txtype: cur_txtype,
             }),
             RT_TEXT_BYTES_ATOM => runs.push(Run {
-                text: decode_latin1(body),
+                text: decode_ansi(body),
                 txtype: cur_txtype,
             }),
             _ => {}
@@ -305,6 +392,19 @@ fn parse_slwt_children(data: &[u8], start: usize, end: usize, slides: &mut Vec<V
 
 /// Collect raw text per SlideContainer drawing (in document order).
 fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Vec<String>>) {
+    collect_escher_slides_at(data, start, end, out, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_escher_slides_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<Vec<String>>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -318,8 +418,10 @@ fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Ve
             }
             RT_NOTES_CONTAINER | RT_MAIN_MASTER => {}
             _ => {
-                if hdr.rec_ver == REC_VER_CONTAINER {
-                    collect_escher_slides(data, hdr.body_start, hdr.body_end, out);
+                if hdr.rec_ver == REC_VER_CONTAINER
+                    && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+                {
+                    collect_escher_slides_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
                 }
             }
         }
@@ -329,6 +431,19 @@ fn collect_escher_slides(data: &[u8], start: usize, end: usize, out: &mut Vec<Ve
 
 /// Recursively gather raw text-atom strings within a subtree.
 fn collect_text_strings(data: &[u8], start: usize, end: usize, out: &mut Vec<String>) {
+    collect_text_strings_at(data, start, end, out, 0)
+}
+
+/// Depth-capped worker. Container nesting costs 8 bytes a level, so an uncapped
+/// descent is a stack-overflow abort (SIGABRT) from a small file — see
+/// `odraw::MAX_RECORD_DEPTH`.
+fn collect_text_strings_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    out: &mut Vec<String>,
+    depth: usize,
+) {
     let mut pos = start;
     while let Some((hdr, next)) = parse_header(data, pos, end) {
         if next <= pos {
@@ -337,13 +452,51 @@ fn collect_text_strings(data: &[u8], start: usize, end: usize, out: &mut Vec<Str
         let body = &data[hdr.body_start..hdr.body_end];
         match hdr.rec_type {
             RT_TEXT_CHARS_ATOM => out.push(decode_utf16le(body)),
-            RT_TEXT_BYTES_ATOM => out.push(decode_latin1(body)),
+            RT_TEXT_BYTES_ATOM => out.push(decode_ansi(body)),
             _ => {
-                if hdr.rec_ver == REC_VER_CONTAINER {
-                    collect_text_strings(data, hdr.body_start, hdr.body_end, out);
+                if hdr.rec_ver == REC_VER_CONTAINER
+                    && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+                {
+                    collect_text_strings_at(data, hdr.body_start, hdr.body_end, out, depth + 1);
                 }
             }
         }
         pos = next;
+    }
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    /// `TextBytesAtom` bytes are the ANSI code page, not Latin-1.
+    ///
+    /// Decoding them as Latin-1 put PowerPoint's autocorrect punctuation into
+    /// the C1 control range, and `split_runs` deletes control characters — so
+    /// the glyphs were removed mid-word with no trace. "don\x92t" came out
+    /// "dont".
+    #[test]
+    fn curly_punctuation_survives_instead_of_being_deleted() {
+        let raw = b"don\x92t \x93quote\x94 dash\x97here \x85ellipsis";
+        let runs = super::split_runs(&super::decode_ansi(raw));
+        let text = runs.join(" ");
+        assert!(text.contains("don\u{2019}t"), "apostrophe lost: {text:?}");
+        assert!(
+            text.contains("\u{201C}quote\u{201D}"),
+            "curly quotes lost: {text:?}"
+        );
+        assert!(text.contains("dash\u{2014}here"), "em dash lost: {text:?}");
+        assert!(text.contains("\u{2026}ellipsis"), "ellipsis lost: {text:?}");
+        assert!(
+            !text.contains("dont"),
+            "the deleted-glyph shape is back: {text:?}"
+        );
+    }
+
+    /// Plain ASCII must be byte-identical to before — that is what keeps this
+    /// from moving any real fixture.
+    #[test]
+    fn ascii_is_unchanged() {
+        let raw = b"Plain ASCII text\rSecond paragraph here";
+        let runs = super::split_runs(&super::decode_ansi(raw));
+        assert_eq!(runs, vec!["Plain ASCII text", "Second paragraph here"]);
     }
 }

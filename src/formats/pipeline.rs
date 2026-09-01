@@ -32,7 +32,7 @@ pub(crate) fn mode_str(mode: ChunkMode) -> Result<&'static str> {
 /// A parsed prose document ready for the markdown chunker.
 pub(crate) struct Loaded {
     pub markdown: String,
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
     /// Document-level metadata injected as `document_metadata` on every chunk.
     pub metadata: serde_json::Value,
     /// For a format whose source is a sequence of records — `.json`, `.jsonl`,
@@ -53,14 +53,18 @@ fn records_for(starts: &[usize], span: (usize, usize)) -> Option<(usize, usize)>
     // The last record that starts at or before the block. `partition_point`
     // rather than `binary_search` because a record that renders to nothing
     // shares its successor's start, and the owner is the later one.
-    let record_of = |block: usize| starts.partition_point(|start| *start <= block).saturating_sub(1);
+    let record_of = |block: usize| {
+        starts
+            .partition_point(|start| *start <= block)
+            .saturating_sub(1)
+    };
     Some((record_of(span.0), record_of(span.1)))
 }
 
 /// Deduplicate images by name, first occurrence winning — matching the Python
 /// engine, which returns images as a `dict` (later duplicate keys collapse).
-pub(crate) fn dedup_images(images: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
-    let mut out: Vec<(String, Vec<u8>)> = Vec::with_capacity(images.len());
+pub(crate) fn dedup_images(images: crate::chunk::ExtractedImages) -> crate::chunk::ExtractedImages {
+    let mut out: crate::chunk::ExtractedImages = Vec::with_capacity(images.len());
     for (name, bytes) in images {
         if !out.iter().any(|(n, _)| n == &name) {
             out.push((name, bytes));
@@ -170,11 +174,17 @@ pub(crate) fn chunk_with_images(
     overlap: usize,
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
-) -> Result<(Vec<Chunk>, Vec<(String, Vec<u8>)>)> {
+) -> Result<crate::chunk::ChunksWithImages> {
     let mut chunks: Vec<Chunk> = loaded
         .images
         .iter()
-        .map(|(name, _)| Chunk::new(name.clone(), "image", serde_json::json!({ "image_name": name })))
+        .map(|(name, _)| {
+            Chunk::new(
+                name.clone(),
+                "image",
+                serde_json::json!({ "image_name": name }),
+            )
+        })
         .collect();
     // A scanned PDF has images but no markdown to chunk. Running the text
     // chunker on an empty string errors ("Markdown file is empty after

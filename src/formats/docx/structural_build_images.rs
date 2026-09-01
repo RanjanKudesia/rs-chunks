@@ -7,10 +7,11 @@ use zip::ZipArchive;
 
 use super::common::image_hash_name;
 use super::structural_build::{
-    base_chunk_metadata, collect_element_refs, flush_outside_shorts, flush_section,
+    base_chunk_metadata, collect_element_refs, flush_outside_shorts, flush_section, NoteSlices,
 };
 use super::structural_model::{
-    ChunkRecordInput, ContentType, DocumentElement, SEMANTIC_SPLIT_MAX_BYTES,
+    ChunkRecordInput, ContentType, DocumentElement, MAX_TABLE_CHARS, SEMANTIC_SPLIT_MAX_BYTES,
+    TABLE_HEADER_LINES,
 };
 use super::structural_text::semantic_chunks;
 
@@ -21,7 +22,7 @@ pub(super) fn build_chunks_from_elements_with_images(
     endnote_map: &HashMap<String, String>,
     image_rids_map: &HashMap<String, String>,
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<ChunkRecordInput> {
     let mut chunks = Vec::new();
     let mut section_heading: Option<String> = None;
@@ -137,18 +138,39 @@ pub(super) fn build_chunks_from_elements_with_images(
                 let mut fns = Vec::new();
                 let mut ens = Vec::new();
                 collect_element_refs(element, footnote_map, endnote_map, &mut fns, &mut ens);
-                chunks.push(ChunkRecordInput {
-                    content_type: ContentType::Table,
-                    content: element.text.clone(),
-                    metadata: base_chunk_metadata(
-                        None,
-                        None,
-                        &fns,
-                        &ens,
-                        doc_metadata,
-                        element.page_number,
-                    ),
-                });
+                // A 522,261-char single chunk is not a chunk. `poi_bug65649.docx`
+                // renders one table that large; `_stress_big_table.docx` 39,673.
+                //
+                // "Tables are kept whole" is preserved, not broken: the split is
+                // on ROW boundaries only — `split_block_on_lines` never breaks a
+                // line, the same guarantee that protects a CSV record — and the
+                // markdown header block (header row + `| --- |` separator, hence
+                // 2) is repeated onto every part, so each one is still a valid
+                // table carrying its column labels.
+                //
+                // A soft bound by design: a single row longer than the cap still
+                // comes out over it, because halving a row would corrupt the
+                // record. Measured on poi_bug65649.docx: 523,788 -> 136 parts,
+                // largest 15,440. `poi_bug59058.docx` is deliberately unaffected
+                // — 93,024 of its 93,066 chars are one cell, i.e. one line.
+                for part in crate::shared::split_block_on_lines(
+                    &element.text,
+                    MAX_TABLE_CHARS,
+                    TABLE_HEADER_LINES,
+                ) {
+                    chunks.push(ChunkRecordInput {
+                        content_type: ContentType::Table,
+                        content: part,
+                        metadata: base_chunk_metadata(
+                            None,
+                            None,
+                            &fns,
+                            &ens,
+                            doc_metadata,
+                            element.page_number,
+                        ),
+                    });
+                }
             }
             ContentType::CodeBlock => {
                 flush_outside_shorts(
@@ -210,12 +232,11 @@ pub(super) fn build_chunks_from_elements_with_images(
                     let mut ens = Vec::new();
                     collect_element_refs(element, footnote_map, endnote_map, &mut fns, &mut ens);
                     for (idx, s) in split.into_iter().enumerate() {
-                        let (chunk_fns, chunk_ens): (&[(String, String)], &[(String, String)]) =
-                            if idx == 0 {
-                                (fns.as_slice(), ens.as_slice())
-                            } else {
-                                (&[], &[])
-                            };
+                        let (chunk_fns, chunk_ens): NoteSlices = if idx == 0 {
+                            (fns.as_slice(), ens.as_slice())
+                        } else {
+                            (&[], &[])
+                        };
                         chunks.push(ChunkRecordInput {
                             content_type: element.content_type,
                             content: s,
@@ -298,7 +319,19 @@ pub(super) fn build_chunks_from_elements_with_images(
                             }
                         }
                     }
-                    // Unsupported format (.emf etc.) or missing rid — skip silently
+                    // Unsupported format (.emf etc.) or missing rid — skip silently.
+
+                    // Keep the element's own text in the prose stream, exactly as
+                    // the in-a-section branch does via `section_parts.push`.
+                    // Without this, a document whose images all sit outside any
+                    // heading lost that text entirely when `list_images=True`,
+                    // so the text chunks differed from the `list_images=False`
+                    // path — the very invariant
+                    // `test_text_chunk_quality_unchanged` asserts (TECH_DEBT L5).
+                    outside_short_parts.push(element.clone());
+                    if outside_short_first_page.is_none() {
+                        outside_short_first_page = element.page_number;
+                    }
                 }
             }
         }

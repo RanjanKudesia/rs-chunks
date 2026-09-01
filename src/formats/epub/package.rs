@@ -28,6 +28,15 @@ pub struct EpubDoc {
 
 #[derive(Default)]
 pub struct EpubPackage {
+    /// Spine items the container does not actually hold, in reading order.
+    ///
+    /// A missing zip entry, or an `itemref` whose `idref` has no manifest
+    /// `item`, used to be dropped silently — and `spine_count` then reported
+    /// the shortened list as the book's length, so the loss was not merely
+    /// invisible, it was actively asserted away. Always present, empty when
+    /// nothing was lost, so its absence never has to be interpreted; the same
+    /// contract as xlsx's `skipped_sheets` (#66).
+    pub skipped_spine_items: Vec<String>,
     pub title: Option<String>,
     pub language: Option<String>,
     pub creator: Option<String>,
@@ -53,7 +62,7 @@ pub struct EpubPackage {
     /// XHTML content documents in spine (reading) order.
     pub spine: Vec<EpubDoc>,
     /// Embedded images: full zip path → bytes.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// A book's own table of contents, from `nav.xhtml` (EPUB 3) or `toc.ncx`
@@ -67,7 +76,7 @@ fn parse_toc(xml: &[u8]) -> Vec<(String, String)> {
     let mut buf = Vec::new();
     let mut out: Vec<(String, String)> = Vec::new();
 
-    let mut in_text = false;     // <text> (ncx) or <a> (xhtml)
+    let mut in_text = false; // <text> (ncx) or <a> (xhtml)
     let mut label = String::new();
     let mut pending_src: Option<String> = None;
     let mut anchor_href: Option<String> = None;
@@ -90,10 +99,8 @@ fn parse_toc(xml: &[u8]) -> Vec<(String, String)> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_text {
-                    label.push_str(e.decode().unwrap_or_default().as_ref());
-                }
+            Ok(Event::Text(ref e)) if in_text => {
+                label.push_str(e.decode().unwrap_or_default().as_ref());
             }
             Ok(Event::End(ref e)) => match local_name(e.name()).as_slice() {
                 b"a" => {
@@ -147,7 +154,11 @@ fn looks_like_navigation(id: &str, href: &str) -> bool {
 
 fn local_name(name: QName<'_>) -> Vec<u8> {
     let b = name.as_ref();
-    let idx = b.iter().rposition(|c| *c == b':').map(|i| i + 1).unwrap_or(0);
+    let idx = b
+        .iter()
+        .rposition(|c| *c == b':')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     b[idx..].to_vec()
 }
 
@@ -233,11 +244,11 @@ fn find_opf_path(zip: &mut Zip) -> Result<String, String> {
         match read_event_folding_entities!(reader, &mut buf, &mut spill, &mut is_entity) {
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Bad container.xml: {e}")),
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if local_name(e.name()).as_slice() == b"rootfile" {
-                    if let Some(p) = attr(e, b"full-path") {
-                        return Ok(percent_decode(&p));
-                    }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if local_name(e.name()).as_slice() == b"rootfile" =>
+            {
+                if let Some(p) = attr(e, b"full-path") {
+                    return Ok(percent_decode(&p));
                 }
             }
             _ => {}
@@ -252,13 +263,22 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
         .map_err(|e| format!("Not a valid EPUB (zip) file: {e}"))?;
 
     let opf_path = find_opf_path(&mut zip)?;
-    let opf_dir = opf_path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+    let opf_dir = opf_path
+        .rsplit_once('/')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default();
     let opf = read_entry(&mut zip, &opf_path)
         .ok_or_else(|| format!("EPUB OPF not found at {opf_path}"))?;
 
     // ── Parse the OPF: metadata + manifest (id→href,media-type) + spine order ──
     let mut pkg = EpubPackage::default();
     let mut manifest: HashMap<String, (String, String, String)> = HashMap::new();
+    // The map is for id lookups; iteration must NOT use it. `HashMap` seeds its
+    // hasher per process, so `manifest.values()` yields a different order every
+    // run — measured as image chunks arriving in 6 distinct orders across 8
+    // processes, which breaks the byte-identical-output claim against itself.
+    // This records the OPF's own document order for every whole-manifest pass.
+    let mut manifest_order: Vec<String> = Vec::new();
     let mut spine_idrefs: Vec<String> = Vec::new();
 
     let mut reader = XmlReader::from_reader(opf.as_slice());
@@ -284,6 +304,7 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
                             let props = attr(e, b"properties").unwrap_or_default();
+                            manifest_order.push(id.clone());
                             manifest.insert(id, (href, mt, props));
                         }
                     }
@@ -302,6 +323,7 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
                         if let (Some(id), Some(href)) = (attr(e, b"id"), attr(e, b"href")) {
                             let mt = attr(e, b"media-type").unwrap_or_default();
                             let props = attr(e, b"properties").unwrap_or_default();
+                            manifest_order.push(id.clone());
                             manifest.insert(id, (href, mt, props));
                         }
                     }
@@ -315,7 +337,9 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
             }
             Ok(Event::Text(t)) => {
                 if let Some(m) = &cur_meta {
-                    let text = unescape_entities(&String::from_utf8_lossy(t.as_ref())).trim().to_string();
+                    let text = unescape_entities(&String::from_utf8_lossy(t.as_ref()))
+                        .trim()
+                        .to_string();
                     if !text.is_empty() {
                         let slot = match m.as_slice() {
                             b"title" => &mut pkg.title,
@@ -354,13 +378,25 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
 
     // ── Resolve spine → ordered XHTML docs; collect images ──
     for idref in &spine_idrefs {
-        if let Some((href, _mt, props)) = manifest.get(idref) {
-            let full = resolve_href(&opf_dir, href);
-            let is_navigation =
-                props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
-            if let Some(bytes) = read_entry(&mut zip, &full) {
-                pkg.spine.push(EpubDoc { href: full, bytes, is_navigation });
-            }
+        // One dangling href must not lose the book — an 800-chunk EPUB with a
+        // single missing chapter is still overwhelmingly worth returning — but
+        // it must not be invisible either. Isolate and record, like a skipped
+        // sheet.
+        let Some((href, _mt, props)) = manifest.get(idref) else {
+            pkg.skipped_spine_items
+                .push(format!("{idref} (no manifest item)"));
+            continue;
+        };
+        let full = resolve_href(&opf_dir, href);
+        let is_navigation =
+            props.split_whitespace().any(|p| p == "nav") || looks_like_navigation(idref, href);
+        match read_entry(&mut zip, &full) {
+            Some(bytes) => pkg.spine.push(EpubDoc {
+                href: full,
+                bytes,
+                is_navigation,
+            }),
+            None => pkg.skipped_spine_items.push(full),
         }
     }
 
@@ -380,7 +416,10 @@ pub fn parse(file_bytes: Vec<u8>) -> Result<EpubPackage, String> {
         }
     }
 
-    for (href, mt, _props) in manifest.values() {
+    for id in &manifest_order {
+        let Some((href, mt, _props)) = manifest.get(id) else {
+            continue;
+        };
         if mt.starts_with("image/") {
             let full = resolve_href(&opf_dir, href);
             if let Some(bytes) = read_entry(&mut zip, &full) {

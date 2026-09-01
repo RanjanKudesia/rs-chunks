@@ -68,23 +68,96 @@ fn decode_parms(doc: &Document, stream: &Stream, count: usize) -> Vec<Option<Dic
         Some(Object::Dictionary(d)) => vec![Some(d)],
         Some(Object::Array(items)) => items
             .iter()
-            .map(|o| doc.dereference(o).ok().and_then(|(_, o)| o.as_dict().ok().cloned()))
+            .map(|o| {
+                doc.dereference(o)
+                    .ok()
+                    .and_then(|(_, o)| o.as_dict().ok().cloned())
+            })
             .collect(),
         _ => vec![None; count],
     }
 }
 
+/// A single decode stage may not produce more than this.
+///
+/// The floor is set by real files, not taste. Measured across the 48-fixture PDF
+/// corpus, the largest legitimately decompressed stream is **55.5 MB**
+/// (`arxiv_2005.14165_gpt3.pdf`, 375 KB of Flate at 155:1), so 256 MiB is ~4.6x
+/// the worst real case while still refusing the classic bomb — a few KB of
+/// Flate otherwise expands without limit, and `read_to_end` into an unbounded
+/// `Vec` is an OOM *abort*, which `catch_unwind` cannot intercept.
+///
+/// A *ratio* cap is deliberately absent, and this is the interesting part:
+/// DEFLATE's theoretical maximum is 1032:1 and the same corpus contains a
+/// legitimate **1025.6:1** stream. Every ratio bound low enough to be useful
+/// breaks a real file, and every one high enough to be safe constrains nothing.
+///
+/// The cap is applied per stage inside the filter loop, so a chained
+/// `/Filter [/Fl /Fl /Fl]` is bounded at every step rather than compounding.
+const MAX_DECODED_STREAM_BYTES: usize = 256 * 1024 * 1024;
+
+fn over_cap(out: Vec<u8>, filter: &str) -> Result<Vec<u8>, String> {
+    if out.len() > MAX_DECODED_STREAM_BYTES {
+        return Err(format!(
+            "{filter} output exceeds the {MAX_DECODED_STREAM_BYTES}-byte stream cap"
+        ));
+    }
+    Ok(out)
+}
+
+/// A `Write` sink that refuses to grow past `limit`.
+///
+/// `weezl`'s `Decoder::decode` is `into_vec(..).decode_all(..)` — an unbounded
+/// `Vec` — and LZW emits up to a full dictionary entry per code, so a small
+/// stream expands far. Capping the sink bounds the allocation itself rather
+/// than checking its size afterwards.
+struct CappedWriter {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+impl std::io::Write for CappedWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len().saturating_add(data.len()) > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "output exceeds the stream cap",
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    // The bound goes on the *reader*: a length check after `read_to_end` is
+    // checked after the allocation it was meant to prevent. Reading one byte
+    // past the cap is what distinguishes "exactly at the limit" from
+    // "truncated here".
+    let take = MAX_DECODED_STREAM_BYTES as u64 + 1;
     let mut out = Vec::new();
     // Zlib first; a stream missing its two-byte header is common enough in the
     // wild that raw deflate is worth the second attempt.
-    if flate2::read::ZlibDecoder::new(data).read_to_end(&mut out).is_ok() && !out.is_empty() {
-        return Ok(out);
+    if flate2::read::ZlibDecoder::new(data)
+        .take(take)
+        .read_to_end(&mut out)
+        .is_ok()
+        && !out.is_empty()
+    {
+        // A zlib stream over the cap errors rather than falling through to the
+        // raw-deflate attempt below: it will not succeed there either.
+        return over_cap(out, "FlateDecode");
     }
     out.clear();
-    match flate2::read::DeflateDecoder::new(data).read_to_end(&mut out) {
-        Ok(_) => Ok(out),
+    match flate2::read::DeflateDecoder::new(data)
+        .take(take)
+        .read_to_end(&mut out)
+    {
+        Ok(_) => over_cap(out, "FlateDecode"),
         Err(e) => Err(format!("FlateDecode failed: {e}")),
     }
 }
@@ -101,7 +174,14 @@ fn lzw(data: &[u8], parms: Option<&Dictionary>, doc: &Document) -> Result<Vec<u8
     } else {
         weezl::decode::Decoder::new(weezl::BitOrder::Msb, 8)
     };
-    decoder.decode(data).map_err(|e| format!("LZWDecode failed: {e}"))
+    let mut sink = CappedWriter {
+        buf: Vec::new(),
+        limit: MAX_DECODED_STREAM_BYTES,
+    };
+    match decoder.into_stream(&mut sink).decode_all(data).status {
+        Ok(()) => Ok(sink.buf),
+        Err(e) => Err(format!("LZWDecode failed: {e}")),
+    }
 }
 
 fn ascii85(data: &[u8]) -> Vec<u8> {
@@ -140,7 +220,9 @@ fn ascii85(data: &[u8]) -> Vec<u8> {
 }
 
 fn push_group(out: &mut Vec<u8>, group: &[u8; 5], n: usize) {
-    let value = group.iter().fold(0u32, |acc, d| acc.wrapping_mul(85).wrapping_add(*d as u32));
+    let value = group
+        .iter()
+        .fold(0u32, |acc, d| acc.wrapping_mul(85).wrapping_add(*d as u32));
     let bytes = value.to_be_bytes();
     out.extend_from_slice(&bytes[..n - 1]);
 }
@@ -159,13 +241,21 @@ fn ascii_hex(data: &[u8]) -> Vec<u8> {
     if nibbles.len() % 2 == 1 {
         nibbles.push(0);
     }
-    nibbles.chunks_exact(2).map(|c| (c[0] << 4) | c[1]).collect()
+    nibbles
+        .chunks_exact(2)
+        .map(|c| (c[0] << 4) | c[1])
+        .collect()
 }
 
 fn run_length(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < data.len() {
+        // Up to 128.5x per pass, and `/Filter` is an *array* applied in a loop,
+        // so `[/RL /RL /RL /RL]` is ~2.7e8x on the file bytes.
+        if out.len() > MAX_DECODED_STREAM_BYTES {
+            break;
+        }
         let length = data[i] as usize;
         i += 1;
         match length {
@@ -202,7 +292,11 @@ fn unpredict(doc: &Document, data: &[u8], parms: &Dictionary) -> Result<Vec<u8>,
     }
     let colors = get(b"Colors", 1).clamp(1, 32) as usize;
     let bpc = get(b"BitsPerComponent", 8).clamp(1, 16) as usize;
-    let columns = get(b"Columns", 1).max(1) as usize;
+    // `Colors` and `BitsPerComponent` are clamped above; `Columns` was not, and
+    // it feeds `vec![0u8; row_bytes]` twice below. `/Columns 4000000000` asks
+    // for ~8 GB and the multiply can overflow first. 2^20 columns is already
+    // absurd for a real scan (a 4 MB row buffer) and keeps the product small.
+    let columns = (get(b"Columns", 1).max(1) as usize).min(1 << 20);
     let row_bytes = (columns * colors * bpc).div_ceil(8);
     let pixel_bytes = (colors * bpc).div_ceil(8).max(1);
 
@@ -241,9 +335,17 @@ fn png_predictor(data: &[u8], row_bytes: usize, pixel_bytes: usize) -> Result<Ve
         pos += take;
 
         for i in 0..row_bytes {
-            let left = if i >= pixel_bytes { current[i - pixel_bytes] } else { 0 };
+            let left = if i >= pixel_bytes {
+                current[i - pixel_bytes]
+            } else {
+                0
+            };
             let up = previous[i];
-            let up_left = if i >= pixel_bytes { previous[i - pixel_bytes] } else { 0 };
+            let up_left = if i >= pixel_bytes {
+                previous[i - pixel_bytes]
+            } else {
+                0
+            };
             current[i] = match tag {
                 0 => current[i],
                 1 => current[i].wrapping_add(left),
@@ -261,7 +363,11 @@ fn png_predictor(data: &[u8], row_bytes: usize, pixel_bytes: usize) -> Result<Ve
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let p = a as i16 + b as i16 - c as i16;
-    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
+    let (pa, pb, pc) = (
+        (p - a as i16).abs(),
+        (p - b as i16).abs(),
+        (p - c as i16).abs(),
+    );
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
@@ -291,7 +397,10 @@ mod tests {
     #[test]
     fn run_length_expands_runs_and_stops_at_the_marker() {
         // 2 -> copy 3 literals; 254 -> repeat the next byte 3 times; 128 -> end.
-        assert_eq!(run_length(&[2, b'a', b'b', b'c', 254, b'z', 128, b'x']), b"abczzz");
+        assert_eq!(
+            run_length(&[2, b'a', b'b', b'c', 254, b'z', 128, b'x']),
+            b"abczzz"
+        );
     }
 
     #[test]
@@ -299,11 +408,51 @@ mod tests {
         // Two 3-byte rows, both filtered with "Up"; the second is all zeros so
         // it must come back identical to the first.
         let data = [2, 10, 20, 30, 2, 0, 0, 0];
-        assert_eq!(png_predictor(&data, 3, 1).unwrap(), vec![10, 20, 30, 10, 20, 30]);
+        assert_eq!(
+            png_predictor(&data, 3, 1).unwrap(),
+            vec![10, 20, 30, 10, 20, 30]
+        );
     }
 
     #[test]
     fn tiff_prediction_accumulates_along_the_row() {
         assert_eq!(tiff_predictor(&[1, 1, 1, 1], 4, 1, 8), vec![1, 2, 3, 4]);
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn bomb(mb: usize) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..mb {
+            enc.write_all(&zeros).expect("compress");
+        }
+        enc.finish().expect("finish")
+    }
+
+    /// The cap must actually fire — a test that only asserts "the process
+    /// survived" would pass even if `inflate` were never reached.
+    #[test]
+    fn inflate_refuses_a_stream_past_the_cap() {
+        let over = bomb((MAX_DECODED_STREAM_BYTES >> 20) + 8);
+        let err = inflate(&over).expect_err("a stream past the cap must be refused");
+        assert!(
+            err.contains("exceeds"),
+            "the error must name the cause, got {err:?}"
+        );
+    }
+
+    /// And it must not fire early. The real corpus maximum is ~55.5 MB, so a
+    /// stream of that size has to keep working — this is the half that stops
+    /// the cap being tightened into a regression.
+    #[test]
+    fn inflate_still_accepts_the_largest_real_stream_size() {
+        let ok = bomb(56);
+        let out = inflate(&ok).expect("56 MB is under the cap and must decode");
+        assert_eq!(out.len(), 56 << 20);
     }
 }

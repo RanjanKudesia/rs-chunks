@@ -138,7 +138,9 @@ impl Extractor {
         visited: &mut Vec<ObjectId>,
     ) {
         let data = strip_inline_images(data);
-        let Ok(content) = Content::decode(&data) else { return };
+        let Ok(content) = Content::decode(&data) else {
+            return;
+        };
         let mut ctm = base_ctm;
         let mut stack: Vec<Matrix> = Vec::new();
         let mut ts = TextState::default();
@@ -223,14 +225,18 @@ impl Extractor {
                     }
                 }
                 "TJ" => {
-                    let Some(items) = a.first().and_then(|o| o.as_array().ok()) else { continue };
+                    let Some(items) = a.first().and_then(|o| o.as_array().ok()) else {
+                        continue;
+                    };
                     for item in items {
                         match item {
                             Object::String(s, _) => self.show(&mut ts, ctm, s, out),
                             other => {
                                 // A positive number moves left, so the sign is
                                 // inverted relative to a translation.
-                                let Some(adj) = num(Some(other)) else { continue };
+                                let Some(adj) = num(Some(other)) else {
+                                    continue;
+                                };
                                 let tx = -adj / 1000.0 * ts.size * ts.hscale;
                                 ts.tm = Matrix::translate(tx, 0.0).concat(ts.tm);
                             }
@@ -287,23 +293,47 @@ impl Extractor {
         out: &mut PageContent,
         visited: &mut Vec<ObjectId>,
     ) {
-        let Ok(xobjects) = resources.get_deref(b"XObject", doc).and_then(Object::as_dict) else {
+        let Ok(xobjects) = resources
+            .get_deref(b"XObject", doc)
+            .and_then(Object::as_dict)
+        else {
             return;
         };
-        let Ok(entry) = xobjects.get(name) else { return };
-        let Ok((id, object)) = doc.dereference(entry) else { return };
-        let Ok(stream) = object.as_stream() else { return };
-        let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name).unwrap_or(b"");
+        let Ok(entry) = xobjects.get(name) else {
+            return;
+        };
+        let Ok((id, object)) = doc.dereference(entry) else {
+            return;
+        };
+        let Ok(stream) = object.as_stream() else {
+            return;
+        };
+        let subtype = stream
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .unwrap_or(b"");
 
         if subtype == b"Image" {
             let Some(id) = id else { return };
             // The image fills the unit square, mapped through the CTM.
-            let corners = [ctm.apply(0.0, 0.0), ctm.apply(1.0, 0.0), ctm.apply(0.0, 1.0), ctm.apply(1.0, 1.0)];
+            let corners = [
+                ctm.apply(0.0, 0.0),
+                ctm.apply(1.0, 0.0),
+                ctm.apply(0.0, 1.0),
+                ctm.apply(1.0, 1.0),
+            ];
             let xs: Vec<f32> = corners.iter().map(|c| c.0).collect();
             let ys: Vec<f32> = corners.iter().map(|c| c.1).collect();
             let (left, right) = (fmin(&xs), fmax(&xs));
             let (bottom, top) = (fmin(&ys), fmax(&ys));
-            out.images.push(PlacedImage { id, top, left, width: right - left, height: top - bottom });
+            out.images.push(PlacedImage {
+                id,
+                top,
+                left,
+                width: right - left,
+                height: top - bottom,
+            });
             return;
         }
         if subtype != b"Form" {
@@ -313,7 +343,9 @@ impl Extractor {
         if visited.contains(&id) || visited.len() >= MAX_FORM_DEPTH {
             return;
         }
-        let Ok(data) = stream.decompressed_content() else { return };
+        let Ok(data) = stream.decompressed_content() else {
+            return;
+        };
         let form_ctm = match stream.dict.get(b"Matrix").and_then(Object::as_array) {
             Ok(m) => matrix_of(m).unwrap_or(Matrix::IDENTITY).concat(ctm),
             Err(_) => ctm,
@@ -332,7 +364,10 @@ impl Extractor {
     }
 
     fn font(&mut self, doc: &Document, resources: &Dictionary, name: &[u8]) -> Option<Rc<Font>> {
-        let fonts = resources.get_deref(b"Font", doc).and_then(Object::as_dict).ok()?;
+        let fonts = resources
+            .get_deref(b"Font", doc)
+            .and_then(Object::as_dict)
+            .ok()?;
         let entry = fonts.get(name).ok()?;
         match entry {
             Object::Reference(id) => {
@@ -415,7 +450,11 @@ fn inline_image_len(header: &[u8]) -> Option<usize> {
     let width = inline_int(header, b"/W")?;
     let height = inline_int(header, b"/H")?;
     let is_mask = find_token(header, 0, b"/IM").is_some();
-    let bpc = if is_mask { 1 } else { inline_int(header, b"/BPC")? };
+    let bpc = if is_mask {
+        1
+    } else {
+        inline_int(header, b"/BPC")?
+    };
     let components = if is_mask {
         1
     } else {
@@ -437,7 +476,7 @@ fn inline_image_len(header: &[u8]) -> Option<usize> {
         }
     };
     let row_bits = width.checked_mul(components)?.checked_mul(bpc)?;
-    Some(row_bits.div_ceil(8).checked_mul(height)?)
+    row_bits.div_ceil(8).checked_mul(height)
 }
 
 /// Read the integer operand of an abbreviated inline-image key.
@@ -511,7 +550,11 @@ fn matrix_of(operands: &[Object]) -> Option<Matrix> {
     if operands.len() < 6 {
         return None;
     }
-    let v: Vec<f32> = operands.iter().take(6).map(|o| num(Some(o)).unwrap_or(0.0)).collect();
+    let v: Vec<f32> = operands
+        .iter()
+        .take(6)
+        .map(|o| num(Some(o)).unwrap_or(0.0))
+        .collect();
     Some(Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5]))
 }
 
@@ -542,9 +585,16 @@ mod inline_image_tests {
     /// The 1×1 stencil mask that 1,013 of the corpus's 1,015 inline images are.
     #[test]
     fn a_stencil_mask_is_removed_and_the_operators_survive() {
-        let out = strip("q 1 0 0 1 0 0 cm BI /IM true /W 1 /H 1 /BPC 1 ID \u{0}\nEI Q BT (kept) Tj ET");
-        assert!(out.contains("(kept) Tj"), "text after the image was lost: {out:?}");
-        assert!(!out.contains("/IM"), "the image dictionary survived: {out:?}");
+        let out =
+            strip("q 1 0 0 1 0 0 cm BI /IM true /W 1 /H 1 /BPC 1 ID \u{0}\nEI Q BT (kept) Tj ET");
+        assert!(
+            out.contains("(kept) Tj"),
+            "text after the image was lost: {out:?}"
+        );
+        assert!(
+            !out.contains("/IM"),
+            "the image dictionary survived: {out:?}"
+        );
         assert!(out.starts_with("q 1 0 0 1 0 0 cm"), "{out:?}");
     }
 
@@ -554,7 +604,10 @@ mod inline_image_tests {
     #[test]
     fn a_malformed_marker_does_not_discard_the_rest_of_the_stream() {
         let out = strip("BT (before) Tj ET BI /W 1 BT (after) Tj ET");
-        assert!(out.contains("(after) Tj"), "text after a BI with no ID was lost: {out:?}");
+        assert!(
+            out.contains("(after) Tj"),
+            "text after a BI with no ID was lost: {out:?}"
+        );
 
         let out = strip("BT (before) Tj ET BI /W 1 /H 1 /BPC 1 ID \u{0} BT (after) Tj ET");
         assert!(
@@ -584,12 +637,21 @@ mod inline_image_tests {
     #[test]
     fn computed_lengths_match_the_dictionary() {
         assert_eq!(inline_image_len(b"BI /IM true /W 1 /H 1 /BPC 1"), Some(1));
-        assert_eq!(inline_image_len(b"BI /W 161 /H 47 /BPC 8 /CS /G"), Some(161 * 47));
-        assert_eq!(inline_image_len(b"BI /W 8 /H 2 /BPC 8 /CS /RGB"), Some(8 * 3 * 2));
+        assert_eq!(
+            inline_image_len(b"BI /W 161 /H 47 /BPC 8 /CS /G"),
+            Some(161 * 47)
+        );
+        assert_eq!(
+            inline_image_len(b"BI /W 8 /H 2 /BPC 8 /CS /RGB"),
+            Some(8 * 3 * 2)
+        );
         // Filtered data has no derivable length — fall back to the scan.
         assert_eq!(inline_image_len(b"BI /W 8 /H 2 /BPC 8 /CS /G /F /Fl"), None);
         // An indexed colour space needs resources to resolve; do not guess.
-        assert_eq!(inline_image_len(b"BI /W 1 /H 8 /BPC 2 /CS [/I /RGB 3 <00>]"), None);
+        assert_eq!(
+            inline_image_len(b"BI /W 1 /H 8 /BPC 2 /CS [/I /RGB 3 <00>]"),
+            None
+        );
     }
 
     #[test]

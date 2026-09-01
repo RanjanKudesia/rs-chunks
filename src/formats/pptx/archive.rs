@@ -85,7 +85,7 @@ pub(super) fn find_notes_for_slide(archive: &mut PptxArchive, slide_name: &str) 
                 let rest = &chunk[target_start + 8..];
                 if let Some(target_end) = rest.find('"') {
                     // Attribute values are escaped; decode before resolving.
-                    let target = crate::entities::decode_attr_value(rest[..target_end].as_bytes());
+                    let target = crate::entities::decode_attr_value(&rest.as_bytes()[..target_end]);
                     return Some(resolve_relative_path(dir, &target));
                 }
             }

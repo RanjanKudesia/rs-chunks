@@ -44,6 +44,12 @@ struct GroupState {
     in_info: bool,
     /// Inside `\listtext` — text is captured as a list marker, not as body.
     in_listtext: bool,
+    /// Inside `\fldinst` — text is captured as a field instruction, not body.
+    in_fldinst: bool,
+    /// A hyperlink target captured from this group's `\fldinst`, to be closed
+    /// when the group ends. On `GroupState` rather than `Ctx` so nested fields
+    /// nest correctly for free.
+    link: Option<String>,
 }
 
 /// Tokenizer state that is not per-group.
@@ -51,12 +57,22 @@ struct Ctx {
     out: Out,
     /// Captured `\listtext` content for the current list item.
     listtext: String,
+    /// Captured `\fldinst` content for the field being read.
+    fldinst: String,
+    /// A hyperlink target read from `\fldinst`, awaiting its `\fldrslt`.
+    pending_link: Option<String>,
     fonts: Fonts,
     heading_styles: HeadingStyles,
     /// Heading level of the paragraph being written, if it is a heading.
     heading_level: Option<u8>,
     uc_pending: i32,
     pending_surrogate: Option<u16>,
+    /// A table row is open, i.e. its leading `|` has been written.
+    row_open: bool,
+    /// Cells seen in the row being built — the column count for the delimiter.
+    row_cells: usize,
+    /// Rows emitted in the current table; 0 means the next row is the header.
+    table_rows: usize,
 }
 
 impl Ctx {
@@ -89,15 +105,22 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
         in_upr: false,
         in_info: false,
         in_listtext: false,
+        in_fldinst: false,
+        link: None,
     }];
     let mut ctx = Ctx {
         out: Out::default(),
         listtext: String::new(),
+        fldinst: String::new(),
+        pending_link: None,
         fonts: fonts::parse(bytes, default_enc),
         heading_styles: styles::parse(bytes, default_enc),
         heading_level: None,
         uc_pending: 0,
         pending_surrogate: None,
+        row_open: false,
+        row_cells: 0,
+        table_rows: 0,
     };
 
     // Raw-byte buffer for consecutive `\'xx` (decoded together for double-byte).
@@ -119,6 +142,12 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
                 if top.in_listtext {
                     end_listtext(&mut ctx);
                 }
+                if top.in_fldinst {
+                    end_fldinst(&mut ctx);
+                }
+                if let Some(url) = &top.link {
+                    ctx.out.close_link(url);
+                }
                 if stack.len() > 1 {
                     stack.pop();
                 }
@@ -133,6 +162,17 @@ pub fn extract(bytes: &[u8]) -> RtfDoc {
                     let (word, num, consumed) = read_control_word(bytes, i);
                     handle_control_word(word, num, &mut stack, &mut raw, &mut ctx);
                     i = consumed;
+                    // `\binN` is followed by exactly N *raw* bytes (RTF spec,
+                    // "Pictures"). They are not text and — the part that
+                    // matters — they are not RTF either: a `{` or `}` among
+                    // them pushes or pops the group stack and corrupts nesting
+                    // for the rest of the file. Measured on a synthetic
+                    // fixture: two stray `{` bytes inside a `\bin` run cost
+                    // every paragraph after the image.
+                    if word == b"bin" {
+                        let count = num.unwrap_or(0).max(0) as usize;
+                        i = i.saturating_add(count).min(n);
+                    }
                 } else if next == b'\'' && i + 4 <= n {
                     if let Some(byte) = read_hex_byte(&bytes[i + 2..i + 4]) {
                         if ctx.uc_pending > 0 {
@@ -206,6 +246,13 @@ fn flush_raw(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
     if raw.is_empty() {
         return;
     }
+    // Intervening text breaks a surrogate pair. A `\uN` high surrogate is only
+    // half a character and is valid ONLY when the very next thing is its low
+    // half; holding it across other content let a stale high surrogate pair with
+    // an unrelated low one from a later paragraph and SYNTHESISE a character
+    // that is not in the file. Measured on `tika_testRTFInvalidUnicode.rtf`,
+    // which contains only unpaired escapes and yet produced U+10000.
+    ctx.pending_surrogate = None;
     if !writable(top) {
         raw.clear();
         return;
@@ -219,6 +266,8 @@ fn flush_raw(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
     let (decoded, _, _) = top.encoding.decode(raw);
     if top.in_listtext {
         ctx.listtext.push_str(&decoded);
+    } else if top.in_fldinst {
+        ctx.fldinst.push_str(&decoded);
     } else {
         let fmt = ctx.fmt(top);
         ctx.out.push_text(&decoded, fmt);
@@ -239,10 +288,24 @@ fn flush_raw_at_boundary(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx) {
 
 /// Whether text in this group reaches a sink at all.
 fn writable(top: &GroupState) -> bool {
-    !top.skip || top.in_listtext
+    !top.skip || top.in_listtext || top.in_fldinst
 }
 
 /// Close a `\listtext` group: its glyph becomes a markdown marker.
+/// Close a `\fldinst`. `HYPERLINK "target"` yields a link target; any other
+/// field type (PAGE, TOC, REF, …) yields nothing and stays invisible.
+fn end_fldinst(ctx: &mut Ctx) {
+    let inst = std::mem::take(&mut ctx.fldinst);
+    let Some(rest) = inst.trim().strip_prefix("HYPERLINK") else {
+        return;
+    };
+    // Switches may follow (`\l "anchor"`); the target is the first quoted run.
+    let url = rest.trim().trim_matches('"').trim();
+    if !url.is_empty() && !url.starts_with('\\') {
+        ctx.pending_link = Some(url.to_string());
+    }
+}
+
 fn end_listtext(ctx: &mut Ctx) {
     let marker = marker_for(&ctx.listtext);
     ctx.listtext.clear();
@@ -280,6 +343,9 @@ fn handle_control_symbol(next: u8, stack: &mut [GroupState], raw: &mut Vec<u8>, 
 
 fn push_literal(raw: &mut Vec<u8>, top: &GroupState, ctx: &mut Ctx, ch: char) {
     flush_raw(raw, top, ctx);
+    // Same rule: this literal is itself intervening content, so any half-pair
+    // still being held is now unpairable and must be dropped, not carried.
+    ctx.pending_surrogate = None;
     if top.in_listtext {
         ctx.listtext.push(ch);
     } else if !top.skip {
@@ -300,11 +366,31 @@ fn handle_control_word(
 
     match word {
         // ── Destinations to skip entirely ──
-        b"fonttbl" | b"colortbl" | b"stylesheet" | b"listtable" | b"listoverridetable"
-        | b"revtbl" | b"rsidtbl" | b"generator" | b"themedata" | b"colorschememapping"
-        | b"latentstyles" | b"datastore" | b"pict" | b"object" | b"nonshppict"
-        | b"fldinst" | b"xmlnstbl" | b"mmath" | b"header" | b"headerl" | b"headerr"
-        | b"headerf" | b"footer" | b"footerl" | b"footerr" | b"footerf" => {
+        b"fonttbl"
+        | b"colortbl"
+        | b"stylesheet"
+        | b"listtable"
+        | b"listoverridetable"
+        | b"revtbl"
+        | b"rsidtbl"
+        | b"generator"
+        | b"themedata"
+        | b"colorschememapping"
+        | b"latentstyles"
+        | b"datastore"
+        | b"pict"
+        | b"object"
+        | b"nonshppict"
+        | b"xmlnstbl"
+        | b"mmath"
+        | b"header"
+        | b"headerl"
+        | b"headerr"
+        | b"headerf"
+        | b"footer"
+        | b"footerl"
+        | b"footerr"
+        | b"footerf" => {
             stack[top_idx].skip = true;
         }
         b"info" => {
@@ -318,6 +404,20 @@ fn handle_control_word(
         b"listtext" => {
             stack[top_idx].skip = true;
             stack[top_idx].in_listtext = true;
+        }
+        // The target lives ONLY in `\fldinst`, so capture it instead of
+        // skipping the group: `[text](url)` was losing every url because
+        // `\fldinst` sat in the blanket skip-destination list.
+        b"fldinst" => {
+            stack[top_idx].skip = true;
+            stack[top_idx].in_fldinst = true;
+        }
+        b"fldrslt" if !top.skip => {
+            if let Some(url) = ctx.pending_link.take() {
+                flush_raw(raw, &top, ctx);
+                stack[top_idx].link = Some(url);
+                ctx.out.open_link();
+            }
         }
         // \upr holds an ANSI copy then a Unicode copy of the same content; skip
         // the ANSI copy (this group), and \ud re-enables the Unicode copy.
@@ -385,6 +485,12 @@ fn handle_control_word(
         b"par" | b"line" | b"sect" | b"page" | b"softline" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                // A `\par` outside a row ends the table, so a second table
+                // gets its own header. A `\par` *inside* a cell leaves
+                // `row_open` set, so a multi-paragraph cell does not.
+                if !ctx.row_open {
+                    ctx.table_rows = 0;
+                }
                 ctx.out.break_line();
                 requeue_heading(ctx);
             }
@@ -398,16 +504,44 @@ fn handle_control_word(
                 ctx.out.push_text("\t", fmt);
             }
         }
+        // `\intbl`/`\trowd` arrive *before* the cell text, so the row's
+        // leading `|` goes here. Word writes `\intbl` once per cell paragraph;
+        // the `row_open` guard absorbs the repeats.
+        b"intbl" | b"trowd" if !top.skip && !ctx.row_open => {
+            flush_raw(raw, &top, ctx);
+            ctx.out.open_row();
+            ctx.row_open = true;
+            ctx.row_cells = 0;
+        }
         b"cell" | b"nestcell" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                if !ctx.row_open {
+                    ctx.out.open_row();
+                    ctx.row_open = true;
+                    ctx.row_cells = 0;
+                }
+                ctx.row_cells += 1;
                 ctx.out.push_structural(" | ");
             }
         }
         b"row" | b"nestrow" => {
             flush_raw(raw, &top, ctx);
             if !top.skip {
+                let cols = ctx.row_cells;
                 ctx.out.break_line();
+                // Without a delimiter row this is not a markdown table: GFM
+                // renders it as one paragraph, and `md::common::rows_form_a_table`
+                // refuses to classify the block as `table` at all — so the
+                // chunk came back `short_disconnected_paragraph`. RTF's only
+                // header signal is `\trhdr` and neither corpus table uses it,
+                // so the first row is the header, matching docx's documented
+                // fallback.
+                if ctx.table_rows == 0 && cols > 0 {
+                    ctx.out.push_line(&format!("|{}", " --- |".repeat(cols)));
+                }
+                ctx.table_rows += 1;
+                ctx.row_open = false;
             }
         }
         b"bullet" => {

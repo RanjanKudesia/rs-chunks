@@ -1,10 +1,7 @@
-
-
-
 use super::common::{parse_html_blocks, remove_comments, HtmlBlockType};
 
 fn escape_pipe(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ").replace('\r', " ")
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 fn blocks_to_markdown(blocks: &[super::common::HtmlBlock]) -> String {
@@ -96,4 +93,3 @@ pub(crate) fn html_to_markdown_str(html: &str) -> String {
     let blocks = parse_html_blocks(&cleaned);
     blocks_to_markdown(&blocks)
 }
-

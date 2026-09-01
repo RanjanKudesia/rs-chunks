@@ -20,7 +20,11 @@ pub fn csv_to_markdown(file_path: &str, delimiter: Option<u8>, encoding: &str) -
 }
 
 /// No-filesystem CSV → Markdown table (wasm/browser).
-pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: &str) -> Result<String> {
+pub fn csv_to_markdown_from_bytes(
+    data: &[u8],
+    delimiter: Option<u8>,
+    encoding: &str,
+) -> Result<String> {
     use super::common::{decode_to_utf8, first_data_line_of};
     let delim_byte = match delimiter {
         Some(b) => b,
@@ -40,7 +44,14 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
         .trim(Trim::None)
         .flexible(true)
         .has_headers(false)
-        .comment(Some(b'#'))
+        // No `.comment(...)`: RFC 4180 defines no comment convention, and neither
+        // does the `text/tab-separated-values` registration. `#` is ordinary
+        // TEXTDATA. Treating a leading `#` as a comment silently DELETED whole
+        // records — measured, a row `#4,legacy sku,archived` vanished with no
+        // error and no metadata trace, while the same character mid-field
+        // survived. Any file whose first column holds issue numbers, SKUs, hex
+        // colours or hashtags lost exactly those rows. A `#` preamble now
+        // arrives as data, which is the honest reading: it IS in the file.
         .from_reader(text.as_bytes());
 
     let mut records = reader.records();
@@ -56,12 +67,19 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
     let mut max_width = headers.len();
 
     for result in records {
-        let record = result.map_err(|e| ChunkError::Parse(format!("Failed to read CSV row: {e}")))?;
+        let record =
+            result.map_err(|e| ChunkError::Parse(format!("Failed to read CSV row: {e}")))?;
         let row: Vec<String> = record.iter().map(|v| v.to_string()).collect();
         if is_empty_row(&row) {
             continue;
         }
-        max_width = max_width.max(row.len());
+        // One pathological row must not widen every other row: the padding
+        // loop below costs `rows x max_width` empty Strings, so a single
+        // 1M-field row in a 1M-row file is 10^12 allocations. Excel's column
+        // limit is a generous ceiling for a markdown table.
+        max_width = max_width
+            .max(row.len())
+            .min(crate::formats::xlsx::common::MAX_SHEET_COLS);
         data_rows.push(row);
     }
 
@@ -87,7 +105,11 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
 
     let header_line = format!(
         "| {} |",
-        headers.iter().map(|h| escape(h)).collect::<Vec<_>>().join(" | ")
+        headers
+            .iter()
+            .map(|h| escape(h))
+            .collect::<Vec<_>>()
+            .join(" | ")
     );
     let sep_line = format!("| {} |", vec!["---"; max_width].join(" | "));
 
@@ -95,7 +117,10 @@ pub fn csv_to_markdown_from_bytes(data: &[u8], delimiter: Option<u8>, encoding: 
     for row in &data_rows {
         let cell_line = format!(
             "| {} |",
-            row.iter().map(|c| escape(c)).collect::<Vec<_>>().join(" | ")
+            row.iter()
+                .map(|c| escape(c))
+                .collect::<Vec<_>>()
+                .join(" | ")
         );
         lines.push(cell_line);
     }

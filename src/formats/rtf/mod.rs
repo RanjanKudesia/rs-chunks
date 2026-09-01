@@ -32,15 +32,53 @@ fn load(file_path: &str) -> Result<Loaded> {
 }
 
 /// No-filesystem entry (wasm/browser).
-pub fn chunk_from_bytes(data: &[u8], mode: &str, window_size: usize, overlap: usize, sentences_per_chunk: usize, paragraphs_per_page: usize) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load_bytes(data)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+pub fn chunk_from_bytes(
+    data: &[u8],
+    mode: &str,
+    window_size: usize,
+    overlap: usize,
+    sentences_per_chunk: usize,
+    paragraphs_per_page: usize,
+) -> Result<Vec<Chunk>> {
+    pipeline::chunk(
+        &load_bytes(data)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn to_markdown_from_bytes(data: &[u8]) -> Result<String> {
     Ok(load_bytes(data)?.markdown)
 }
 
+/// Every RTF document begins `{\rtf` (RTF spec, "RTF Version"). Without this
+/// check the reader simply walked whatever bytes it was given: a JPEG or PNG
+/// renamed `.rtf` came back as **one chunk of binary noise, reported as
+/// success** (measured). Returning garbage that looks like content is worse
+/// than failing — a caller can handle an error but cannot detect this.
+///
+/// Lenient about what may precede it: a UTF-8 BOM and leading whitespace are
+/// both tolerated. Verified against all 16 corpus fixtures, every one of which
+/// starts with `{\rtf` once those are skipped.
+fn has_rtf_magic(bytes: &[u8]) -> bool {
+    let start = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let start = start
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|i| &start[i..])
+        .unwrap_or(&[]);
+    start.starts_with(br"{\rtf")
+}
+
 fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
+    if !has_rtf_magic(bytes) {
+        return Err(ChunkError::Parse(
+            r"Not an RTF document: the file does not begin with '{\rtf'".to_string(),
+        ));
+    }
     let doc = extract(bytes);
     let markdown = rtf_to_markdown(&doc);
     let metadata = serde_json::json!({
@@ -48,7 +86,12 @@ fn load_bytes(bytes: &[u8]) -> Result<Loaded> {
         "title": doc.title,
         "author": doc.author,
     });
-    Ok(Loaded { markdown, images: Vec::new(), metadata, records: None })
+    Ok(Loaded {
+        markdown,
+        images: Vec::new(),
+        metadata,
+        records: None,
+    })
 }
 
 pub fn chunk(
@@ -59,7 +102,14 @@ pub fn chunk(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<Vec<Chunk>> {
-    pipeline::chunk(&load(file_path)?, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    pipeline::chunk(
+        &load(file_path)?,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 pub fn chunk_with_options(file_path: &str, opts: &ChunkOptions) -> Result<Vec<Chunk>> {
@@ -78,7 +128,14 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }

@@ -38,7 +38,13 @@ pub fn decompress_rtf(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut dict = vec![0u8; DICT_SIZE];
     dict[..LZFU_INIT_DICT.len()].copy_from_slice(LZFU_INIT_DICT);
     let mut write_pos = LZFU_INIT_DICT.len(); // 207
-    let mut out = Vec::with_capacity(raw_size);
+
+    // `raw_size` is a u32 straight from the file, so a 16-byte input can ask
+    // for 4 GiB. LZFu emits at most 16 bytes per flag byte, so `body.len() * 17`
+    // is a hard ceiling on real output — clamping the *reservation* to it is
+    // lossless, because the Vec still grows if genuinely needed.
+    let reserve = raw_size.min(body.len().saturating_mul(17));
+    let mut out = Vec::with_capacity(reserve);
     let mut ip = 0usize;
 
     'outer: while ip < body.len() {
@@ -96,8 +102,8 @@ pub fn decompress_rtf(data: &[u8]) -> Result<Vec<u8>, String> {
 /// font's `\fcharset`, and batches `\'xx` bytes so a double-byte pair decodes
 /// together. Keeping a second, weaker RTF reader inside `msg` was the drift the
 /// one-engine rule exists to prevent.
-pub fn rtf_to_text(rtf_bytes: &[u8]) -> String {
-    crate::formats::rtf::to_markdown_from_bytes(rtf_bytes).unwrap_or_default()
+pub fn rtf_to_text(rtf_bytes: &[u8]) -> std::result::Result<String, String> {
+    crate::formats::rtf::to_markdown_from_bytes(rtf_bytes).map_err(|e| e.to_string())
 }
 
 /// Collapse the whitespace runs that Outlook's encapsulated-HTML RTF leaves
@@ -111,15 +117,18 @@ fn normalize_whitespace(text: &str) -> String {
 }
 
 /// Full pipeline: decompress `PidTagRtfCompressed` bytes → normalized text.
-pub fn compressed_rtf_to_text(compressed: &[u8]) -> Option<String> {
-    let raw = decompress_rtf(compressed).ok()?;
-    let text = normalize_whitespace(&rtf_to_text(&raw));
+///
+/// `Ok(None)` means it decoded fine and there was nothing in it. `Err` means the
+/// stream is present and we could not read it — never conflate the two. Both
+/// used to be `None`, so an RTF-only message whose LZFu or RTF parse failed lost
+/// its **entire body** while still emitting a chunk with the subject and headers
+/// (TECH_DEBT F7). That is the most deceptive shape here: the output does not
+/// look empty, it looks healthy.
+pub fn compressed_rtf_to_text(compressed: &[u8]) -> std::result::Result<Option<String>, String> {
+    let raw = decompress_rtf(compressed)?;
+    let text = normalize_whitespace(&rtf_to_text(&raw)?);
     let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
 }
 
 #[cfg(test)]

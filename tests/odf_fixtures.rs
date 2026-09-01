@@ -8,16 +8,23 @@ use std::path::PathBuf;
 use chunks_rs::{get_chunks, get_chunks_from_bytes, get_markdown};
 
 fn fixtures(dir: &str, ext: &str) -> Vec<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("test_files").join(dir);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test_files")
+        .join(dir);
     let mut out: Vec<PathBuf> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext))
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case(ext))
                 == Some(true)
-                && std::fs::metadata(p).map(|m| m.len() < 10 * 1024 * 1024).unwrap_or(false)
+                && std::fs::metadata(p)
+                    .map(|m| m.len() < 10 * 1024 * 1024)
+                    .unwrap_or(false)
         })
         .collect();
     out.sort();
@@ -50,8 +57,15 @@ fn run_family(dir: &str, ext: &str, min_fixtures: usize) {
             Err(e) => assert!(!e.to_string().is_empty(), "empty error for {p}"),
         }
     }
-    assert!(ok * 2 >= files.len(), "only {ok}/{} .{ext} fixtures chunked Ok", files.len());
-    assert!(total_chunks > 0, "no chunks produced from the whole .{ext} corpus");
+    assert!(
+        ok * 2 >= files.len(),
+        "only {ok}/{} .{ext} fixtures chunked Ok",
+        files.len()
+    );
+    assert!(
+        total_chunks > 0,
+        "no chunks produced from the whole .{ext} corpus"
+    );
 }
 
 #[test]
@@ -68,7 +82,11 @@ fn odp_corpus_chunks_cleanly() {
 fn odf_markdown_and_bytes_roundtrip() {
     for (dir, ext) in [("odt", "odt"), ("odp", "odp")] {
         let files = fixtures(dir, ext);
-        assert!(files.len() >= 5, "expected >= 5 .{ext} fixtures, found {}", files.len());
+        assert!(
+            files.len() >= 5,
+            "expected >= 5 .{ext} fixtures, found {}",
+            files.len()
+        );
 
         let mut md_nonempty = 0;
         for path in files.iter().take(5) {
@@ -80,13 +98,17 @@ fn odf_markdown_and_bytes_roundtrip() {
             }
             let bytes = std::fs::read(p).unwrap();
             let via_path = get_chunks(p, "default", 3, 1, 3, 15);
-            let via_bytes = get_chunks_from_bytes(&bytes, &format!("x.{ext}"), "default", 3, 1, 3, 15);
+            let via_bytes =
+                get_chunks_from_bytes(&bytes, &format!("x.{ext}"), "default", 3, 1, 3, 15);
             match (via_path, via_bytes) {
                 (Ok(a), Ok(b)) => assert_eq!(a, b, "bytes != path for {p}"),
                 (Err(_), Err(_)) => {}
                 (a, b) => panic!("path/bytes disagree on success for {p}: {a:?} vs {b:?}"),
             }
         }
-        assert!(md_nonempty > 0, "no .{ext} fixture produced non-empty markdown");
+        assert!(
+            md_nonempty > 0,
+            "no .{ext} fixture produced non-empty markdown"
+        );
     }
 }

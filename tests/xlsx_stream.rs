@@ -44,7 +44,9 @@ fn fixtures() -> Vec<PathBuf> {
                 .and_then(|e| e.to_str())
                 .map(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()))
                 .unwrap_or(false)
-                && std::fs::metadata(&p).map(|m| m.len() < 8 * 1024 * 1024).unwrap_or(false)
+                && std::fs::metadata(&p)
+                    .map(|m| m.len() < 8 * 1024 * 1024)
+                    .unwrap_or(false)
             {
                 out.push(p);
             }
@@ -52,7 +54,9 @@ fn fixtures() -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test_files"),
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test_files"),
         &mut out,
     );
     out
@@ -137,9 +141,19 @@ fn row_and_sliding_window_are_incremental() {
     let many = fixtures()
         .into_iter()
         .find(|f| {
-            xlsx::chunk(f.to_str().unwrap(), "row", 1, 3, 1, true, Vec::new(), true, 2000)
-                .map(|c| c.len() > 20)
-                .unwrap_or(false)
+            xlsx::chunk(
+                f.to_str().unwrap(),
+                "row",
+                1,
+                3,
+                1,
+                true,
+                Vec::new(),
+                true,
+                2000,
+            )
+            .map(|c| c.len() > 20)
+            .unwrap_or(false)
         })
         .expect("a fixture with more than 20 row chunks");
     let path = many.to_str().unwrap();
@@ -166,9 +180,19 @@ fn stream_honours_the_options_the_old_signature_could_not_express() {
         .into_iter()
         .find(|f| {
             f.extension().and_then(|e| e.to_str()) == Some("xlsx")
-                && xlsx::chunk(f.to_str().unwrap(), "row", 1, 3, 1, true, Vec::new(), true, 2000)
-                    .map(|c| c.len() > 2)
-                    .unwrap_or(false)
+                && xlsx::chunk(
+                    f.to_str().unwrap(),
+                    "row",
+                    1,
+                    3,
+                    1,
+                    true,
+                    Vec::new(),
+                    true,
+                    2000,
+                )
+                .map(|c| c.len() > 2)
+                .unwrap_or(false)
         })
         .expect("a multi-chunk .xlsx fixture");
     let path = f.to_str().unwrap();
@@ -198,9 +222,19 @@ fn stream_honours_the_options_the_old_signature_could_not_express() {
     );
 
     // A named sheet that does not exist is a caller error, not a parse failure.
-    let err = xlsx::stream(path, "row", 1, 3, 1, true, vec!["no such sheet".into()], true, 2000)
-        .err()
-        .expect("unknown sheet should fail");
+    let err = xlsx::stream(
+        path,
+        "row",
+        1,
+        3,
+        1,
+        true,
+        vec!["no such sheet".into()],
+        true,
+        2000,
+    )
+    .err()
+    .expect("unknown sheet should fail");
     assert!(
         matches!(err, ChunkError::InvalidArg(ref m) if m.contains("not found")),
         "expected InvalidArg for a missing sheet, got {err:?}"
@@ -246,14 +280,30 @@ fn stream_rejects_the_same_arguments_batch_does() {
         xlsx::stream(path, mode, rows, win, over, true, Vec::new(), true, max).err()
     };
 
-    assert!(matches!(bad("row", 0, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("rows_per_chunk")));
-    assert!(matches!(bad("semantic", 0, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("rows_per_chunk")));
-    assert!(matches!(bad("table", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars")));
-    assert!(matches!(bad("sheet", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars")));
-    assert!(matches!(bad("page_aware", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars")));
-    assert!(matches!(bad("sliding_window", 1, 0, 0, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("window_size")));
-    assert!(matches!(bad("sliding_window", 1, 2, 2, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("overlap")));
-    assert!(matches!(bad("nonsense", 1, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("Unknown XLSX streaming mode")));
+    assert!(
+        matches!(bad("row", 0, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("rows_per_chunk"))
+    );
+    assert!(
+        matches!(bad("semantic", 0, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("rows_per_chunk"))
+    );
+    assert!(
+        matches!(bad("table", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars"))
+    );
+    assert!(
+        matches!(bad("sheet", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars"))
+    );
+    assert!(
+        matches!(bad("page_aware", 1, 3, 1, 0), Some(ChunkError::InvalidArg(m)) if m.contains("max_chunk_chars"))
+    );
+    assert!(
+        matches!(bad("sliding_window", 1, 0, 0, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("window_size"))
+    );
+    assert!(
+        matches!(bad("sliding_window", 1, 2, 2, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("overlap"))
+    );
+    assert!(
+        matches!(bad("nonsense", 1, 3, 1, 2000), Some(ChunkError::InvalidArg(m)) if m.contains("Unknown XLSX streaming mode"))
+    );
 }
 
 /// A password-protected workbook must say so.
@@ -281,9 +331,19 @@ fn password_protected_workbooks_report_the_real_reason() {
     );
 
     for f in protected {
-        let err = xlsx::chunk(f.to_str().unwrap(), "row", 1, 3, 1, true, Vec::new(), true, 2000)
-            .err()
-            .unwrap_or_else(|| panic!("{} should not open", f.display()));
+        let err = xlsx::chunk(
+            f.to_str().unwrap(),
+            "row",
+            1,
+            3,
+            1,
+            true,
+            Vec::new(),
+            true,
+            2000,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{} should not open", f.display()));
         let msg = format!("{err:?}");
         assert!(
             msg.contains("password protected"),

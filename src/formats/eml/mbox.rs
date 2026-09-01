@@ -9,15 +9,82 @@ use super::extract::{document_to_markdown, parse_message_bytes};
 
 const FROM_SEP: &[u8] = b"From ";
 
+/// Does this line look like the START of an RFC 5322 header block?
+///
+/// A genuine `From_` postmark is always followed immediately by message
+/// headers (`Return-Path:`, `Received:`, …): a field name of printable ASCII
+/// followed by a colon. A BODY line that merely begins with `From ` is
+/// followed by more prose. This is the discriminator that keeps
+/// `From Russia with love` in a message body from becoming a phantom message
+/// — which is exactly what happened: `mimekit_unmunged.mbox` holds 2 messages
+/// and the engine emitted 4, each phantom's "headers" being prose, and the
+/// mis-detected line was then DELETED from the real message's body.
+fn looks_like_header_start(line: &[u8]) -> bool {
+    let mut saw_name = false;
+    for (i, &b) in line.iter().take(100).enumerate() {
+        match b {
+            b':' => return saw_name && i > 0,
+            // ftext: printable US-ASCII except colon.
+            33..=57 | 59..=126 => saw_name = true,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Does the text after `From ` look like a postmark tail?
+///
+/// RFC 4155's shape is `From sender date`, and every real writer follows it:
+/// classic mailers emit an asctime date (`Mon Jun 01 04:28:28 2009` — weekday
+/// plus a time containing colons), Thunderbird emits a bare `-`. Prose that
+/// merely starts with `From ` has neither. Measured across the corpus: all
+/// 162 genuine postmarks are `-` or carry an asctime tail; the two phantom
+/// `Russia with love` lines have neither.
+fn postmark_tail(line: &[u8]) -> bool {
+    let tail: &[u8] = &line[FROM_SEP.len()..];
+    let tail = trim_ascii(tail);
+    tail.is_empty() || tail == b"-" || (tail.contains(&b':') && tail.iter().any(u8::is_ascii_digit))
+}
+
+fn trim_ascii(mut b: &[u8]) -> &[u8] {
+    while let [rest @ .., last] = b {
+        if last.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    while let [first, rest @ ..] = b {
+        if first.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    b
+}
+
 /// Split raw mbox bytes into individual message byte-slices (the `From_`
 /// separator line itself is dropped; mboxrd `>From` escaping is undone).
 pub fn split_mbox(raw: &[u8]) -> Vec<Vec<u8>> {
+    let lines: Vec<&[u8]> = split_keep_eol(raw);
     let mut messages: Vec<Vec<u8>> = Vec::new();
     let mut current: Vec<u8> = Vec::new();
     let mut started = false;
 
-    for line in split_keep_eol(raw) {
-        if line_starts_with(line, FROM_SEP) {
+    for (idx, &line) in lines.iter().enumerate() {
+        // A postmark must (a) itself look like one and (b) be followed by
+        // headers. The very first line of the file is trusted regardless.
+        // Both conditions are needed: the corpus's own adversarial fixture
+        // follows a body `From Russia with love` with `Year: 1963` — a
+        // header-shaped line — so next-line shape alone still phantom-splits.
+        let next_is_headerish = lines
+            .get(idx + 1)
+            .map(|l| looks_like_header_start(l))
+            .unwrap_or(false);
+        if line_starts_with(line, FROM_SEP)
+            && (idx == 0 || (postmark_tail(line) && next_is_headerish))
+        {
             // New message boundary — flush the previous one.
             if started && !current.is_empty() {
                 messages.push(std::mem::take(&mut current));
@@ -92,13 +159,29 @@ pub struct MboxMessageInfo {
     pub references: Vec<String>,
 }
 
-pub fn mbox_to_markdown(
-    raw: &[u8],
-) -> (String, Vec<(String, Vec<u8>)>, usize, Vec<MboxMessageInfo>) {
+/// What one mbox yielded. A struct rather than a fifth tuple element: the
+/// return was already four anonymous values, and `skipped` only means anything
+/// next to `count`.
+pub struct MboxLoad {
+    pub markdown: String,
+    pub images: crate::chunk::ExtractedImages,
+    /// Messages the splitter found — unchanged by any parse failure below.
+    pub count: usize,
+    pub infos: Vec<MboxMessageInfo>,
+    /// Messages that could not be parsed, as `"message {n}: {reason}"`.
+    ///
+    /// Always present, empty when nothing was lost. One unparseable message
+    /// must not lose a 5,000-message mailbox, but the gap it leaves in the
+    /// `## Message N` numbering has to be explained rather than left as a blank
+    /// heading. Same contract as xlsx's `skipped_sheets` (#66).
+    pub skipped: Vec<String>,
+}
+
+pub fn mbox_to_markdown(raw: &[u8]) -> MboxLoad {
     let messages = split_mbox(raw);
     let count = messages.len();
     let mut out = String::new();
-    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut images: crate::chunk::ExtractedImages = Vec::new();
 
     out.push_str(&format!(
         "# Mailbox — {count} message{}\n\n",
@@ -106,8 +189,15 @@ pub fn mbox_to_markdown(
     ));
 
     let mut infos: Vec<MboxMessageInfo> = Vec::with_capacity(count);
+    let mut skipped: Vec<String> = Vec::new();
     for (i, msg_bytes) in messages.iter().enumerate() {
-        let doc = parse_message_bytes(msg_bytes);
+        let doc = match parse_message_bytes(msg_bytes) {
+            Ok(doc) => doc,
+            Err(e) => {
+                skipped.push(format!("message {}: {e}", i + 1));
+                continue;
+            }
+        };
         infos.push(MboxMessageInfo {
             index: i + 1,
             subject: doc.subject.clone(),
@@ -126,5 +216,11 @@ pub fn mbox_to_markdown(
         }
     }
 
-    (out.trim().to_string(), images, count, infos)
+    MboxLoad {
+        markdown: out.trim().to_string(),
+        images,
+        count,
+        infos,
+        skipped,
+    }
 }

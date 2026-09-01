@@ -14,7 +14,10 @@ pub struct Fmt {
 }
 
 impl Fmt {
-    pub const NONE: Fmt = Fmt { bold: false, italic: false };
+    pub const NONE: Fmt = Fmt {
+        bold: false,
+        italic: false,
+    };
 
     fn is_none(self) -> bool {
         self == Fmt::NONE
@@ -34,6 +37,8 @@ pub struct Out {
     open_pos: usize,
     /// Emitted at the next line start, before any visible text.
     prefix: Option<String>,
+    /// Byte index in `text` where an open link's label begins.
+    link_label_start: Option<usize>,
 }
 
 impl Out {
@@ -85,6 +90,58 @@ impl Out {
     pub fn push_structural(&mut self, s: &str) {
         self.close_span();
         self.text.push_str(s);
+    }
+
+    /// Open a markdown link: `[`, remembering where the label starts.
+    pub fn open_link(&mut self) {
+        self.close_span();
+        self.text.push('[');
+        self.link_label_start = Some(self.text.len());
+    }
+
+    /// Close a markdown link with its target.
+    ///
+    /// If nothing but whitespace was written since `open_link`, the `[` is
+    /// taken back off and the bare url emitted instead — an empty `\fldrslt`
+    /// would otherwise produce `[](url)`.
+    pub fn close_link(&mut self, url: &str) {
+        self.close_span();
+        let Some(start) = self.link_label_start.take() else {
+            return;
+        };
+        if self.text[start..].trim().is_empty() {
+            self.text.truncate(start.saturating_sub(1));
+            self.text.push_str(url);
+        } else {
+            self.text.push_str("](");
+            self.text.push_str(url);
+            self.text.push(')');
+        }
+    }
+
+    /// Begin a markdown table row: `| ` at the start of a fresh line.
+    ///
+    /// A dedicated method rather than `set_line_prefix`, deliberately: the
+    /// prefix slot is shared with headings and `\listtext`, and a `\pard`
+    /// inside a cell can reach `clear_line_prefix`. A row opener must not be
+    /// clobberable that way.
+    pub fn open_row(&mut self) {
+        self.close_span();
+        self.prefix = None;
+        if !self.ends_with_newline() {
+            self.text.push('\n');
+        }
+        self.text.push_str("| ");
+    }
+
+    /// Write `s` as a line of its own.
+    pub fn push_line(&mut self, s: &str) {
+        self.close_span();
+        if !self.ends_with_newline() {
+            self.text.push('\n');
+        }
+        self.text.push_str(s);
+        self.text.push('\n');
     }
 
     /// End the current line. Any prefix queued for an empty paragraph is dropped.

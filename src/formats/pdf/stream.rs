@@ -112,7 +112,8 @@ struct Incremental {
 
 impl Incremental {
     fn open(bytes: &[u8]) -> Result<Incremental> {
-        let reader = parse::Reader::open(bytes, parse::Headings::PerPage).map_err(ChunkError::Parse)?;
+        let reader =
+            parse::Reader::open(bytes, parse::Headings::PerPage).map_err(ChunkError::Parse)?;
         let total_pages = reader.total_pages();
         Ok(Incremental {
             reader,
@@ -133,7 +134,11 @@ impl Incremental {
 
     /// Consume the buffered markdown, emitting whatever it completed.
     fn drain(&mut self, flush: bool) {
-        let cut = if flush { self.pending.len() } else { resume_point(&self.pending) };
+        let cut = if flush {
+            self.pending.len()
+        } else {
+            resume_point(&self.pending)
+        };
         if cut == 0 {
             return;
         }
@@ -154,7 +159,11 @@ impl Incremental {
                 self.builder.advance(block);
             }
         }
-        let finished = if flush { self.builder.finish() } else { self.builder.take() };
+        let finished = if flush {
+            self.builder.finish()
+        } else {
+            self.builder.take()
+        };
         for record in finished {
             if let Some(out) = self.merger.push(record, MIN_CHUNK_CHARS) {
                 self.emit(out);
@@ -169,7 +178,11 @@ impl Incremental {
 
     fn emit(&mut self, record: crate::formats::md::common::SpannedRecord) {
         let rec = pipeline::stamp(record, &self.metadata, None);
-        self.queue.push_back(Chunk::new(rec.content, rec.content_type.as_str(), rec.metadata));
+        self.queue.push_back(Chunk::new(
+            rec.content,
+            rec.content_type.as_str(),
+            rec.metadata,
+        ));
     }
 
     /// Read pages until at least one chunk is ready, or the document ends.
@@ -209,10 +222,16 @@ impl Incremental {
                         // stream that just ended would hide a scanned PDF.
                         // Nothing has been emitted, so this is still the first
                         // and only item the caller sees.
-                        return Some(Err(ChunkError::Parse(format!(
-                            "PDF contains no extractable text ({} page(s) scanned or image-only). OCR is not enabled; pass list_images to get one rendered image per page.",
-                            self.total_pages
-                        ))));
+                        // Same diagnosis as the batch path, from the same
+                        // function — this used to be a second copy of the
+                        // "scanned or image-only" message, so an encrypted PDF
+                        // was reported as encrypted in six modes and as a scan
+                        // in `default`.
+                        return Some(Err(super::diagnose(
+                            self.total_pages,
+                            self.reader.is_encrypted(),
+                            &self.reader.take_skipped(),
+                        )));
                     }
                     self.drain(true);
                 }
@@ -273,24 +292,42 @@ impl Iterator for PdfChunkStream {
 fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_DEPTH);
     std::thread::spawn(move || {
-        let mut work = match Incremental::open(&bytes) {
-            Ok(work) => work,
-            Err(error) => {
-                let _ = tx.send(Err(error));
-                return;
+        // The worker carries its own panic boundary. `dispatch`'s runs on the
+        // *caller's* thread and cannot see a spawned worker, so a panic here
+        // simply unwound, dropped `tx`, and turned `rx.recv().ok()` into a clean
+        // end-of-stream — mid-document, after the consumer had already taken
+        // correct chunks, with no error anywhere. Truncation that looks like
+        // completion (TECH_DEBT F7).
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut work = Incremental::open(&bytes)?;
+            // The bounded channel is what keeps this incremental in practice:
+            // the worker blocks once the consumer is CHANNEL_DEPTH chunks
+            // behind, so pages are read at the rate they are consumed rather
+            // than all at once.
+            while let Some(item) = work.pump() {
+                let failed = item.is_err();
+                if tx.send(item).is_err() || failed {
+                    break;
+                }
             }
-        };
-        // The bounded channel is what keeps this incremental in practice: the
-        // worker blocks once the consumer is CHANNEL_DEPTH chunks behind, so
-        // pages are read at the rate they are consumed rather than all at once.
-        while let Some(item) = work.pump() {
-            let failed = item.is_err();
-            if tx.send(item).is_err() || failed {
-                return;
+            Ok::<(), ChunkError>(())
+        }));
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = tx.send(Err(error));
+            }
+            Err(payload) => {
+                let msg = crate::error::panic_message(payload);
+                let _ = tx.send(Err(ChunkError::Parse(format!(
+                    "internal parser panic: {msg}"
+                ))));
             }
         }
     });
-    PdfChunkStream { backend: Backend::Threaded(rx) }
+    PdfChunkStream {
+        backend: Backend::Threaded(rx),
+    }
 }
 
 /// No threads on wasm, so the same work runs on the calling thread, one page
@@ -298,8 +335,12 @@ fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
 #[cfg(target_arch = "wasm32")]
 fn incremental(bytes: Vec<u8>) -> PdfChunkStream {
     match Incremental::open(&bytes) {
-        Ok(work) => PdfChunkStream { backend: Backend::Incremental(Box::new(work)) },
-        Err(error) => PdfChunkStream { backend: Backend::Failed(Some(error)) },
+        Ok(work) => PdfChunkStream {
+            backend: Backend::Incremental(Box::new(work)),
+        },
+        Err(error) => PdfChunkStream {
+            backend: Backend::Failed(Some(error)),
+        },
     }
 }
 
@@ -332,18 +373,30 @@ pub fn stream_from_bytes(
     #[cfg(not(target_arch = "wasm32"))]
     let backend = {
         let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_DEPTH);
-        std::thread::spawn(move || match work.run() {
-            Ok(chunks) => {
-                for chunk in chunks {
+        std::thread::spawn(move || {
+            // Same boundary as the incremental worker above, for the same
+            // reason: a panic on this thread is invisible to `dispatch`.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for chunk in work.run()? {
                     // A closed receiver means the consumer stopped early — an
                     // ordinary outcome, not a failure.
                     if tx.send(Ok(chunk)).is_err() {
-                        return;
+                        break;
                     }
                 }
-            }
-            Err(error) => {
-                let _ = tx.send(Err(error));
+                Ok::<(), ChunkError>(())
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = tx.send(Err(error));
+                }
+                Err(payload) => {
+                    let msg = crate::error::panic_message(payload);
+                    let _ = tx.send(Err(ChunkError::Parse(format!(
+                        "internal parser panic: {msg}"
+                    ))));
+                }
             }
         });
         Backend::Threaded(rx)
@@ -360,7 +413,9 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str) -> std::path::PathBuf {
-        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name].iter().collect()
+        [env!("CARGO_MANIFEST_DIR"), "..", "test_files", "pdf", name]
+            .iter()
+            .collect()
     }
 
     /// The whole point of [#87](TECH_DEBT.md), stated as a number.
@@ -377,13 +432,21 @@ mod tests {
         }
         let bytes = std::fs::read(&path).expect("read");
         let mut work = Incremental::open(&bytes).expect("open");
-        assert_eq!(work.reader.pages_rendered(), 0, "opening a stream must render nothing");
+        assert_eq!(
+            work.reader.pages_rendered(),
+            0,
+            "opening a stream must render nothing"
+        );
         assert_eq!(work.total_pages, 5_000, "fixture changed");
 
         let first = work.pump().expect("a chunk").expect("chunked");
         assert!(!first.content.is_empty());
         let pages = work.reader.pages_rendered();
-        assert!(pages < 10, "the first chunk cost {pages} pages of {}", work.total_pages);
+        assert!(
+            pages < 10,
+            "the first chunk cost {pages} pages of {}",
+            work.total_pages
+        );
     }
 
     /// A text-less PDF must still raise, and must not raise until it is certain

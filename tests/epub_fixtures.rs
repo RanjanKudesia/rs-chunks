@@ -8,16 +8,23 @@ use std::path::PathBuf;
 use chunks_rs::{get_chunks, get_chunks_from_bytes, get_markdown};
 
 fn fixtures() -> Vec<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("test_files").join("epub");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test_files")
+        .join("epub");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("epub"))
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("epub"))
                 == Some(true)
-                && std::fs::metadata(p).map(|m| m.len() < 20 * 1024 * 1024).unwrap_or(false)
+                && std::fs::metadata(p)
+                    .map(|m| m.len() < 20 * 1024 * 1024)
+                    .unwrap_or(false)
         })
         .collect();
     out.sort();
@@ -28,7 +35,11 @@ fn fixtures() -> Vec<PathBuf> {
 fn epub_corpus_chunks_cleanly() {
     let files = fixtures();
     // Guard: a missing corpus must fail loudly, not pass vacuously.
-    assert!(files.len() >= 5, "expected >= 5 .epub fixtures, found {}", files.len());
+    assert!(
+        files.len() >= 5,
+        "expected >= 5 .epub fixtures, found {}",
+        files.len()
+    );
 
     let mut ok = 0;
     let mut total_chunks = 0;
@@ -47,14 +58,25 @@ fn epub_corpus_chunks_cleanly() {
             Err(e) => assert!(!e.to_string().is_empty(), "empty error for {p}"),
         }
     }
-    assert!(ok * 2 >= files.len(), "only {ok}/{} .epub fixtures chunked Ok", files.len());
-    assert!(total_chunks > 0, "no chunks produced from the whole .epub corpus");
+    assert!(
+        ok * 2 >= files.len(),
+        "only {ok}/{} .epub fixtures chunked Ok",
+        files.len()
+    );
+    assert!(
+        total_chunks > 0,
+        "no chunks produced from the whole .epub corpus"
+    );
 }
 
 #[test]
 fn epub_markdown_and_bytes_roundtrip() {
     let files = fixtures();
-    assert!(files.len() >= 5, "expected >= 5 .epub fixtures, found {}", files.len());
+    assert!(
+        files.len() >= 5,
+        "expected >= 5 .epub fixtures, found {}",
+        files.len()
+    );
 
     let mut md_nonempty = 0;
     for path in files.iter().take(5) {
@@ -73,5 +95,8 @@ fn epub_markdown_and_bytes_roundtrip() {
             (a, b) => panic!("path/bytes disagree on success for {p}: {a:?} vs {b:?}"),
         }
     }
-    assert!(md_nonempty > 0, "no .epub fixture produced non-empty markdown");
+    assert!(
+        md_nonempty > 0,
+        "no .epub fixture produced non-empty markdown"
+    );
 }

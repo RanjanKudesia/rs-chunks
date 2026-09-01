@@ -35,7 +35,11 @@ pub fn parse(bytes: &[u8], enc: &'static Encoding) -> HeadingStyles {
 /// heading, and treating it as one would mark inline spans as headings.
 fn parse_style(def: &[u8], enc: &'static Encoding) -> Option<(i32, u8)> {
     let rest = def.strip_prefix(b"{\\s")?;
-    let digits: Vec<u8> = rest.iter().copied().take_while(u8::is_ascii_digit).collect();
+    let digits: Vec<u8> = rest
+        .iter()
+        .copied()
+        .take_while(u8::is_ascii_digit)
+        .collect();
     if digits.is_empty() {
         return None;
     }
@@ -82,7 +86,9 @@ fn heading_level_from_name(name: &str) -> Option<u8> {
         "見出し",
     ];
     let word = HEADING_WORDS.iter().find(|w| lower.starts_with(*w))?;
-    let rest = lower[word.len()..].trim_start_matches([' ', '-', '_']).trim();
+    let rest = lower[word.len()..]
+        .trim_start_matches([' ', '-', '_'])
+        .trim();
     if rest.is_empty() {
         return Some(1);
     }

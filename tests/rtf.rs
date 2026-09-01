@@ -42,7 +42,11 @@ fn fixtures() -> Vec<PathBuf> {
         })
         .collect();
     out.sort();
-    assert!(out.len() >= 10, "expected a real fixture corpus, got {}", out.len());
+    assert!(
+        out.len() >= 10,
+        "expected a real fixture corpus, got {}",
+        out.len()
+    );
     out
 }
 
@@ -107,11 +111,7 @@ fn emphasis_markers_never_wrap_whitespace_or_stand_empty() {
         let name = path.file_name().unwrap().to_string_lossy();
         for line in md.lines() {
             let runs = emphasis_runs(line);
-            assert_eq!(
-                runs.len() % 2,
-                0,
-                "unbalanced emphasis in {name}: {line}"
-            );
+            assert_eq!(runs.len() % 2, 0, "unbalanced emphasis in {name}: {line}");
             for pair in runs.chunks(2) {
                 let (open, open_len) = pair[0];
                 let (close, close_len) = pair[1];
@@ -246,7 +246,10 @@ fn a_nested_title_is_refused_rather_than_guessed() {
     // The Japanese fixture stores its title as a `\upr` pair whose ANSI copy is
     // `ゾ?ル?ゲ?`; returning nothing beats returning that.
     assert_eq!(doc("tika_testRTFJapanese.rtf").title, None);
-    assert_eq!(doc("tika_testRTF-ms932.rtf").title.as_deref(), Some("タイトル"));
+    assert_eq!(
+        doc("tika_testRTF-ms932.rtf").title.as_deref(),
+        Some("タイトル")
+    );
 }
 
 // ── every fixture still chunks in every mode ────────────────────────────────
@@ -259,9 +262,162 @@ fn all_modes_all_fixtures_well_formed() {
             let chunks = rtf::chunk(p, mode, 512, 50, 3, 3)
                 .unwrap_or_else(|e| panic!("{p} [{mode}] failed: {e}"));
             for c in &chunks {
-                assert!(!c.content_type.is_empty(), "{p} [{mode}] empty content_type");
-                assert!(c.metadata.is_object(), "{p} [{mode}] metadata not an object");
+                assert!(
+                    !c.content_type.is_empty(),
+                    "{p} [{mode}] empty content_type"
+                );
+                assert!(
+                    c.metadata.is_object(),
+                    "{p} [{mode}] metadata not an object"
+                );
             }
         }
     }
+}
+
+/// A file that is not RTF must fail, not return its bytes as text.
+///
+/// There was no `{\rtf` check at all, so the reader walked whatever it was
+/// given. Measured: a PNG renamed `.rtf` produced **one chunk of binary noise,
+/// reported as success**. Returning garbage that looks like content is worse
+/// than failing — a caller can handle an error but cannot detect this.
+#[test]
+fn a_file_that_is_not_rtf_is_rejected() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR binary data here",
+        ),
+        ("jpeg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01 more binary"),
+        (
+            "plain text",
+            b"This is just prose, not a rich text document at all.",
+        ),
+        ("html", b"<html><body><p>not rtf</p></body></html>"),
+        ("empty", b""),
+    ];
+    for (label, bytes) in cases {
+        let got = chunks_rs::formats::rtf::to_markdown_from_bytes(bytes);
+        let err = got.unwrap_or_else(|_| String::new());
+        assert!(
+            err.is_empty(),
+            "{label}: non-RTF input must not yield text, got {:?}",
+            &err[..err.len().min(60)]
+        );
+    }
+}
+
+/// Real RTF must be unaffected — including the leading BOM and whitespace the
+/// check deliberately tolerates.
+#[test]
+fn real_rtf_still_parses_with_a_bom_or_leading_whitespace() {
+    let body = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Times;}}\f0 Hello there, body text.\par}";
+    let plain =
+        chunks_rs::formats::rtf::to_markdown_from_bytes(body).expect("plain rtf must parse");
+    assert!(plain.contains("Hello there"), "lost the text: {plain:?}");
+
+    let mut bom = vec![0xEF, 0xBB, 0xBF];
+    bom.extend_from_slice(body);
+    let with_bom =
+        chunks_rs::formats::rtf::to_markdown_from_bytes(&bom).expect("a BOM must be tolerated");
+    assert_eq!(with_bom, plain, "the BOM changed the result");
+
+    let mut ws = b"\n\n   ".to_vec();
+    ws.extend_from_slice(body);
+    let with_ws = chunks_rs::formats::rtf::to_markdown_from_bytes(&ws)
+        .expect("leading whitespace must be tolerated");
+    assert_eq!(with_ws, plain, "leading whitespace changed the result");
+}
+
+/// `\binN` is followed by N **raw** bytes, which are neither text nor RTF.
+///
+/// They were walked as RTF, so a `{` or `}` among them pushed or popped the
+/// group stack and corrupted nesting for the rest of the file. No corpus
+/// fixture contains `\bin` — all picture data in the 16 real files is hex — so
+/// this was a latent landmine that only a synthetic input can pin.
+#[test]
+fn binary_picture_data_does_not_corrupt_group_nesting() {
+    // Two stray `{` inside the binary run: before the fix these opened groups
+    // that never closed, and every paragraph after the picture was lost.
+    let mut doc: Vec<u8> = Vec::new();
+    doc.extend_from_slice(br"{\rtf1\ansi\deff0 BEFORE\par ");
+    doc.extend_from_slice(br"{\pict\jpegblip\bin6 ");
+    doc.extend_from_slice(&[0x00, 0x7B, 0x7B, 0x01, 0x7D, 0x02]); // { { and }
+    doc.extend_from_slice(br"}");
+    doc.extend_from_slice(br"AFTER\par MORE TEXT\par}");
+
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(&doc)
+        .expect("a document with binary picture data must still parse");
+    assert!(
+        md.contains("BEFORE"),
+        "lost text before the picture: {md:?}"
+    );
+    assert!(
+        md.contains("AFTER") && md.contains("MORE TEXT"),
+        "binary data corrupted nesting and ate the rest: {md:?}"
+    );
+    for stray in ['\u{0}', '\u{1}', '\u{2}'] {
+        assert!(
+            !md.contains(stray),
+            "raw binary leaked into the text: {md:?}"
+        );
+    }
+}
+
+/// A `\bin` whose count overruns the buffer must clamp, not panic.
+#[test]
+fn an_overlong_bin_count_is_clamped() {
+    let doc = br"{\rtf1\ansi\deff0 BEFORE\par {\pict\jpegblip\bin999999 \x00}AFTER\par}";
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(doc)
+        .expect("an overlong \\bin must not panic");
+    assert!(md.contains("BEFORE"), "lost the leading text: {md:?}");
+}
+
+/// A hyperlink's target lives only in `\fldinst`, which sat in the blanket
+/// skip-destination list — so the anchor text survived and every URL was lost.
+/// `tika_testRTFHyperlink.rtf` carries 14 of them.
+#[test]
+fn hyperlink_targets_survive() {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("test_files/rtf/tika_testRTFHyperlink.rtf");
+    assert!(p.is_file(), "required fixture missing: {}", p.display());
+    let md = chunks_rs::formats::rtf::to_markdown(p.to_str().unwrap()).expect("must parse");
+
+    assert!(md.contains("http"), "no URL survived at all: {md:?}");
+    assert!(
+        md.contains("[frequently asked questions](http"),
+        "the anchor text is not linked to its target: {md:?}"
+    );
+    // The label must not be swallowed along with the instruction.
+    assert!(
+        !md.contains("HYPERLINK"),
+        "the field instruction leaked into the text: {md:?}"
+    );
+}
+
+/// A field that is not a HYPERLINK must stay invisible, and an empty result
+/// must not produce `[](url)`.
+#[test]
+fn other_field_types_stay_invisible() {
+    let page = br#"{\rtf1\ansi\deff0 Page {\field{\*\fldinst{PAGE}}{\fldrslt 7}} of 9\par}"#;
+    let md = chunks_rs::formats::rtf::to_markdown_from_bytes(page).expect("must parse");
+    assert!(md.contains("Page"), "lost the surrounding text: {md:?}");
+    assert!(!md.contains("PAGE"), "the instruction leaked: {md:?}");
+    assert!(
+        !md.contains("]("),
+        "a non-hyperlink field became a link: {md:?}"
+    );
+
+    let empty = br#"{\rtf1\ansi\deff0 See {\field{\*\fldinst{HYPERLINK "http://example.com"}}{\fldrslt }} now\par}"#;
+    let md2 = chunks_rs::formats::rtf::to_markdown_from_bytes(empty).expect("must parse");
+    assert!(
+        !md2.contains("[]("),
+        "an empty result produced an empty label: {md2:?}"
+    );
+    assert!(
+        md2.contains("http://example.com"),
+        "the bare url should stand in for an empty label: {md2:?}"
+    );
 }

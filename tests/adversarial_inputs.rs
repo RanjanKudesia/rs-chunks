@@ -31,14 +31,23 @@ fn garbage(len: usize, mut seed: u64) -> Vec<u8> {
 fn assert_no_panic(data: &[u8], filename: &str) {
     for mode in ["default", "semantic", "sentence", "sliding_window"] {
         if let Err(e) = get_chunks_from_bytes(data, filename, mode, 3, 1, 3, 15) {
-            assert!(!e.to_string().is_empty(), "empty error message for {filename} ({mode})");
+            assert!(
+                !e.to_string().is_empty(),
+                "empty error message for {filename} ({mode})"
+            );
         }
     }
     if let Err(e) = get_markdown_from_bytes(data, filename) {
-        assert!(!e.to_string().is_empty(), "empty markdown error message for {filename}");
+        assert!(
+            !e.to_string().is_empty(),
+            "empty markdown error message for {filename}"
+        );
     }
     if let Err(e) = get_chunks_with_images_from_bytes(data, filename, "default", 3, 1, 3, 15) {
-        assert!(!e.to_string().is_empty(), "empty images error message for {filename}");
+        assert!(
+            !e.to_string().is_empty(),
+            "empty images error message for {filename}"
+        );
     }
 }
 
@@ -96,8 +105,8 @@ fn mbox_garbage_fails_cleanly() {
 #[test]
 fn garbage_bytes_never_panic_any_family() {
     let all = [
-        "csv", "tsv", "md", "txt", "html", "json", "jsonl", "ndjson", "odt", "odp", "msg",
-        "ipynb", "rtf", "pdf", "epub", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "ods",
+        "csv", "tsv", "md", "txt", "html", "json", "jsonl", "ndjson", "odt", "odp", "msg", "ipynb",
+        "rtf", "pdf", "epub", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "ods",
     ];
     let junk = garbage(2048, 0xC0FFEE);
     for ext in all {

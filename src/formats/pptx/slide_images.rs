@@ -12,7 +12,6 @@ use super::archive::{read_zip_entry, resolve_relative_path, PptxArchive};
 /// Returns `None` for unsupported formats (.emf, .wmf, etc.).
 /// Returns `"<16hexchars>.<ext>"` for .png/.jpg/.jpeg/.gif/.webp.
 pub fn image_hash_name(bytes: &[u8], zip_path: &str) -> Option<String> {
-    
     let path = zip_path.to_ascii_lowercase();
     crate::image_naming::name_for_path(bytes, &path)
 }
@@ -64,7 +63,7 @@ fn extract_attr(chunk: &str, attr: &str) -> Option<String> {
     let end = rest.find('"')?;
     // Attribute values are escaped in the file; decode so a Target holding "&"
     // resolves to the real part name.
-    let val = crate::entities::decode_attr_value(rest[..end].as_bytes())
+    let val = crate::entities::decode_attr_value(&rest.as_bytes()[..end])
         .trim()
         .to_string();
     if val.is_empty() {
@@ -84,7 +83,9 @@ fn blip_embed_rid(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
         let ak = attr.key.as_ref().to_vec();
         let al: &[u8] = ak.rsplit(|b| *b == b':').next().unwrap_or(&ak);
         if al == b"embed" {
-            let rid = String::from_utf8_lossy(attr.value.as_ref()).trim().to_string();
+            let rid = String::from_utf8_lossy(attr.value.as_ref())
+                .trim()
+                .to_string();
             return if rid.is_empty() { None } else { Some(rid) };
         }
     }
@@ -257,7 +258,7 @@ pub fn collect_all_slide_images(
     archive: &mut PptxArchive,
     slide_names: &[(usize, String)],
     _total_slides: usize,
-    image_out: &mut Vec<(String, Vec<u8>)>,
+    image_out: &mut crate::chunk::ExtractedImages,
 ) -> Vec<SlideImageInfo> {
     let mut result = Vec::new();
 

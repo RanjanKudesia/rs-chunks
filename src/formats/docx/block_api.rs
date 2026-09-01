@@ -250,9 +250,129 @@ pub(super) fn parse_docx_blocks(bytes: &[u8]) -> Result<Vec<DocxBlock>, String> 
     let mut archive =
         ZipArchive::new(cursor).map_err(|e| format!("DOCX is not a valid zip archive: {e}"))?;
 
+    // Resolve the main part through the package relationship rather than
+    // guessing its name; `word/document.xml` is only Word's convention, and a
+    // package that names it otherwise is still spec-legal (see
+    // `resolve_main_part`).
+    let main_part = super::images_rels::resolve_main_part(&mut archive)
+        .unwrap_or_else(|| "word/document.xml".to_string());
     let mut document_xml_file = archive
-        .by_name("word/document.xml")
-        .map_err(|_| "word/document.xml not found in DOCX".to_string())?;
+        .by_name(&main_part)
+        .map_err(|_| format!("main document part '{main_part}' not found in DOCX"))?;
 
-    parse_document_xml_blocks_streaming(&mut document_xml_file)
+    let blocks = parse_document_xml_blocks_streaming(&mut document_xml_file)?;
+    drop(document_xml_file);
+    Ok(resolve_alt_chunks(&mut archive, &main_part, blocks))
+}
+
+/// Cap on one imported altChunk part, matching `MAX_DOCX_AUX_XML_BYTES`.
+const MAX_ALT_CHUNK_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Replace each `<w:altChunk>` placeholder with blocks from the part it names.
+///
+/// The imported part may be HTML, RTF, plain text or another DOCX (§17.17.2.1),
+/// so this reaches across to the engine's other readers rather than reimplementing
+/// them. A part that is missing, oversized or unreadable drops its placeholder —
+/// the same posture every other auxiliary part takes.
+///
+/// Not recursive: an imported DOCX is read for its text, but any altChunk *it*
+/// contains is left alone. Two packages can reference each other, and a depth
+/// counter threaded through the archive borrow buys little for a feature with
+/// zero real-corpus incidence.
+fn resolve_alt_chunks<R: std::io::Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    main_part: &str,
+    blocks: Vec<DocxBlock>,
+) -> Vec<DocxBlock> {
+    if !blocks.iter().any(|b| b.alt_chunk_rid.is_some()) {
+        return blocks;
+    }
+    // Relationships are part-relative: `word/document.xml` -> `word/_rels/document.xml.rels`.
+    let (dir, file) = match main_part.rsplit_once('/') {
+        Some((d, f)) => (d.to_string(), f.to_string()),
+        None => (String::new(), main_part.to_string()),
+    };
+    let rels_path = if dir.is_empty() {
+        format!("_rels/{file}.rels")
+    } else {
+        format!("{dir}/_rels/{file}.rels")
+    };
+    let rels = super::images_rels::parse_rels_targets(archive, &rels_path);
+
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let Some(rid) = block.alt_chunk_rid.clone() else {
+            out.push(block);
+            continue;
+        };
+        let Some(target) = rels.get(&rid) else {
+            continue;
+        };
+        let path = if dir.is_empty() {
+            target.clone()
+        } else {
+            format!("{dir}/{}", target.trim_start_matches("./"))
+        };
+        let Some(bytes) = read_capped(archive, &path, MAX_ALT_CHUNK_BYTES) else {
+            continue;
+        };
+        for text in imported_text(&path, &bytes) {
+            let mut b = block.clone();
+            b.alt_chunk_rid = None;
+            b.text = text;
+            out.push(b);
+        }
+    }
+    out
+}
+
+fn read_capped<R: std::io::Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    path: &str,
+    cap: u64,
+) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let f = archive.by_name(path).ok()?;
+    if f.size() > cap {
+        return None;
+    }
+    let mut buf = Vec::new();
+    f.take(cap).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// Convert an imported part to paragraphs, routed by extension.
+///
+/// `[Content_Types].xml` is the spec-correct discriminator, but the engine has
+/// no content-types reader and every producer names these parts by extension.
+fn imported_text(path: &str, bytes: &[u8]) -> Vec<String> {
+    let lower = path.to_ascii_lowercase();
+    let markdown = if lower.ends_with(".html")
+        || lower.ends_with(".htm")
+        || lower.ends_with(".xhtml")
+        || lower.ends_with(".mht")
+        || lower.ends_with(".mhtml")
+    {
+        crate::formats::html::to_markdown_from_bytes(bytes).ok()
+    } else if lower.ends_with(".rtf") || bytes.starts_with(b"{\\rtf") {
+        crate::formats::rtf::to_markdown_from_bytes(bytes).ok()
+    } else if bytes.starts_with(b"PK\x03\x04") {
+        // An imported DOCX: read its text, but do not follow its own altChunks.
+        parse_docx_blocks(bytes).ok().map(|bs| {
+            bs.into_iter()
+                .map(|b| b.text)
+                .filter(|t| !t.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+    } else {
+        Some(crate::text_encoding::decode_text(bytes).0)
+    };
+    markdown
+        .unwrap_or_default()
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }

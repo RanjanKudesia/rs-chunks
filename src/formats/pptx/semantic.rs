@@ -1,14 +1,13 @@
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
+use super::common::{
+    collect_slide_names, has_keyword_overlap, open_pptx, parse_presentation_sections,
+    read_all_slides, tokenize_keywords, ChunkRecordInput, ContentType, PptxArchive,
+};
 use crate::shared::{
     ci_starts_with, CAUSE_EFFECT_STARTS, CONTRAST_CONTINUATION, ELABORATION_STARTS, EXAMPLE_STARTS,
     REFERENCE_STARTS, SHORT_PARA_CHARS, TRANSITION_BREAKS,
-};
-use super::common::{
-    collect_slide_names, has_keyword_overlap, open_pptx,
-    parse_presentation_sections, read_all_slides, tokenize_keywords, ChunkRecordInput, ContentType,
-    PptxArchive,
 };
 
 const MAX_SEMANTIC_CHARS: usize = 1500;
@@ -116,8 +115,11 @@ impl SemAccum {
             }
             // Sort by (count desc, key asc) for determinism when counts are tied.
             let mut reason_vec: Vec<(&'static str, usize)> = counts.into_iter().collect();
-            reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            let p = reason_vec.first().map(|(k, _)| *k).unwrap_or("keyword_overlap");
+            reason_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let p = reason_vec
+                .first()
+                .map(|(k, _)| *k)
+                .unwrap_or("keyword_overlap");
             (p, self.merge_reasons)
         };
         ChunkRecordInput {
@@ -327,7 +329,7 @@ mod tests {
             .compression_method(zip::CompressionMethod::Stored);
         for (i, (title, body)) in slides.iter().enumerate() {
             let path = format!("ppt/slides/slide{}.xml", i + 1);
-            zip.start_file(path, opts.clone()).unwrap();
+            zip.start_file(path, opts).unwrap();
             zip.write_all(slide_xml(title, body).as_bytes()).unwrap();
         }
         zip.finish().unwrap().into_inner()

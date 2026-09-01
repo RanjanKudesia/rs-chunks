@@ -17,9 +17,16 @@ pub(crate) fn delimiter_byte(
     match delimiter {
         Some(byte) => Ok(byte),
         None => {
-            let first_line = first_data_line_of(data, encoding)?
-                .ok_or_else(|| "CSV file is empty".to_string())?;
-            Ok(detect_delimiter(&first_line))
+            // No data line to sniff (empty, or comments only). Nothing to
+            // detect and nothing to chunk, so default to comma and let the
+            // empty row set produce `[]` (TECH_DEBT T6). This used to raise
+            // "CSV file is empty" — a *delimiter-detection* failure wearing an
+            // emptiness message, which is why `.csv` and `.tsv` disagreed:
+            // `.tsv` supplies `Some(b'\t')` and never reached this arm at all.
+            match first_data_line_of(data, encoding)? {
+                Some(line) => Ok(detect_delimiter(&line)),
+                None => Ok(b','),
+            }
         }
     }
 }
@@ -148,20 +155,47 @@ pub(crate) fn read_header_with_lookahead<R: std::io::Read>(
     Ok(Some((headers, has_header, lookahead)))
 }
 
+/// A parsed delimited file: the header cells, the data rows, the delimiter byte
+/// actually used (which may have been sniffed), and whether the first record was
+/// treated as a header.
+pub(crate) type ParsedCsv = (Vec<String>, Vec<Vec<String>>, u8, bool);
+
 pub(crate) fn parse_csv_to_rows(
     data: &[u8],
     delimiter: Option<u8>,
     encoding: &str,
     skip_empty_rows: bool,
-) -> Result<(Vec<String>, Vec<Vec<String>>, u8, bool), String> {
-    let delimiter = delimiter_byte(delimiter, data, encoding)?;
+) -> Result<ParsedCsv, String> {
     let text = decode_to_utf8(data, encoding)?;
+
+    // Empty input is not a failure. A blank or whitespace-only document parsed
+    // perfectly well; it simply has nothing to chunk, so it returns `[]` like
+    // docx/ppt/xlsx always have (TECH_DEBT T6). Reserving errors for genuine
+    // parse failures is also what lets `epub::extract` stop swallowing them.
+    //
+    // This must precede delimiter detection. `.csv` passes `None` and the
+    // auto-detect raised; `.tsv` passes `Some(b'\t')` and skipped the check, so
+    // identical bytes gave an error for one extension and a chunk for the
+    // other. Guarding on the decoded text settles both, and stops a
+    // whitespace-only line being resurrected as a header row below.
+    if text.trim().is_empty() {
+        return Ok((Vec::new(), Vec::new(), delimiter.unwrap_or(b','), false));
+    }
+
+    let delimiter = delimiter_byte(delimiter, data, encoding)?;
     let mut reader = ReaderBuilder::new()
         .delimiter(delimiter)
         .trim(Trim::None)
         .flexible(true)
         .has_headers(false)
-        .comment(Some(b'#'))
+        // No `.comment(...)`: RFC 4180 defines no comment convention, and neither
+        // does the `text/tab-separated-values` registration. `#` is ordinary
+        // TEXTDATA. Treating a leading `#` as a comment silently DELETED whole
+        // records — measured, a row `#4,legacy sku,archived` vanished with no
+        // error and no metadata trace, while the same character mid-field
+        // survived. Any file whose first column holds issue numbers, SKUs, hex
+        // colours or hashtags lost exactly those rows. A `#` preamble now
+        // arrives as data, which is the honest reading: it IS in the file.
         .from_reader(text.as_bytes());
 
     let mut records = reader.records();
@@ -171,7 +205,10 @@ pub(crate) fn parse_csv_to_rows(
         None => return Ok((Vec::new(), Vec::new(), delimiter, false)),
     };
 
-    let mut headers: Vec<String> = header_record.iter().map(|value| value.to_string()).collect();
+    let mut headers: Vec<String> = header_record
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
     let mut data_rows: Vec<Vec<String>> = Vec::new();
     let mut max_width = headers.len();
 
@@ -196,7 +233,9 @@ pub(crate) fn parse_csv_to_rows(
     let sniff = &data_rows[..data_rows.len().min(HEADER_SNIFF_ROWS)];
     let has_header = first_row_is_header(&headers, sniff);
     if !has_header {
-        let width = headers.len().max(sniff.iter().map(Vec::len).max().unwrap_or(0));
+        let width = headers
+            .len()
+            .max(sniff.iter().map(Vec::len).max().unwrap_or(0));
         data_rows.insert(0, std::mem::take(&mut headers));
         headers = synthetic_headers(width);
     }

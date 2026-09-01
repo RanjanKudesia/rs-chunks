@@ -81,7 +81,9 @@ fn read_field_value(bytes: &[u8], start: usize, enc: &'static Encoding) -> Optio
                     i += 4;
                     continue;
                 } else if nx == b'u'
-                    && bytes.get(i + 2).is_some_and(|c| c.is_ascii_digit() || *c == b'-')
+                    && bytes
+                        .get(i + 2)
+                        .is_some_and(|c| c.is_ascii_digit() || *c == b'-')
                 {
                     flush(&mut raw, &mut out);
                     let mut k = i + 2;

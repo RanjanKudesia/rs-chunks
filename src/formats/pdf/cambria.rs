@@ -114,17 +114,17 @@ const CAMBRIA: &[(u16, char, Option<u16>)] = &[
     (154, 'x', Some(483)),
     (155, 'y', Some(504)),
     (156, 'z', Some(455)),
-    (428, '&', Some(688)),  // "Lee, Kozar, & Larsen, 2003"
+    (428, '&', Some(688)), // "Lee, Kozar, & Larsen, 2003"
     (481, ',', Some(205)),
-    (482, ';', Some(264)),  // "its propositions and possible limitations; 2)"
-    (483, ':', Some(264)),  // "Figure 1: Conceptual model for technology acceptance"
+    (482, ';', Some(264)), // "its propositions and possible limitations; 2)"
+    (483, ':', Some(264)), // "Figure 1: Conceptual model for technology acceptance"
     (484, '.', Some(205)),
-    (486, '-', Some(332)),  // "self-efficacy", "meta-analysis", "job-related"
-    (491, '?', Some(422)),  // "Why Do People Use Information Technology?"
+    (486, '-', Some(332)), // "self-efficacy", "meta-analysis", "job-related"
+    (491, '?', Some(422)), // "Why Do People Use Information Technology?"
     (495, '\u{2019}', Some(221)), // "the 1970's", "one's intention to perform"
     (498, '\u{201C}', Some(375)), // labelled "neutral", as shown below
     (499, '\u{201D}', Some(375)),
-    (512, '/', Some(490)),  // "she/he", "adopting/using", "5/6"
+    (512, '/', Some(490)),        // "she/he", "adopting/using", "5/6"
     (514, '\u{2013}', Some(500)), // en dash, in the reference list's page ranges
     (523, '(', Some(382)),
     (524, ')', Some(382)),
@@ -138,7 +138,7 @@ const CAMBRIA: &[(u16, char, Option<u16>)] = &[
     (889, '7', Some(554)),
     (890, '8', Some(554)),
     (891, '9', Some(554)),
-    (938, '+', Some(554)),  // the Theory of Reasoned Action's identity, BI = A + SN
+    (938, '+', Some(554)), // the Theory of Reasoned Action's identity, BI = A + SN
     (945, '=', Some(554)),
 ];
 
@@ -174,7 +174,9 @@ pub(super) fn resolve(
     let mut resolved = Vec::with_capacity(bare.len());
     let mut checked = 0usize;
     for &(code, gid) in bare {
-        let Some((ch, reference)) = lookup(gid) else { continue };
+        let Some((ch, reference)) = lookup(gid) else {
+            continue;
+        };
         if let (Some(reference), Some(width)) = (reference, declared.get(&(code as u32))) {
             if (thousandths(*width) - i32::from(reference)).abs() > WIDTH_TOLERANCE {
                 return None;
@@ -191,7 +193,9 @@ pub(super) fn resolve(
 /// evidence for either, so they are left alone rather than mapped on a guess.
 fn is_regular_face(base_font: &str) -> bool {
     // `EMMOLK+Cambria` — a subset tag is six uppercase letters and a `+`.
-    let name = base_font.split_once('+').map_or(base_font, |(_, rest)| rest);
+    let name = base_font
+        .split_once('+')
+        .map_or(base_font, |(_, rest)| rest);
     name.eq_ignore_ascii_case("Cambria")
 }
 
@@ -217,7 +221,10 @@ mod tests {
     /// the width fingerprint says it is.
     #[test]
     fn the_table_is_sorted_and_its_alphabet_runs_are_complete() {
-        assert!(CAMBRIA.windows(2).all(|w| w[0].0 < w[1].0), "table must stay sorted for lookup");
+        assert!(
+            CAMBRIA.windows(2).all(|w| w[0].0 < w[1].0),
+            "table must stay sorted for lookup"
+        );
         for (base, first, last) in [(4u16, 'A', 'Z'), (131, 'a', 'z'), (882, '0', '9')] {
             let span = u16::from(u8::try_from(last as u32 - first as u32).unwrap());
             for offset in 0..=span {
@@ -237,7 +244,11 @@ mod tests {
     }
 
     fn tam_bare() -> Vec<(usize, u16)> {
-        CAMBRIA.iter().enumerate().map(|(i, (gid, _, _))| (i, *gid)).collect()
+        CAMBRIA
+            .iter()
+            .enumerate()
+            .map(|(i, (gid, _, _))| (i, *gid))
+            .collect()
     }
 
     #[test]
@@ -248,7 +259,10 @@ mod tests {
         // Every code got the character its GID names, not a shifted one.
         for (code, gid) in &bare {
             let want = lookup(*gid).map(|(c, _)| c);
-            assert_eq!(resolved.iter().find(|(c, _)| c == code).map(|(_, c)| *c), want);
+            assert_eq!(
+                resolved.iter().find(|(c, _)| c == code).map(|(_, c)| *c),
+                want
+            );
         }
     }
 
@@ -269,8 +283,14 @@ mod tests {
 
     #[test]
     fn another_face_and_too_small_a_sample_are_both_refused() {
-        assert_eq!(resolve("EMMONL+Cambria-Bold", &tam_bare(), &tam_widths()), None);
-        assert_eq!(resolve("EMMPCK+Cambria-Italic", &tam_bare(), &tam_widths()), None);
+        assert_eq!(
+            resolve("EMMONL+Cambria-Bold", &tam_bare(), &tam_widths()),
+            None
+        );
+        assert_eq!(
+            resolve("EMMPCK+Cambria-Italic", &tam_bare(), &tam_widths()),
+            None
+        );
         assert_eq!(resolve("ABCDEF+Calibri", &tam_bare(), &tam_widths()), None);
         // Cambria-Bold's actual shape: two bare names, nothing to check against.
         let two = vec![(2usize, 3u16), (3, 486)];

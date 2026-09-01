@@ -10,6 +10,7 @@ use crate::entities::read_event_folding_entities;
 use super::block_model::{DocxBlock, DocxBlockKind};
 use super::harvest::{harvest_blip_embed, harvest_image_alt, harvest_note_id};
 use super::table_render::{render_table_inline, render_table_markdown, TableState};
+use super::sym_table::sym_lookup;
 use super::xml_text::{push_text, qname_eq};
 
 /// Returns true when the paragraph style name indicates a list item without
@@ -28,7 +29,34 @@ fn is_list_style(style: &str) -> bool {
     false
 }
 
-pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Result<Vec<DocxBlock>, String> {
+/// A body-level `<w:altChunk>` placeholder, resolved later in
+/// `parse_docx_blocks` (which, unlike this walker, holds the archive).
+fn alt_chunk_placeholder(rid: String) -> DocxBlock {
+    DocxBlock {
+        kind: DocxBlockKind::Paragraph,
+        text: String::new(),
+        has_drawing: false,
+        is_list: false,
+        list_level: 0,
+        heading_style: None,
+        outline_level: None,
+        page_break: false,
+        section_break: false,
+        rendered_page_break: false,
+        image_alt: None,
+        image_rid: None,
+        images: Vec::new(),
+        footnote_refs: Vec::new(),
+        endnote_refs: Vec::new(),
+        num_id: None,
+        hyperlinks: Vec::new(),
+        alt_chunk_rid: Some(rid),
+    }
+}
+
+pub(super) fn parse_document_xml_blocks_streaming<R: Read>(
+    reader_src: R,
+) -> Result<Vec<DocxBlock>, String> {
     let mut reader = Reader::from_reader(BufReader::new(reader_src));
 
     let mut buf = Vec::new();
@@ -68,6 +96,13 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
     // drawing (those local names also appear in shape XML elsewhere).
     let mut drawing_depth: u32 = 0;
     let mut in_run = false;
+    // Depth inside `<w:rt>`, the phonetic-reading half of a ruby annotation
+    // (ECMA-376 §17.3.3.25). Its `<w:r><w:t>` looks exactly like ordinary run
+    // content to this walker, so the reading was emitted as body text *ahead of*
+    // the word it annotates: `<w:ruby>` over 漢字 yielded "ふりがな 漢字". That is
+    // corrupted output, not missing output — the base text is what the document
+    // says, and the reading is a gloss on it.
+    let mut ruby_rt_depth: usize = 0;
     let mut in_rpr = false;
     let mut cur_bold = false;
     let mut cur_italic = false;
@@ -311,6 +346,8 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                             break;
                         }
                     }
+                } else if qname_eq(name, b"rt") {
+                    ruby_rt_depth += 1;
                 } else if qname_eq(name, b"t") {
                     in_text = true;
                     wt_buf.clear();
@@ -318,8 +355,108 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
             }
             Ok(Event::Empty(e)) => {
                 let name = e.name();
-                if qname_eq(name, b"numPr") && in_paragraph {
+                if qname_eq(name, b"altChunk") {
+                    // A body-level sibling of `<w:p>`; the walker only emits a
+                    // block at `</w:p>` or `</w:tbl>`, so this produced nothing
+                    // at all. Only at body level for now — an altChunk inside a
+                    // table cell is legal but vanishingly rare, and splicing
+                    // into a cell needs different handling.
+                    if table_stack.is_empty() && !in_paragraph {
+                        for attr in e.attributes().flatten() {
+                            if qname_eq(attr.key, b"id") {
+                                let rid = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                                if !rid.is_empty() {
+                                    blocks.push(alt_chunk_placeholder(rid));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } else if qname_eq(name, b"numPr") && in_paragraph {
                     para_is_list = true;
+                } else if qname_eq(name, b"tab") && !in_rpr && ruby_rt_depth == 0 {
+                    // A RUN-content tab (`<w:r><w:tab/></w:r>`). The tab-stop
+                    // DEFINITION in `w:pPr/w:tabs` shares the element name but
+                    // carries `w:val`/`w:pos` attributes — it is layout, not
+                    // text, and must not emit a character.
+                    //
+                    // Before this arm existed a tab produced NOTHING: 171 tabs
+                    // in one .dotm and 283 in one .docx each became zero
+                    // characters, fusing `column1<tab>Mid` into `column1Mid`
+                    // and flattening an 88-row tab-delimited table into prose.
+                    //
+                    // Rendering rule (research-settled, see the review
+                    // register X4): a MID-LINE tab is inert in GFM and is
+                    // emitted literally, preserving tab-delimited structure.
+                    // A tab while the accumulator is still empty is in the
+                    // line's leading-whitespace run, where any tab (or 4
+                    // columns of spaces) turns the line into indented code —
+                    // so leading tabs are dropped, which the paragraph-edge
+                    // trim would do anyway.
+                    let is_tab_stop = e
+                        .attributes()
+                        .flatten()
+                        .any(|a| qname_eq(a.key, b"pos") || qname_eq(a.key, b"val"));
+                    if !is_tab_stop {
+                        // Unconditionally: producers put tabs in their OWN
+                        // runs, so "is the accumulator empty" tests run-start,
+                        // not line-start. Line-edge tabs are trimmed at every
+                        // flush (paragraph, br sub-segment), which is what
+                        // keeps the GFM hazard closed.
+                        let target = if let Some(top) = table_stack.last_mut() {
+                            top.in_cell.then_some(&mut top.current_cell)
+                        } else if in_paragraph {
+                            Some(if in_run { &mut cur_run_text } else { &mut para_text })
+                        } else {
+                            None
+                        };
+                        if let Some(t) = target {
+                            t.push('\t');
+                        }
+                    }
+                } else if qname_eq(name, b"sym") && ruby_rt_depth == 0 {
+                    // `<w:sym w:font="Wingdings" w:char="F04A"/>` — a glyph
+                    // from a symbol font. Previously ignored entirely, so a
+                    // Wingdings check mark or smiley simply vanished (F9).
+                    // ISO/IEC 29500-1: the character code is the low octet;
+                    // producers write both the `F0xx` PUA form and the bare
+                    // form, so both are accepted. An unmapped glyph emits
+                    // NOTHING — a wrong character is worse than a dropped one
+                    // (the table generator's contract, see sym_table.rs).
+                    let (mut font, mut chr) = (None, None);
+                    for a in e.attributes().flatten() {
+                        if qname_eq(a.key, b"font") {
+                            font = Some(String::from_utf8_lossy(a.value.as_ref()).to_string());
+                        } else if qname_eq(a.key, b"char") {
+                            chr = Some(String::from_utf8_lossy(a.value.as_ref()).to_string());
+                        }
+                    }
+                    if let (Some(font), Some(chr)) = (font, chr) {
+                        if let Ok(v) = u32::from_str_radix(chr.trim(), 16) {
+                            let code = if (0xF000..=0xF0FF).contains(&v) {
+                                Some((v - 0xF000) as u8)
+                            } else {
+                                u8::try_from(v).ok()
+                            };
+                            if let Some(ch) = code.and_then(|c| sym_lookup(&font, c)) {
+                                let text = ch.to_string();
+                                if let Some(top) = table_stack.last_mut() {
+                                    if top.in_cell {
+                                        push_text(&mut top.current_cell, &text);
+                                    }
+                                } else if in_paragraph {
+                                    if in_run {
+                                        push_text(&mut cur_run_text, &text);
+                                    } else {
+                                        push_text(&mut para_text, &text);
+                                    }
+                                    if in_hyperlink {
+                                        push_text(&mut hyperlink_text, &text);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if qname_eq(name, b"tblHeader") {
                     if let Some(top) = table_stack.last_mut() {
                         if top.in_tr_pr {
@@ -494,9 +631,22 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
             }
             Ok(Event::End(e)) => {
                 let name = e.name();
-                if qname_eq(name, b"t") {
+                if qname_eq(name, b"rt") {
+                    ruby_rt_depth = ruby_rt_depth.saturating_sub(1);
+                } else if qname_eq(name, b"t") {
                     in_text = false;
+                    // Always taken, so `wt_buf` is cleared for the next run —
+                    // then discarded inside `<w:rt>`, keeping `<w:rubyBase>`,
+                    // which is the actual word. `push_text` ignores an empty
+                    // piece, so every routing branch below is a no-op for it.
+                    // (Not `continue`: that would skip this loop's `buf.clear()`
+                    // and let quick-xml's buffer grow for the whole document.)
                     let txt = std::mem::take(&mut wt_buf);
+                    let txt = if ruby_rt_depth > 0 {
+                        String::new()
+                    } else {
+                        txt
+                    };
                     if let Some(top) = table_stack.last_mut() {
                         if top.in_cell {
                             push_text(&mut top.current_cell, &txt);
@@ -536,11 +686,17 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                     in_rpr = false;
                 } else if qname_eq(name, b"r") && in_paragraph {
                     if !cur_run_text.is_empty() {
-                        let formatted = match (cur_bold, cur_italic) {
+                        // A whitespace-only run (a lone tab) must not be
+                        // emphasis-wrapped: `**\t**` is literal asterisks.
+                        let formatted = if cur_run_text.trim().is_empty() {
+                            cur_run_text.clone()
+                        } else {
+                            match (cur_bold, cur_italic) {
                             (true, true) => format!("***{}***", cur_run_text),
                             (true, false) => format!("**{}**", cur_run_text),
                             (false, true) => format!("*{}*", cur_run_text),
                             (false, false) => cur_run_text.clone(),
+                            }
                         };
                         push_text(&mut para_text, &formatted);
                     }
@@ -633,6 +789,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                                     endnote_refs: Vec::new(),
                                     num_id: None,
                                     hyperlinks: Vec::new(),
+                                    alt_chunk_rid: None,
                                 });
                             }
                         }
@@ -659,11 +816,12 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                                 rendered_page_break: para_has_rendered_break,
                                 image_alt: para_image_alt.take(),
                                 image_rid: para_image_rid.take(),
-                            images: std::mem::take(&mut para_images),
+                                images: std::mem::take(&mut para_images),
                                 footnote_refs: std::mem::take(&mut para_footnote_refs),
                                 endnote_refs: std::mem::take(&mut para_endnote_refs),
                                 num_id: para_num_id,
                                 hyperlinks: std::mem::take(&mut para_hyperlinks),
+                                alt_chunk_rid: None,
                             });
                         } else {
                             // Paragraph had soft line breaks — emit one block per segment.
@@ -709,6 +867,7 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                                     } else {
                                         Vec::new()
                                     },
+                                    alt_chunk_rid: None,
                                 });
                             }
                             // Clear shared fields after all sub-blocks are emitted.
@@ -750,20 +909,16 @@ pub(super) fn parse_document_xml_blocks_streaming<R: Read>(reader_src: R) -> Res
                     }
                 }
             }
-            Ok(Event::Text(t)) => {
-                if in_text {
-                    let txt = match t.decode() {
-                        Ok(v) => v.into_owned(),
-                        Err(_) => String::new(),
-                    };
-                    wt_buf.push_str(&txt);
-                }
+            Ok(Event::Text(t)) if in_text => {
+                let txt = match t.decode() {
+                    Ok(v) => v.into_owned(),
+                    Err(_) => String::new(),
+                };
+                wt_buf.push_str(&txt);
             }
-            Ok(Event::CData(t)) => {
-                if in_text {
-                    let txt = String::from_utf8_lossy(t.as_ref());
-                    wt_buf.push_str(&txt);
-                }
+            Ok(Event::CData(t)) if in_text => {
+                let txt = String::from_utf8_lossy(t.as_ref());
+                wt_buf.push_str(&txt);
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("Failed to parse word/document.xml stream: {e}")),

@@ -36,9 +36,16 @@ pub fn stream(
     sentences_per_chunk: usize,
     paragraphs_per_page: usize,
 ) -> Result<impl Iterator<Item = Result<Chunk>>> {
-    Ok(chunk(file_path, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)?
-        .into_iter()
-        .map(Ok))
+    Ok(chunk(
+        file_path,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )?
+    .into_iter()
+    .map(Ok))
 }
 
 /// Map the internal record type onto the public [`Chunk`].
@@ -72,7 +79,9 @@ pub(crate) fn build_records_from_bytes(
         "semantic" => semantic::build_semantic_chunks(bytes),
         "sentence" => sentence::build_sentence_chunks(bytes, sentences_per_chunk),
         "page_aware" => page_aware::build_page_aware_chunks(bytes, paragraphs_per_page),
-        "sliding_window" => sliding_window::build_sliding_window_chunks(bytes, window_size, overlap),
+        "sliding_window" => {
+            sliding_window::build_sliding_window_chunks(bytes, window_size, overlap)
+        }
         other => return Err(ChunkError::InvalidArg(format!("Unknown MD mode: {other}"))),
     };
     res.map_err(ChunkError::Parse)
@@ -104,7 +113,14 @@ pub fn chunk(
         )));
     }
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    chunk_from_bytes(&bytes, mode, window_size, overlap, sentences_per_chunk, paragraphs_per_page)
+    chunk_from_bytes(
+        &bytes,
+        mode,
+        window_size,
+        overlap,
+        sentences_per_chunk,
+        paragraphs_per_page,
+    )
 }
 
 /// No-filesystem entry: chunk Markdown from raw bytes (used by the wasm/browser
@@ -131,16 +147,23 @@ pub fn chunk_from_bytes(
         paragraphs_per_page,
     )?;
     // A `.md` file has no records to point at, so the spans are dropped here.
-    Ok(records_to_chunks(records.into_iter().map(|s| s.record).collect()))
+    Ok(records_to_chunks(
+        records.into_iter().map(|s| s.record).collect(),
+    ))
 }
 
 /// No-filesystem Markdown passthrough (a `.md` document is already Markdown).
 pub fn to_markdown_from_bytes(bytes: &[u8]) -> Result<String> {
-    // Normalised for the same reason `get_chunks` is: `get_markdown` and
-    // `get_chunks` must decode a document identically (TECH_DEBT #75, #89).
-    String::from_utf8(bytes.to_vec())
-        .map(crate::text_encoding::normalize_newlines)
-        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    // Decoded, not validated. `get_markdown` and `get_chunks` must decode a
+    // document identically (TECH_DEBT #75, #89, C7) and they did not: this
+    // hard-errored with "MD not valid UTF-8" on cp1252 bytes while the six
+    // chunk strategies decoded them lossily into U+FFFD. One document, two
+    // answers, neither of them the text.
+    //
+    // Markdown has no in-band encoding declaration, so unlike HTML there is
+    // nothing extra to consult — it is exactly the `.txt` ladder: BOM, UTF-16
+    // sniff, valid UTF-8, then cp1252. Never a hard error, never U+FFFD.
+    Ok(common::decode_body(bytes))
 }
 
 /// Dispatch-layer entry: map a unified [`ChunkOptions`] onto MD's strategies.
@@ -178,7 +201,7 @@ pub fn to_markdown(file_path: &str) -> Result<String> {
         )));
     }
     let bytes = fs::read(file_path).map_err(ChunkError::Io)?;
-    String::from_utf8(bytes)
-        .map(crate::text_encoding::normalize_newlines)
-        .map_err(|e| ChunkError::Parse(format!("MD not valid UTF-8: {e}")))
+    // Delegate rather than repeat the decode, so the path and bytes entry
+    // points cannot drift apart again — which is how they came to disagree.
+    to_markdown_from_bytes(&bytes)
 }

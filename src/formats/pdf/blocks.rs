@@ -8,9 +8,9 @@
 //! full width of its column, so the region cut in [`super::regions`] leaves it
 //! whole; a run of such lines whose gaps line up is a table.
 
-use super::lines::{Line, Span};
 #[cfg(test)]
 use super::lines::Segment;
+use super::lines::{Line, Span};
 
 /// A line must be this much larger than body text to count as a heading. Small
 /// enough to catch a 11 pt head over 10 pt body, large enough that the optical
@@ -58,7 +58,10 @@ impl Style {
             if n == 0 || line.size <= 0.0 {
                 continue;
             }
-            match weights.iter_mut().find(|(s, _)| (*s - line.size).abs() < SIZE_EPSILON) {
+            match weights
+                .iter_mut()
+                .find(|(s, _)| (*s - line.size).abs() < SIZE_EPSILON)
+            {
                 Some((_, count)) => *count += n,
                 None => weights.push((line.size, n)),
             }
@@ -93,7 +96,10 @@ impl Style {
 
     /// The heading level a size maps to, or `None` for body text.
     pub fn level(&self, size: f32) -> Option<u8> {
-        let rank = self.headings.iter().position(|h| (h - size).abs() < SIZE_EPSILON)?;
+        let rank = self
+            .headings
+            .iter()
+            .position(|h| (h - size).abs() < SIZE_EPSILON)?;
         Some((rank as u8 + 1).min(MAX_LEVEL))
     }
 }
@@ -103,12 +109,17 @@ pub(crate) fn build(lines: &[Line], style: &Style) -> Vec<Block> {
     // The measure is the region's, not the running block's: a paragraph ends
     // where a line falls short of the *column*, and its own first line may
     // already be that short line.
-    let measure = lines.iter().map(|l| l.right).fold(f32::NEG_INFINITY, f32::max);
+    let measure = lines
+        .iter()
+        .map(|l| l.right)
+        .fold(f32::NEG_INFINITY, f32::max);
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         if let Some(end) = table_end(lines, i) {
-            out.push(Block::Table { rows: rows_of(&lines[i..end]) });
+            out.push(Block::Table {
+                rows: rows_of(&lines[i..end]),
+            });
             i = end;
             continue;
         }
@@ -142,7 +153,10 @@ fn columns_of(lines: &[Line]) -> Vec<f32> {
     let tolerance = COLUMN_TOLERANCE_EMS * median_size(lines);
     let mut clusters: Vec<(f32, usize)> = Vec::new();
     for segment in lines.iter().flat_map(|l| l.segments.iter()) {
-        match clusters.iter_mut().find(|(x, _)| (*x - segment.left).abs() <= tolerance) {
+        match clusters
+            .iter_mut()
+            .find(|(x, _)| (*x - segment.left).abs() <= tolerance)
+        {
             Some((_, count)) => *count += 1,
             None => clusters.push((segment.left, 1)),
         }
@@ -229,7 +243,11 @@ fn prose(lines: &[Line], style: &Style, measure: f32) -> Block {
     // thing in its own reading frame, so without this it outranks the paper.
     let upright = lines[0].turn == 0;
     let level = upright
-        .then(|| style.level(lines[0].size).or_else(|| bold_heading_level(lines, style, measure)))
+        .then(|| {
+            style
+                .level(lines[0].size)
+                .or_else(|| bold_heading_level(lines, style, measure))
+        })
         .flatten();
     let mut spans = join(lines);
     if let Some(level) = level {
@@ -332,7 +350,8 @@ fn marker_of(text: &str) -> Option<String> {
     let trimmed = text.trim_start();
     let mut chars = trimmed.chars();
     let first = chars.next()?;
-    if "•◦▪‣●∙⁃*-–—".contains(first) && chars.next().is_some_and(char::is_whitespace) {
+    if "•◦▪‣●∙⁃*-–—".contains(first) && chars.next().is_some_and(char::is_whitespace)
+    {
         return Some("-".to_string());
     }
     // `1.` / `1)` / `a.` / `a)`, but not `3.1` — a numbered section heading.
@@ -356,7 +375,9 @@ fn marker_of(text: &str) -> Option<String> {
 
 /// Drop the source marker and the whitespace after it from the item's text.
 fn strip_marker(spans: &mut Vec<Span>, _marker_len: usize) {
-    let Some(first) = spans.first_mut() else { return };
+    let Some(first) = spans.first_mut() else {
+        return;
+    };
     let trimmed = first.text.trim_start();
     let rest = match trimmed.split_once([' ', '\t']) {
         Some((_, rest)) => rest.trim_start().to_string(),
@@ -382,10 +403,19 @@ pub(crate) fn test_line(text: &str, baseline: f32, left: f32, right: f32, size: 
         .split("  ")
         .filter(|s| !s.trim().is_empty())
         .enumerate()
-        .map(|(i, s)| Segment { text: s.trim().into(), left: left + i as f32 * 100.0, right: left + i as f32 * 100.0 + 50.0 })
+        .map(|(i, s)| Segment {
+            text: s.trim().into(),
+            left: left + i as f32 * 100.0,
+            right: left + i as f32 * 100.0 + 50.0,
+        })
         .collect();
     Line {
-        spans: vec![Span { text: text.into(), bold: false, italic: false, link: None }],
+        spans: vec![Span {
+            text: text.into(),
+            bold: false,
+            italic: false,
+            link: None,
+        }],
         text: text.into(),
         segments,
         baseline,
@@ -401,15 +431,37 @@ mod tests {
     use super::*;
 
     fn body_lines() -> Vec<Line> {
-        (0..12).map(|i| test_line(&format!("body text line {i}"), 700.0 - i as f32 * 12.0, 40.0, 550.0, 10.0)).collect()
+        (0..12)
+            .map(|i| {
+                test_line(
+                    &format!("body text line {i}"),
+                    700.0 - i as f32 * 12.0,
+                    40.0,
+                    550.0,
+                    10.0,
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn heading_levels_rank_by_size_across_the_document() {
         let mut lines = body_lines();
         for i in 0..4 {
-            lines.push(test_line("A Very Large Title Indeed", 400.0 - i as f32 * 20.0, 40.0, 550.0, 18.0));
-            lines.push(test_line("A Section Heading Here Now", 380.0 - i as f32 * 20.0, 40.0, 550.0, 13.0));
+            lines.push(test_line(
+                "A Very Large Title Indeed",
+                400.0 - i as f32 * 20.0,
+                40.0,
+                550.0,
+                18.0,
+            ));
+            lines.push(test_line(
+                "A Section Heading Here Now",
+                380.0 - i as f32 * 20.0,
+                40.0,
+                550.0,
+                13.0,
+            ));
         }
         let style = Style::of(&lines);
         assert_eq!(style.body(), 10.0);
@@ -428,21 +480,38 @@ mod tests {
     #[test]
     fn wrapped_lines_join_into_one_paragraph() {
         let lines = vec![
-            test_line("The first line runs the full measure", 700.0, 40.0, 550.0, 10.0),
+            test_line(
+                "The first line runs the full measure",
+                700.0,
+                40.0,
+                550.0,
+                10.0,
+            ),
             test_line("and the second continues it", 688.0, 40.0, 550.0, 10.0),
             test_line("short end.", 676.0, 40.0, 200.0, 10.0),
         ];
         let blocks = build(&lines, &Style::of(&lines));
         assert_eq!(blocks.len(), 1);
-        let Block::Paragraph { spans } = &blocks[0] else { panic!("expected a paragraph") };
-        assert_eq!(spans[0].text, "The first line runs the full measure and the second continues it short end.");
+        let Block::Paragraph { spans } = &blocks[0] else {
+            panic!("expected a paragraph")
+        };
+        assert_eq!(
+            spans[0].text,
+            "The first line runs the full measure and the second continues it short end."
+        );
     }
 
     #[test]
     fn a_short_line_ends_the_paragraph_before_the_next_one() {
         let lines = vec![
             test_line("First paragraph ends here.", 700.0, 40.0, 200.0, 10.0),
-            test_line("Second paragraph starts here and runs on", 688.0, 40.0, 550.0, 10.0),
+            test_line(
+                "Second paragraph starts here and runs on",
+                688.0,
+                40.0,
+                550.0,
+                10.0,
+            ),
         ];
         assert_eq!(build(&lines, &Style::of(&lines)).len(), 2);
     }
@@ -451,17 +520,41 @@ mod tests {
     fn hyphenation_heals_only_when_the_join_is_unambiguous() {
         let split_word = vec![
             test_line("carries the informa-", 700.0, 40.0, 550.0, 10.0),
-            test_line("tion onward to the end of the line", 688.0, 40.0, 550.0, 10.0),
+            test_line(
+                "tion onward to the end of the line",
+                688.0,
+                40.0,
+                550.0,
+                10.0,
+            ),
         ];
-        let Block::Paragraph { spans } = &build(&split_word, &Style::of(&split_word))[0] else { panic!() };
-        assert!(spans[0].text.starts_with("carries the information onward"), "{}", spans[0].text);
+        let Block::Paragraph { spans } = &build(&split_word, &Style::of(&split_word))[0] else {
+            panic!()
+        };
+        assert!(
+            spans[0].text.starts_with("carries the information onward"),
+            "{}",
+            spans[0].text
+        );
 
         let compound = vec![
             test_line("the English-", 700.0, 40.0, 550.0, 10.0),
-            test_line("to-German task runs the full measure", 688.0, 40.0, 550.0, 10.0),
+            test_line(
+                "to-German task runs the full measure",
+                688.0,
+                40.0,
+                550.0,
+                10.0,
+            ),
         ];
-        let Block::Paragraph { spans } = &build(&compound, &Style::of(&compound))[0] else { panic!() };
-        assert!(spans[0].text.starts_with("the English-to-German"), "{}", spans[0].text);
+        let Block::Paragraph { spans } = &build(&compound, &Style::of(&compound))[0] else {
+            panic!()
+        };
+        assert!(
+            spans[0].text.starts_with("the English-to-German"),
+            "{}",
+            spans[0].text
+        );
     }
 
     #[test]
@@ -482,7 +575,9 @@ mod tests {
             test_line("Convolutional  O(k)  O(1)", 676.0, 40.0, 550.0, 10.0),
         ];
         let blocks = build(&lines, &Style::of(&lines));
-        let Block::Table { rows } = &blocks[0] else { panic!("expected a table, got {blocks:?}") };
+        let Block::Table { rows } = &blocks[0] else {
+            panic!("expected a table, got {blocks:?}")
+        };
         assert_eq!(rows[0], vec!["Layer", "Complexity", "Ops"]);
         assert_eq!(rows[2], vec!["Convolutional", "O(k)", "O(1)"]);
     }
@@ -491,8 +586,17 @@ mod tests {
     fn one_line_of_aligned_gaps_is_not_a_table() {
         let lines = vec![
             test_line("Caption here  17", 700.0, 40.0, 550.0, 10.0),
-            test_line("ordinary prose continues below it", 688.0, 40.0, 550.0, 10.0),
+            test_line(
+                "ordinary prose continues below it",
+                688.0,
+                40.0,
+                550.0,
+                10.0,
+            ),
         ];
-        assert!(!matches!(build(&lines, &Style::of(&lines))[0], Block::Table { .. }));
+        assert!(!matches!(
+            build(&lines, &Style::of(&lines))[0],
+            Block::Table { .. }
+        ));
     }
 }

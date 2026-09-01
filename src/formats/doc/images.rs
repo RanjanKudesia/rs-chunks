@@ -16,10 +16,9 @@
 //! Extraction is strictly best-effort: any malformed structure skips that
 //! image; failures never propagate into text chunking or markdown output.
 
-
 use crate::formats::odraw::{
-    blip_hash_name, decode_blip, decode_fbse_blip, find_record, is_blip_record,
-    parse_odraw_header, DecodedBlip, RT_BSTORE_CONTAINER, RT_FBSE, REC_VER_CONTAINER,
+    blip_hash_name, decode_blip, decode_fbse_blip, find_record, is_blip_record, parse_odraw_header,
+    DecodedBlip, REC_VER_CONTAINER, RT_BSTORE_CONTAINER, RT_FBSE,
 };
 
 use super::cfb_reader;
@@ -189,6 +188,18 @@ fn decode_picf_blip(data_stream: &[u8], fc_pic: usize) -> Option<DecodedBlip> {
 /// Walk OfficeArt records in `data[start..end)` (descending into containers
 /// and FBSEs) and decode the first supported BLIP found.
 fn find_blip_in_records(data: &[u8], start: usize, end: usize) -> Option<DecodedBlip> {
+    find_blip_in_records_at(data, start, end, 0)
+}
+
+/// Depth-capped worker. See `odraw::MAX_RECORD_DEPTH`: container nesting costs
+/// 8 bytes a level, so an uncapped descent is a stack-overflow abort from a
+/// small file.
+fn find_blip_in_records_at(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    depth: usize,
+) -> Option<DecodedBlip> {
     let mut pos = start;
     while let Some((hdr, next)) = parse_odraw_header(data, pos, end) {
         if next <= pos {
@@ -203,13 +214,15 @@ fn find_blip_in_records(data: &[u8], start: usize, end: usize) -> Option<Decoded
                 return Some(decoded);
             }
         } else if hdr.rec_type == RT_FBSE {
-            if let Some(decoded) =
-                decode_fbse_blip(data.get(hdr.body_start..hdr.body_end)?, None)
-            {
+            if let Some(decoded) = decode_fbse_blip(data.get(hdr.body_start..hdr.body_end)?, None) {
                 return Some(decoded);
             }
-        } else if hdr.rec_ver == REC_VER_CONTAINER {
-            if let Some(decoded) = find_blip_in_records(data, hdr.body_start, hdr.body_end) {
+        } else if hdr.rec_ver == REC_VER_CONTAINER
+            && depth < crate::formats::odraw::MAX_RECORD_DEPTH
+        {
+            if let Some(decoded) =
+                find_blip_in_records_at(data, hdr.body_start, hdr.body_end, depth + 1)
+            {
                 return Some(decoded);
             }
         }
@@ -268,8 +281,8 @@ pub fn extract_doc_images_bytes(bytes: &[u8]) -> Result<Vec<DocImage>, String> {
     let fib: Fib = fib::parse_fib(&word_doc)?;
     let table = cfb.table_stream(fib.f_which_tbl_stm)?;
     let data_stream = cfb.data_stream().unwrap_or(None);
-    let pieces =
-        piece_table::parse_pieces(&table, fib.fc_clx, fib.lcb_clx, fib.ccp_text).unwrap_or_default();
+    let pieces = piece_table::parse_pieces(&table, fib.fc_clx, fib.lcb_clx, fib.ccp_text)
+        .unwrap_or_default();
 
     let mut out: Vec<DocImage> = Vec::new();
 
@@ -313,7 +326,9 @@ pub fn extract_doc_images_bytes(bytes: &[u8]) -> Result<Vec<DocImage>, String> {
     // ── Floating shapes via the drawing-group blip store ────────────────────
     if fib.lcb_dgg_info > 0 {
         let start = fib.fc_dgg_info as usize;
-        let end = start.saturating_add(fib.lcb_dgg_info as usize).min(table.len());
+        let end = start
+            .saturating_add(fib.lcb_dgg_info as usize)
+            .min(table.len());
         if start < end {
             if let Some(bstore) = find_record(&table, start, end, RT_BSTORE_CONTAINER) {
                 let mut pos = bstore.body_start;
@@ -353,6 +368,64 @@ pub fn extract_doc_images_bytes(bytes: &[u8]) -> Result<Vec<DocImage>, String> {
     Ok(out)
 }
 
+/// Native `(chunks, images)` builder shared by every `.doc` `_with_images` mode:
+/// image chunks first, then text chunks, with chunk indices renumbered across
+/// the combined list. Image extraction failures degrade to no images.
+pub(super) fn chunk_with_images_impl(
+    file_path: &str,
+    build: impl FnOnce(Vec<super::text_extractor::DocParagraph>) -> Vec<super::structural::ChunkRecord>,
+) -> Result<crate::chunk::ChunksWithImages, String> {
+    super::structural::validate_doc_path(file_path)?;
+    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .doc file: {e}"))?;
+    chunk_with_images_impl_bytes(&bytes, file_path, build)
+}
+
+/// No-filesystem variant of [`chunk_with_images_impl`] (wasm/browser). `source`
+/// is the filename recorded in each chunk's `source` metadata field.
+pub(super) fn chunk_with_images_impl_bytes(
+    bytes: &[u8],
+    source: &str,
+    build: impl FnOnce(Vec<super::text_extractor::DocParagraph>) -> Vec<super::structural::ChunkRecord>,
+) -> Result<crate::chunk::ChunksWithImages, String> {
+    let file_path = source;
+    let paragraphs = super::structural::load_doc_paragraphs_bytes(bytes)?;
+    let images = extract_doc_images_bytes(bytes).unwrap_or_default();
+    let text_chunks = build(paragraphs);
+
+    let total = images.len() + text_chunks.len();
+    let mut chunk_list: Vec<crate::chunk::Chunk> = Vec::with_capacity(total);
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
+
+    for (i, img) in images.iter().enumerate() {
+        if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
+            image_out.push((img.hash_name.clone(), img.bytes.clone()));
+        }
+        chunk_list.push(crate::chunk::Chunk::new(
+            img.hash_name.clone(),
+            "image",
+            serde_json::json!({
+                "source": file_path,
+                "chunk_index": i,
+                "total_chunks": total,
+                "paragraph_type": "image",
+                "heading_level": serde_json::Value::Null,
+                "page_number": serde_json::Value::Null,
+                "paragraph_index": img.raw_para,
+                "image_name": img.hash_name,
+            }),
+        ));
+    }
+
+    let offset = images.len();
+    for chunk in &text_chunks {
+        chunk_list.push(crate::chunk::Chunk::new(
+            chunk.content.clone(),
+            chunk.content_type,
+            super::chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
+        ));
+    }
+    Ok((chunk_list, image_out))
+}
 
 #[cfg(test)]
 mod tests {
@@ -446,64 +519,4 @@ mod tests {
         assert_eq!(count_paragraphs_before(&word_doc, &pieces, 4), 1);
         assert_eq!(count_paragraphs_before(&word_doc, &pieces, 8), 2);
     }
-}
-
-
-/// Native `(chunks, images)` builder shared by every `.doc` `_with_images` mode:
-/// image chunks first, then text chunks, with chunk indices renumbered across
-/// the combined list. Image extraction failures degrade to no images.
-pub(super) fn chunk_with_images_impl(
-    file_path: &str,
-    build: impl FnOnce(Vec<super::text_extractor::DocParagraph>) -> Vec<super::structural::ChunkRecord>,
-) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
-    super::structural::validate_doc_path(file_path)?;
-    let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read .doc file: {e}"))?;
-    chunk_with_images_impl_bytes(&bytes, file_path, build)
-}
-
-/// No-filesystem variant of [`chunk_with_images_impl`] (wasm/browser). `source`
-/// is the filename recorded in each chunk's `source` metadata field.
-pub(super) fn chunk_with_images_impl_bytes(
-    bytes: &[u8],
-    source: &str,
-    build: impl FnOnce(Vec<super::text_extractor::DocParagraph>) -> Vec<super::structural::ChunkRecord>,
-) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
-    let file_path = source;
-    let paragraphs = super::structural::load_doc_paragraphs_bytes(bytes)?;
-    let images = extract_doc_images_bytes(bytes).unwrap_or_default();
-    let text_chunks = build(paragraphs);
-
-    let total = images.len() + text_chunks.len();
-    let mut chunk_list: Vec<crate::chunk::Chunk> = Vec::with_capacity(total);
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
-
-    for (i, img) in images.iter().enumerate() {
-        if !image_out.iter().any(|(n, _)| n == &img.hash_name) {
-            image_out.push((img.hash_name.clone(), img.bytes.clone()));
-        }
-        chunk_list.push(crate::chunk::Chunk::new(
-            img.hash_name.clone(),
-            "image",
-            serde_json::json!({
-                "source": file_path,
-                "chunk_index": i,
-                "total_chunks": total,
-                "paragraph_type": "image",
-                "heading_level": serde_json::Value::Null,
-                "page_number": serde_json::Value::Null,
-                "paragraph_index": img.raw_para,
-                "image_name": img.hash_name,
-            }),
-        ));
-    }
-
-    let offset = images.len();
-    for chunk in &text_chunks {
-        chunk_list.push(crate::chunk::Chunk::new(
-            chunk.content.clone(),
-            chunk.content_type,
-            super::chunk_metadata(file_path, chunk, chunk.chunk_index + offset, total),
-        ));
-    }
-    Ok((chunk_list, image_out))
 }

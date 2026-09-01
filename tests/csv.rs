@@ -20,13 +20,21 @@ fn list(sub: &str, ext: &str) -> Vec<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for entry in rd.flatten() {
             let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext)) == Some(true) {
+            if p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case(ext))
+                == Some(true)
+            {
                 out.push(p);
             }
         }
     }
     out.sort();
-    assert!(!out.is_empty(), "no .{ext} fixtures found in {}", dir.display());
+    assert!(
+        !out.is_empty(),
+        "no .{ext} fixtures found in {}",
+        dir.display()
+    );
     out
 }
 
@@ -101,8 +109,14 @@ fn markdown_produces_pipe_table() {
         let p = path.to_str().unwrap();
         let md = csv::to_markdown(p, None, "utf-8")
             .unwrap_or_else(|e| panic!("to_markdown failed for {p}: {e}"));
-        assert!(md.starts_with("| "), "markdown should start with a table row for {p}");
-        assert!(md.contains("---"), "markdown should have a separator row for {p}");
+        assert!(
+            md.starts_with("| "),
+            "markdown should start with a table row for {p}"
+        );
+        assert!(
+            md.contains("---"),
+            "markdown should have a separator row for {p}"
+        );
     }
 }
 

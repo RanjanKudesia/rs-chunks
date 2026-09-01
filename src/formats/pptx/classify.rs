@@ -1,7 +1,7 @@
 //! Text classification shared by the PPTX chunking strategies.
 
-use super::slide_model::ContentType;
 use super::common::{CLASSIFY_LONG_CHARS, CLASSIFY_SHORT_CHARS};
+use super::slide_model::ContentType;
 
 // ── Text classification ───────────────────────────────────────────────────────
 

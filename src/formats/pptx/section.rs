@@ -11,9 +11,8 @@
 use serde_json::json;
 
 use super::common::{
-    classify_chunk, collect_slide_names, open_pptx,
-    parse_presentation_sections, read_all_slides, split_large_text, ChunkRecordInput, ContentType,
-    SlideContent,
+    classify_chunk, collect_slide_names, open_pptx, parse_presentation_sections, read_all_slides,
+    split_large_text, ChunkRecordInput, ContentType, SlideContent,
 };
 
 const MAX_SECTION_CHARS: usize = 2000;
@@ -222,4 +221,3 @@ fn build_from_divider_heuristic(
 }
 
 // ── PyO3 entry point ──────────────────────────────────────────────────────────
-

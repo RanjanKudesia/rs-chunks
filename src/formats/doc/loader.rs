@@ -29,6 +29,12 @@ pub(super) struct ParsedDoc {
     pub props: Vec<ParagraphProp>,
 }
 
+/// Main-story paragraphs with their raw ordinals, plus the side stories.
+///
+/// The ordinals anchor inline images; the side stories are the footnotes,
+/// headers/footers, comments, endnotes and text boxes that `to_markdown` has
+/// always included.
+pub type IndexedAndSideStories = (Vec<(usize, DocParagraph)>, Vec<DocParagraph>);
 impl ParsedDoc {
     pub fn open(bytes: &[u8]) -> Result<Self, String> {
         let mut cfb = cfb_reader::DocCfb::open(bytes)?;
@@ -81,6 +87,21 @@ impl ParsedDoc {
         ))
     }
 
+    /// Like [`all_paragraphs`], but keeps the main story's paragraph ordinals
+    /// so inline images can still be anchored, and returns the side stories
+    /// separately so they can be placed after the image markers.
+    ///
+    /// `to_markdown_with_images` used `main_paragraphs_indexed` alone, so
+    /// asking for images returned LESS TEXT than not asking — measured, up to
+    /// 91% less (`poi_footnote.doc`: 101 chars -> 9). That is TECH_DEBT L5
+    /// verbatim, recurring in a module L5 never touched.
+    pub fn all_paragraphs_indexed(&self) -> Result<IndexedAndSideStories, String> {
+        let main = self.main_paragraphs_indexed()?;
+        let mut side = Vec::new();
+        self.append_side_stories(&mut side);
+        Ok((main, side))
+    }
+
     /// The full paragraph stream: main text followed by the labelled stories
     /// that come after it.
     pub fn all_paragraphs(&self) -> Result<Vec<DocParagraph>, String> {
@@ -124,11 +145,8 @@ impl ParsedDoc {
             let Ok((story, _)) = self.story(from, to as i32) else {
                 continue;
             };
-            let extracted = text_extractor::extract_paragraphs(
-                &story.text,
-                &story.props,
-                &self.stylesheet,
-            );
+            let extracted =
+                text_extractor::extract_paragraphs(&story.text, &story.props, &self.stylesheet);
             let has_content = extracted.iter().any(|p| !p.content.trim().is_empty());
             if !has_content {
                 continue;

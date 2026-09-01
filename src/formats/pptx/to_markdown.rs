@@ -11,7 +11,6 @@ use super::md_rels::{
 use super::md_render::{slide_to_markdown, slide_to_markdown_with_images};
 use super::md_slide_parse::parse_slide_for_markdown;
 
-
 fn presentation_to_markdown(
     pres_title: Option<String>,
     slides: Vec<(usize, SlideMarkdownContent)>,
@@ -46,7 +45,6 @@ fn presentation_to_markdown(
     parts.join("\n\n---\n\n").trim().to_string()
 }
 
-
 pub(super) fn to_markdown(bytes: &[u8]) -> Result<String, String> {
     use super::common::{collect_slide_names, open_pptx};
     let mut archive = open_pptx(bytes).map_err(|e| format!("Not a valid PPTX zip: {e}"))?;
@@ -68,7 +66,9 @@ pub(super) fn to_markdown(bytes: &[u8]) -> Result<String, String> {
     Ok(presentation_to_markdown(pres_title, slides, sections))
 }
 
-pub(super) fn to_markdown_with_images(bytes: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn to_markdown_with_images(
+    bytes: &[u8],
+) -> Result<crate::chunk::MarkdownWithImages, String> {
     use super::common::{collect_slide_names, open_pptx};
     let mut archive = open_pptx(bytes).map_err(|e| format!("Not a valid PPTX zip: {e}"))?;
     let pres_title = extract_presentation_title(&mut archive);
@@ -76,8 +76,10 @@ pub(super) fn to_markdown_with_images(bytes: &[u8]) -> Result<(String, Vec<(Stri
     let slide_names = collect_slide_names(&archive);
 
     let mut slides: Vec<(usize, SlideMarkdownContent)> = Vec::new();
-    let mut slide_image_rids: std::collections::HashMap<usize, std::collections::HashMap<String, String>> =
-        std::collections::HashMap::new();
+    let mut slide_image_rids: std::collections::HashMap<
+        usize,
+        std::collections::HashMap<String, String>,
+    > = std::collections::HashMap::new();
     for (slide_num, slide_name) in &slide_names {
         let xml_bytes = read_zip_entry(&mut archive, slide_name)?;
         let (slide_rels, image_rids) = parse_slide_rels_with_images(&mut archive, slide_name);
@@ -95,20 +97,27 @@ pub(super) fn to_markdown_with_images(bytes: &[u8]) -> Result<(String, Vec<(Stri
             parts.push(format!("# {}", t.trim()));
         }
     }
-    let mut section_starts: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    let mut section_starts: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
     for (section_name, slide_nums) in &sections {
         if let Some(&first) = slide_nums.first() {
             section_starts.insert(first, section_name.clone());
         }
     }
 
-    let mut image_out: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut image_out: crate::chunk::ExtractedImages = Vec::new();
     for (slide_num, slide) in &slides {
         if let Some(section_name) = section_starts.get(slide_num) {
             parts.push(format!("# {}", section_name.trim()));
         }
         let image_rids = slide_image_rids.get(slide_num).cloned().unwrap_or_default();
-        let slide_md = slide_to_markdown_with_images(*slide_num, slide, &image_rids, &mut archive, &mut image_out);
+        let slide_md = slide_to_markdown_with_images(
+            *slide_num,
+            slide,
+            &image_rids,
+            &mut archive,
+            &mut image_out,
+        );
         if !slide_md.trim().is_empty() {
             parts.push(slide_md);
         }

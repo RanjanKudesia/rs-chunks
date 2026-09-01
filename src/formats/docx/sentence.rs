@@ -1,9 +1,6 @@
 use serde_json::{json, Value};
 
-use super::common::{
-    collapse_whitespace,
-    parse_docx_indexed_paragraphs, IndexedParagraph,
-};
+use super::common::{collapse_whitespace, parse_docx_indexed_paragraphs, IndexedParagraph};
 
 const TITLE_ABBREVIATIONS: [&str; 22] = [
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.", "st.", "capt.", "lt.",
@@ -224,12 +221,14 @@ fn ends_with_initials_abbreviation(prefix: &str) -> bool {
     groups >= 2
 }
 
-
-pub(super) fn chunk(bytes: &[u8], sentences_per_chunk: usize) -> Result<Vec<crate::chunk::Chunk>, String> {
+pub(super) fn chunk(
+    bytes: &[u8],
+    sentences_per_chunk: usize,
+) -> Result<Vec<crate::chunk::Chunk>, String> {
     let paragraphs = parse_docx_indexed_paragraphs(bytes)?;
     let sentences = paragraphs
         .iter()
-        .flat_map(|paragraph| split_paragraph_sentences(paragraph))
+        .flat_map(split_paragraph_sentences)
         .collect::<Vec<_>>();
     Ok(build_sentence_chunks(sentences, sentences_per_chunk)
         .into_iter()
@@ -237,7 +236,10 @@ pub(super) fn chunk(bytes: &[u8], sentences_per_chunk: usize) -> Result<Vec<crat
         .collect())
 }
 
-pub(super) fn chunk_with_images(bytes: &[u8], sentences_per_chunk: usize) -> Result<(Vec<crate::chunk::Chunk>, Vec<(String, Vec<u8>)>), String> {
+pub(super) fn chunk_with_images(
+    bytes: &[u8],
+    sentences_per_chunk: usize,
+) -> Result<crate::chunk::ChunksWithImages, String> {
     let (mut archive, image_rids_map) = super::common::open_docx_archive_with_rids(bytes)?;
     let items = super::common::parse_docx_indexed_items_with_images(bytes)?;
     let mut text_paragraphs: Vec<IndexedParagraph> = Vec::new();
@@ -247,18 +249,31 @@ pub(super) fn chunk_with_images(bytes: &[u8], sentences_per_chunk: usize) -> Res
         match item {
             super::common::ParaOrImage::Para(ev) => {
                 text_paragraphs.push(IndexedParagraph {
-                    index: para_index, text: ev.text, is_heading: ev.is_heading,
-                    heading_level: ev.heading_level, is_list: ev.is_list, is_table: ev.is_table,
+                    index: para_index,
+                    text: ev.text,
+                    is_heading: ev.is_heading,
+                    heading_level: ev.heading_level,
+                    is_list: ev.is_list,
+                    is_table: ev.is_table,
                 });
                 para_index += 1;
             }
             super::common::ParaOrImage::Image { rid, alt, .. } => image_items.push((rid, alt)),
         }
     }
-    let sentences = text_paragraphs.iter().flat_map(split_paragraph_sentences).collect::<Vec<_>>();
+    let sentences = text_paragraphs
+        .iter()
+        .flat_map(split_paragraph_sentences)
+        .collect::<Vec<_>>();
     let text_chunks = build_sentence_chunks(sentences, sentences_per_chunk);
-    let (entries, image_out) = super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
-    let mut chunks: Vec<crate::chunk::Chunk> = entries.into_iter().map(|(n, m)| crate::chunk::Chunk::new(n, "image", m)).collect();
-    for c in text_chunks { chunks.push(crate::chunk::Chunk::new(c.content, "sentence", c.metadata)); }
+    let (entries, image_out) =
+        super::common::collect_image_chunks_from_items(image_items, &image_rids_map, &mut archive);
+    let mut chunks: Vec<crate::chunk::Chunk> = entries
+        .into_iter()
+        .map(|(n, m)| crate::chunk::Chunk::new(n, "image", m))
+        .collect();
+    for c in text_chunks {
+        chunks.push(crate::chunk::Chunk::new(c.content, "sentence", c.metadata));
+    }
     Ok((chunks, image_out))
 }

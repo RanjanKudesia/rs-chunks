@@ -44,3 +44,20 @@ impl Chunk {
         }
     }
 }
+
+/// One image extracted from a document: `(file name, raw bytes)`.
+///
+/// The name is the engine-assigned one (see `image_naming`) and is what appears
+/// in the owning chunk's `image_name` metadata, so callers can join the two.
+pub type ExtractedImage = (String, Vec<u8>);
+
+/// Every image extracted from one document, in document order.
+pub type ExtractedImages = Vec<ExtractedImage>;
+
+/// What the `*_with_images` chunkers return: the chunks, plus the images
+/// extracted alongside them.
+pub type ChunksWithImages = (Vec<Chunk>, ExtractedImages);
+
+/// What the `to_markdown_with_images` renderers return: the rendered Markdown,
+/// plus the images referenced from it.
+pub type MarkdownWithImages = (String, ExtractedImages);

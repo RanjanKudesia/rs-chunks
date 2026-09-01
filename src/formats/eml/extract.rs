@@ -34,7 +34,7 @@ pub struct EmlDocument {
     pub body: String,
     pub attachments: Vec<EmlAttachment>,
     /// Inline / attached images as (filename, bytes) for `list_images`.
-    pub images: Vec<(String, Vec<u8>)>,
+    pub images: crate::chunk::ExtractedImages,
 }
 
 /// Format an address header into `Name <email>` / `email` display strings.
@@ -42,7 +42,10 @@ fn format_addresses(addr: Option<&Address>) -> Vec<String> {
     let mut out = Vec::new();
     let Some(addr) = addr else { return out };
     for a in addr.iter() {
-        let name = a.name().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let name = a
+            .name()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let email = a
             .address()
             .map(|s| s.trim().to_string())
@@ -93,9 +96,13 @@ fn select_body(msg: &Message) -> String {
             return md.trim().to_string();
         }
     }
-    // Fallback: gather every text part in document order.
+    // Fallback: gather every text part in document order — except
+    // styling/scripting resources (see `is_non_prose_text`).
     let mut collected = String::new();
     for part in &msg.parts {
+        if is_non_prose_text(full_content_type(part).as_deref()) {
+            continue;
+        }
         if let PartType::Text(t) = &part.body {
             let t = t.trim();
             if !t.is_empty() {
@@ -122,20 +129,34 @@ fn image_ext(mime: Option<&str>) -> &'static str {
 
 /// Parse a single RFC822 message (bytes) into an `EmlDocument`. Best-effort:
 /// even a mostly-malformed message yields whatever headers/body parsed.
-pub fn parse_message_bytes(raw: &[u8]) -> EmlDocument {
+///
+/// `Err` means the message could not be parsed at all — distinct from a message
+/// that parsed and is simply empty. Both used to come back as
+/// `EmlDocument::default()`, so "this message is empty" and "we lost this
+/// message" were the same answer, and in an mbox the loss showed only as a
+/// blank `## Message N` (TECH_DEBT F7).
+pub fn parse_message_bytes(raw: &[u8]) -> std::result::Result<EmlDocument, String> {
     // `mail-parser` can panic on some adversarial MIME structures (e.g. an
     // invalid multipart part-id). Under PyO3 that panic was caught at the
     // boundary; as a native library we must contain it ourselves so a single
-    // malformed message never aborts the host. Falls back to an empty doc.
+    // malformed message never aborts the host. The guard stays — only what it
+    // produces on failure changes.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match MessageParser::default().parse(raw) {
             // `mail-parser` parses parts lazily, so part access inside
             // `document_from_message` can also panic — keep it inside the guard.
-            Some(msg) => document_from_message(&msg),
-            None => EmlDocument::default(),
+            Some(msg) => Ok(document_from_message(&msg)),
+            None => Err("not a parseable RFC822 message".to_string()),
         }
     }));
-    result.unwrap_or_default()
+    result.unwrap_or_else(|payload| {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        Err(format!("internal parser panic: {what}"))
+    })
 }
 
 /// Attachment text worth inlining, or `None`.
@@ -204,11 +225,24 @@ fn redecode_if_charset_mismatched(msg: &Message<'_>, decoded: &str) -> Option<St
 fn header_ids(value: &mail_parser::HeaderValue<'_>) -> Vec<String> {
     match value {
         mail_parser::HeaderValue::Text(t) => vec![t.to_string()],
-        mail_parser::HeaderValue::TextList(list) => {
-            list.iter().map(|t| t.to_string()).collect()
-        }
+        mail_parser::HeaderValue::TextList(list) => list.iter().map(|t| t.to_string()).collect(),
         _ => Vec::new(),
     }
+}
+
+/// A `text/*` part whose content is styling or scripting, not prose. In a
+/// `multipart/related` HTML message these are RESOURCES the root part
+/// references (RFC 2387), yet they were inlined as body text:
+/// `tika_testRFC822_oddfrom.eml` produced 54 chunks of which 44 were pure CSS
+/// — 94.5% of the output, and for a retrieval index worse than dropping the
+/// message, because every stylesheet chunk becomes a confident, meaningless
+/// vector. The printability gate cannot catch this: CSS is perfectly
+/// printable. The subtype is the only honest discriminator.
+fn is_non_prose_text(mime: Option<&str>) -> bool {
+    matches!(
+        mime.map(|m| m.to_ascii_lowercase()).as_deref(),
+        Some("text/css") | Some("text/javascript") | Some("application/javascript")
+    )
 }
 
 fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
@@ -220,7 +254,10 @@ fn full_content_type(part: &mail_parser::MessagePart) -> Option<String> {
 
 pub fn document_from_message(msg: &Message) -> EmlDocument {
     let mut doc = EmlDocument {
-        subject: msg.subject().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        subject: msg
+            .subject()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         from: format_addresses(msg.from()).into_iter().next(),
         to: format_addresses(msg.to()),
         cc: format_addresses(msg.cc()),
@@ -253,7 +290,10 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
             }
             PartType::Binary(bytes) | PartType::InlineBinary(bytes) => {
                 let mime = full_content_type(part);
-                let is_image = mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false);
+                let is_image = mime
+                    .as_deref()
+                    .map(|m| m.starts_with("image/"))
+                    .unwrap_or(false);
                 if is_image {
                     let ext = image_ext(mime.as_deref());
                     let name = part
@@ -273,13 +313,19 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
                 });
             }
             PartType::Text(t) => {
-                // A text attachment's content is content. It was decoded and
-                // then thrown away, so only the filename line rendered. (#35)
+                // A text attachment's content is content (#35) — unless it is
+                // styling/scripting, which is listed by name and size only.
+                let mime = full_content_type(part);
+                let embedded = if is_non_prose_text(mime.as_deref()) {
+                    None
+                } else {
+                    readable_attachment_text(t.as_ref())
+                };
                 doc.attachments.push(EmlAttachment {
                     filename: part.attachment_name().map(|s| s.to_string()),
-                    mime: full_content_type(part),
+                    mime,
                     size: t.len(),
-                    embedded_text: readable_attachment_text(t.as_ref()),
+                    embedded_text: embedded,
                 });
             }
             PartType::Html(t) => {
@@ -302,12 +348,20 @@ pub fn document_from_message(msg: &Message) -> EmlDocument {
     for part in &msg.parts {
         if let PartType::InlineBinary(bytes) = &part.body {
             let mime = full_content_type(part);
-            if mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false) {
-                let already = doc.images.iter().any(|(_, b)| b.as_slice() == bytes.as_ref());
+            if mime
+                .as_deref()
+                .map(|m| m.starts_with("image/"))
+                .unwrap_or(false)
+            {
+                let already = doc
+                    .images
+                    .iter()
+                    .any(|(_, b)| b.as_slice() == bytes.as_ref());
                 if !already {
                     let ext = image_ext(mime.as_deref());
                     img_counter += 1;
-                    doc.images.push((format!("inline_{img_counter}{ext}"), bytes.to_vec()));
+                    doc.images
+                        .push((format!("inline_{img_counter}{ext}"), bytes.to_vec()));
                 }
             }
         }
@@ -351,8 +405,15 @@ pub fn document_to_markdown(doc: &EmlDocument, heading_level: usize) -> String {
     if !doc.attachments.is_empty() {
         out.push_str("## Attachments\n\n");
         for att in &doc.attachments {
-            let name = att.filename.clone().unwrap_or_else(|| "(unnamed)".to_string());
-            let mime = att.mime.as_ref().map(|m| format!(" ({m})")).unwrap_or_default();
+            let name = att
+                .filename
+                .clone()
+                .unwrap_or_else(|| "(unnamed)".to_string());
+            let mime = att
+                .mime
+                .as_ref()
+                .map(|m| format!(" ({m})"))
+                .unwrap_or_default();
             out.push_str(&format!("- {name}{mime}\n"));
             if let Some(text) = &att.embedded_text {
                 out.push_str(&format!("\n{text}\n"));
