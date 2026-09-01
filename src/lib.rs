@@ -16,6 +16,12 @@
 //! }
 //! ```
 
+// Clippy 1.98 introduced `chunks_exact_to_as_chunks`, flagging nine
+// long-standing call sites the day CI first ran. `as_chunks` needs a newer
+// MSRV than this crate promises, and chasing every new nightly lint under
+// `-D warnings` is churn, not correctness. Revisit when the MSRV moves.
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 pub mod chunk;
 pub mod dispatch;
 pub mod error;
