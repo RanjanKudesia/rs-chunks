@@ -88,8 +88,8 @@ than returning page renders.
 Validated against the `py-chunks` reference implementation over **every fixture ×
 every mode** (`examples/parity_dump.rs` + `examples/parity_check.py`):
 
-- **3,222 / 3,222 chunk comparisons byte-identical (100%)** — last re-verified
-  2026-08-08
+- **4,748 / 4,748 chunk comparisons byte-identical (100%)** — last re-verified
+  2026-09-10
 
 Every family — OOXML, legacy binary (`.doc`/`.ppt`), OpenDocument, email,
 ebook, PDF, notebook and delimited — is byte-identical, including
